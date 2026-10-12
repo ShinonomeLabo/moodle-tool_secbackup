@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the commit hooks: the message and identity rules in ../lib/rules.sh, and the fail-closed
-# behaviour of ../pre-push and ../check-history.sh when a tool they depend on fails.
+# behaviour of ../pre-push and ../check-history.sh when a tool they depend on fails, and ../install.sh.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -34,7 +34,11 @@ expect_message ok "Japanese subject with English identifiers" $'tool_secbackup �
 expect_message ng "English only" $'Add repository skeleton\n'
 expect_message ng "empty" ''
 expect_message ng "only comments" $'# Please enter the commit message\n'
-expect_message ok "comment lines are ignored" $'日本語の件名\n# forbiddenword in a git comment line\n'
+expect_message ng "# lines are searched too (git keeps them for -m and -F)" $'日本語の件名\n# forbiddenword in a git comment line\n'
+# git removes "#" lines only when the message is edited; for -m and -F it keeps them. So a word on a "#"
+# line is a word of the message, while the empty and Japanese checks still ignore those lines.
+expect_message ok "# line without a forbidden word is fine" $'日本語の件名\n# メモ\n'
+expect_message ng "Japanese only in a # line does not count" $'Add a change\n# 日本語だけの行\n'
 expect_message ng "pattern in subject" $'forbiddenword を足す\n'
 expect_message ng "pattern in body, upper case" $'変更を足す\n\nFORBIDDENWORD\n'
 expect_message ng "second pattern with a space" $'変更を足す\n\nSecond Phrase\n'
@@ -76,9 +80,23 @@ for bytes in '\0' '\x1b' '\x7f' '\xc2\x85'; do
     printf 'forbiddenword%b\nsecond phrase\n' "$bytes" > "$patterns.bin"
     expect_message ng "pattern list with the control character $bytes" $'日本語の件名\n'
 done
-printf 'ＡＩ\n生成\n' > "$patterns.bin"
-expect_message ok "pattern list of valid UTF-8 words" $'日本語の件名\n'
-expect_message ng "word of a valid UTF-8 pattern list" $'変更\n\n生成した\n'
+# Only printable ASCII (0x20-0x7E) is accepted in a word, after the trimming: a full-width space, a
+# no-break space, a zero-width character, a non-ASCII word or a tab inside a word could make a word
+# silently not match, so such a list is unreadable. The bytes are written as escapes on purpose.
+printf 'forbiddenword\xe3\x80\x80\nsecond phrase\n' > "$patterns.bin"
+expect_message ng "word followed by a full-width space (U+3000)" $'日本語の件名\n'
+printf 'forbiddenword\xc2\xa0\nsecond phrase\n' > "$patterns.bin"
+expect_message ng "word followed by a no-break space (U+00A0)" $'日本語の件名\n'
+printf 'forbidden\xe2\x80\x8bword\nsecond phrase\n' > "$patterns.bin"
+expect_message ng "word with a zero-width space (U+200B) inside" $'日本語の件名\n'
+printf '\xe7\x94\x9f\xe6\x88\x90\nsecond phrase\n' > "$patterns.bin"
+expect_message ng "non-ASCII word (valid UTF-8, but only printable ASCII is accepted)" $'日本語の件名\n'
+printf 'second\tphrase\n' > "$patterns.bin"
+expect_message ng "tab inside a word" $'日本語の件名\n'
+all="a$(perl -e 'print join("", map { chr } 0x20..0x7e)')z"
+printf '%s\n' "$all" > "$patterns.bin"
+expect_message ok "word made of every printable ASCII character" $'日本語の件名\n'
+expect_message ng "message containing that word" "$(printf '日本語の件名\n\n%s' "$all")"
 rm -f "$patterns.crlf" "$patterns.blanks" "$patterns.bom" "$patterns.blank" "$patterns.bin"
 SECBACKUP_PATTERNS_FILE="$patterns"
 
@@ -173,15 +191,19 @@ commit_in() {
 
 good="$work/good"
 bad="$work/bad"
-for repo in "$good" "$bad"; do git init -q "$repo" 2>/dev/null || exit 2; done
+hashed="$work/hashed"
+for repo in "$good" "$bad" "$hashed"; do git init -q "$repo" 2>/dev/null || exit 2; done
 commit_in "$good" '最初の変更を足す' || exit 2
 commit_in "$good" '次の変更を足す' || exit 2
 commit_in "$bad" '最初の変更を足す' || exit 2
 commit_in "$bad" 'Add a second change' || exit 2
+commit_in "$hashed" '最初の変更を足す' || exit 2
+commit_in "$hashed" $'次の変更を足す\n\n# forbiddenword on a # line' || exit 2
 git -c protocol.file.allow=always clone -q --depth 1 "file://$good" "$work/shallow" 2>/dev/null || exit 2
 mkdir "$work/notrepo" || exit 2
 printf -v push_good 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$good" rev-parse HEAD)" "$zeros"
 printf -v push_bad 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$bad" rev-parse HEAD)" "$zeros"
+printf -v push_hashed 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$hashed" rev-parse HEAD)" "$zeros"
 printf -v push_bad_unterminated 'refs/heads/main %s refs/heads/main %s' "$(git -C "$bad" rev-parse HEAD)" "$zeros"
 printf -v push_unknown 'refs/heads/main %s refs/heads/main %s\n' "$ones" "$zeros"
 
@@ -202,10 +224,41 @@ printf 0 > "$work/counter"
 expect_hook ng "pre-push, message of the 2nd commit read in part" "$good" pre-push "$push_good" PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_ON=2 FAKE_GIT_COUNTER="$work/counter"
 expect_hook ok "check-history of a good history" "$good" check-history.sh ''
 expect_hook ng "check-history with an English commit" "$bad" check-history.sh ''
+# A stored message is final text: git has already decided which "#" lines stay, so the words are
+# searched in all of its lines.
+expect_hook ng "pre-push, forbidden word on a # line of a stored message" "$hashed" pre-push "$push_hashed"
+expect_hook ng "check-history, forbidden word on a # line of a stored message" "$hashed" check-history.sh ''
 expect_hook ng "check-history outside a repository" "$work/notrepo" check-history.sh ''
 expect_hook ng "check-history of a shallow clone" "$work/shallow" check-history.sh ''
 printf 0 > "$work/counter"
 expect_hook ng "check-history, message of the 2nd commit read in part" "$good" check-history.sh '' PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_ON=2 FAKE_GIT_COUNTER="$work/counter"
+
+# install.sh needs perl (the hooks use it) and stops with a clear message when it is missing; with perl it
+# enables the hooks of the repository it lives in. Both run in a throw-away copy, never on this repository.
+mkdir "$work/empty" || exit 2
+install_stops_without_perl() {
+    local out rc
+    out="$(env -i PATH="$work/empty" "$BASH" "$here/../install.sh" 2>&1)"; rc=$?
+    [ "$rc" -eq 1 ] || return 1
+    case "$out" in *perl*) return 0 ;; *) return 1 ;; esac
+}
+install_enables_the_hooks() {
+    local copy="$work/install" out
+    mkdir -p "$copy/.dev/hooks/tests" && git init -q "$copy" 2>/dev/null || return 1
+    /bin/cp -f "$here/../install.sh" "$here/../commit-msg" "$here/../pre-push" "$here/../check-history.sh" "$copy/.dev/hooks/" || return 1
+    /bin/cp -f "$here/run.sh" "$copy/.dev/hooks/tests/" || return 1
+    out="$(cd "$copy" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE "$BASH" .dev/hooks/install.sh 2>&1)" || return 1
+    case "$out" in *'hooks enabled: .dev/hooks'*) ;; *) return 1 ;; esac
+    [ "$(git -C "$copy" config core.hooksPath)" = '.dev/hooks' ] && [ "$(git -C "$copy" config user.email)" = 'fuwa@shinonome.co.jp' ]
+}
+expect_check() {
+    local expected="$1" label="$2"
+    shift 2
+    if "$@" >/dev/null 2>&1; then actual=ok; else actual=ng; fi
+    if [ "$actual" = "$expected" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL check: $label (expected $expected, got $actual)"; fi
+}
+expect_check ok "install.sh stops with a message about perl when perl is missing" install_stops_without_perl
+expect_check ok "install.sh enables the hooks of its repository" install_enables_the_hooks
 
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

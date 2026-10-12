@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Enables the repository hooks and sets the only identity allowed in this repository.
+# The hooks need perl (see lib/rules.sh), so nothing is changed when perl is missing.
 set -eu
+if ! command -v perl > /dev/null 2>&1; then
+    echo "error: perl is required by the commit hooks (.dev/hooks/lib/rules.sh) but was not found in PATH; install it and run this script again." >&2
+    exit 1
+fi
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 git -C "$root" config core.hooksPath .dev/hooks
 git -C "$root" config user.name 'Takayuki Fuwa'

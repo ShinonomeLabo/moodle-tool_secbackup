@@ -3,6 +3,8 @@
 # Every message must be written in Japanese and must not contain any pattern listed in the
 # local pattern file, and every commit must use the repository identity.
 # The rules fail closed: when a tool they depend on fails, the message is rejected.
+# perl is required: it checks the pattern list and the Japanese text. Without it every message is rejected,
+# and install.sh refuses to enable the hooks.
 
 SECBACKUP_IDENTITY='Takayuki Fuwa <fuwa@shinonome.co.jp>'
 secbackup_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -32,9 +34,14 @@ secbackup_is_plain_text() {
 # Prints the patterns of the local pattern file, one per line. The file may come from an editor or a
 # secret, so a CR counts as a line break (CRLF lists work), a UTF-8 BOM at the start of a line is
 # removed, blanks around a pattern are removed (blanks inside it are kept) and lines that are empty
-# after that are skipped. Returns 1 when the file is not plain UTF-8 text or cannot be read completely.
+# after that are skipped. A word must be printable ASCII (0x20-0x7E) once trimmed: any other character
+# (a full-width or no-break space, a zero-width character, a tab inside the word, ...) could make it
+# silently not match. Returns 1 when the file is not plain UTF-8 text, has such a word or cannot be read
+# completely.
 secbackup_patterns() {
-    local line bom=$'\xef\xbb\xbf' statuses
+    # Byte-wise, so that the blank trimming and the ASCII range below do not depend on the locale: bash 3.2
+    # reads a range by the collation order of a UTF-8 locale, which makes it reject ordinary words.
+    local LC_ALL=C line bom=$'\xef\xbb\xbf' statuses
     [ -s "$SECBACKUP_PATTERNS_FILE" ] || return 0
     secbackup_is_plain_text "$SECBACKUP_PATTERNS_FILE" || return 1
     LC_ALL=C tr '\r' '\n' 2>/dev/null < "$SECBACKUP_PATTERNS_FILE" |
@@ -43,6 +50,9 @@ secbackup_patterns() {
             line="${line#"${line%%[![:blank:]]*}"}"
             line="${line%"${line##*[![:blank:]]}"}"
             if [ -n "$line" ]; then
+                case $line in
+                    *[!\ -~]*) exit 1 ;;
+                esac
                 printf '%s\n' "$line"
             fi
         done
@@ -54,7 +64,7 @@ secbackup_patterns() {
 secbackup_check_message() {
     local file="$1" body pattern patterns
     if ! patterns="$(secbackup_patterns)"; then
-        echo "拒む言葉の一覧 ($SECBACKUP_PATTERNS_FILE) を読めませんでした。権限と、UTF-8 の文字だけで書かれていること (NUL などの制御文字がないこと) を確かめてください。" >&2
+        echo "拒む言葉の一覧 ($SECBACKUP_PATTERNS_FILE) を読めませんでした。権限と、言葉が ASCII の印字できる文字だけで書かれていること (全角の空白や NUL などの制御文字がないこと) を確かめてください。" >&2
         return 1
     fi
     # Fail closed: a missing or empty list, or one without any usable pattern, rejects every message.
@@ -70,10 +80,13 @@ secbackup_check_message() {
         echo "コミットのメッセージが空です。" >&2
         return 1
     fi
-    # The words are searched byte-wise (LC_ALL=C), so that no locale can turn the search into an error.
-    # grep exits with 0 when it finds the word, 1 when it does not and 2 or more when it fails.
+    # The words are searched in every line of the file, "#" lines included: git removes "#" lines only when
+    # the message is edited, it keeps them for -m and -F, and the stored messages that pre-push and
+    # check-history.sh read are final text. Only the empty and Japanese checks ignore "#" lines.
+    # The search is byte-wise (LC_ALL=C), so that no locale can turn it into an error. grep exits with 0
+    # when it finds the word, 1 when it does not and 2 or more when it fails.
     while IFS= read -r pattern; do
-        printf '%s' "$body" | LC_ALL=C grep -qiF -- "$pattern"
+        LC_ALL=C grep -qiF -- "$pattern" "$file"
         case $? in
             0)
                 echo "コミットのメッセージに、使えない言葉が入っています。" >&2
