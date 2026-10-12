@@ -41,7 +41,9 @@ final class base64url {
      * @return string|null Binary data.
      */
     public static function decode(string $text): ?string {
-        if (preg_match('/^[A-Za-z0-9_-]+$/', $text) !== 1) {
+        // Use \z rather than $, which lets a final line break through. Libsodium refuses a length that cannot occur
+        // and a last character with bits set that the encoder never writes.
+        if (preg_match('/^[A-Za-z0-9_-]+\z/', $text) !== 1) {
             return null;
         }
         try {

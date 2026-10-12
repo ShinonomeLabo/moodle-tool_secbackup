@@ -51,6 +51,8 @@ final class base64url_test extends \basic_testcase {
             'standard alphabet' => ['+/8A'],
             'space' => ['YW Jj'],
             'impossible length' => ['A'],
+            'trailing line break' => ["YQ\n"],
+            'non-canonical last character' => ['YR'],
         ];
     }
 
