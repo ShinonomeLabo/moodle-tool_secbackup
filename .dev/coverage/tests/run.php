@@ -2,25 +2,50 @@
 // Tests for .dev/coverage/merge.php. Run: php .dev/coverage/tests/run.php
 // Development only; not part of the plugin package.
 
+if (PHP_SAPI !== 'cli') {
+    exit(1);
+}
+
 $here = __DIR__;
 $merge = escapeshellarg(dirname($here) . '/merge.php');
 $fixtures = $here . '/fixtures';
 $pass = 0;
 $fail = 0;
+$temporary = [];
 
 /**
  * Runs merge.php and returns [exit code, output].
  *
  * @param string $args Command line arguments.
+ * @param bool $withroot Whether to look for the shipped files in the tree of stand-ins of the fixtures (default), not in
+ *                       the plugin.
  * @return array
  */
-function secbk_run_merge(string $args): array {
-    global $merge;
+function secbk_run_merge(string $args, bool $withroot = true): array {
+    global $merge, $fixtures;
+    if ($withroot) {
+        $args = "--root=$fixtures/source $args";
+    }
     $output = [];
     $code = 0;
     // Development tooling may run commands; the plugin itself never does.
     \exec("php $merge $args 2>&1", $output, $code);
     return [$code, implode("\n", $output)];
+}
+
+/**
+ * Writes a report for one test and remembers it for the clean-up at the end.
+ *
+ * @param string $content Content of the file.
+ * @param string $extension json or xml.
+ * @return string The path.
+ */
+function secbk_temp_report(string $content, string $extension = 'json'): string {
+    global $temporary;
+    $path = sys_get_temp_dir() . '/secbk-merge-test-' . getmypid() . '-' . count($temporary) . '.' . $extension;
+    file_put_contents($path, $content);
+    $temporary[] = $path;
+    return $path;
 }
 
 /**
@@ -79,5 +104,119 @@ secbk_expect('an executable line that did not run is a miss', $code === 1 && str
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $fixtures/run-line27.json $fixtures/run-line30.json");
 secbk_expect('the tables of several runs are united', $code === 0 && str_contains($out, 'Total: 2/2 lines (100.00%)'), $out);
 
+// A report of the collector that is lost or damaged must stop the merge: the tables of the runs decide the denominator, so
+// a run that is dropped without a word could turn a failure into a pass.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $fixtures/does-not-exist.json");
+secbk_expect('a missing JSON exits 2', $code === 2 && str_contains($out, 'does-not-exist.json'), $out);
+
+$plugin = '/var/www/html/admin/tool/secbackup';
+$damaged = [
+    'a truncated JSON' => '{"files": {"' . $plugin . '/db/b.php": [27, 3',
+    'an empty JSON file' => '',
+    'a JSON that is not an object' => '"text"',
+    'a JSON object without files' => '{"executable": {}}',
+    'an empty JSON object' => '{}',
+    'files that is not a map' => '{"files": "x"}',
+    'a file that maps to a number' => '{"files": {"' . $plugin . '/db/b.php": 5}}',
+    'a line number that is a string' => '{"files": {"' . $plugin . '/db/b.php": ["27"]}}',
+    'a line number that is a float' => '{"files": {"' . $plugin . '/db/b.php": [27.5]}}',
+    'a file that maps to a map' => '{"files": {"' . $plugin . '/db/b.php": {"a": 27}}}',
+    'executable that is not a map' => '{"files": {}, "executable": 3}',
+    'a table that is not a list' => '{"files": {}, "executable": {"' . $plugin . '/db/b.php": 27}}',
+];
+foreach ($damaged as $label => $content) {
+    $file = secbk_temp_report($content);
+    [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $file");
+    secbk_expect("$label exits 2", $code === 2 && str_contains($out, $file), $out);
+}
+
+// The same holds for a Clover report that is missing or damaged.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $fixtures/does-not-exist.xml");
+secbk_expect('a missing Clover exits 2', $code === 2 && str_contains($out, 'does-not-exist.xml'), $out);
+
+$file = secbk_temp_report('<coverage><project><file name="' . $plugin . '/db/b.php"><line num="27" type="stm', 'xml');
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $file");
+secbk_expect('a truncated Clover exits 2', $code === 2 && str_contains($out, $file), $out);
+
+// A run that executed nothing writes "files" as an empty list; that is a good report and the lines stay misses.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $fixtures/run-nothing-executed.json");
+secbk_expect('a run that executed nothing is accepted', $code === 1 && str_contains($out, "db/b.php: 27, 30\n"), $out);
+
+// Nothing to count must not read as a pass.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-empty.txt $fixtures/phpunit.xml");
+secbk_expect('an empty list of shipped files exits 2', $code === 2 && str_contains($out, 'shipped-empty.txt'), $out);
+
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-a.txt $fixtures/phpunit-nostmt.xml");
+secbk_expect('no statement at all fails', $code === 1 && str_contains($out, 'no statement was counted'), $out);
+
+// A file whose statements are all outside the table of the runs has nothing left to count: it fails by name.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-lib.txt $fixtures/phpunit-lib.xml $fixtures/run-lib-disjoint.json");
+secbk_expect('a table that does not overlap the statements fails', $code === 1, $out);
+secbk_expect('names the file and its lines', str_contains($out, 'lib.php: nothing to count') && str_contains($out, '10-12'), $out);
+
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-a-lib.txt $fixtures/phpunit-a-lib.xml $fixtures/run-a-lib.json");
+secbk_expect(
+    'a file with nothing to count fails next to a good file',
+    $code === 1 && str_contains($out, 'lib.php: nothing to count') && str_contains($out, 'Total: 3/3 lines (100.00%)'),
+    $out
+);
+
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-lib.txt $fixtures/phpunit-lib.xml $fixtures/run-lib-empty.json");
+secbk_expect('an empty table fails', $code === 1, $out);
+secbk_expect('names the file of the empty table', str_contains($out, 'lib.php: nothing to count'), $out);
+
+// The lines that the table of the runs takes away are listed, so that nobody has to trust the 100%.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-access.txt $fixtures/phpunit-access.xml $fixtures/run-access.json");
+secbk_expect('lists the lines that pcov does not count', str_contains($out, "db/access.php: not executable per pcov: 25, 29-35\n"), $out);
+secbk_expect('counts the line that pcov counts', $code === 0 && str_contains($out, 'Total: 1/1 lines (100.00%)'), $out);
+
+// Lines that php-code-coverage removes with an annotation never reach the Clover, so the source is searched.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-ignore.txt $fixtures/phpunit-ignore.xml");
+secbk_expect('codeCoverageIgnore in a shipped file fails', $code === 1, $out);
+secbk_expect('names the line of the annotation', str_contains($out, 'db/ignored.php:3:'), $out);
+secbk_expect('finds the start of a block', str_contains($out, 'db/ignored-block.php:2:'), $out);
+secbk_expect('finds the end of a block in any case', str_contains($out, 'db/ignored-block.php:4:'), $out);
+
+// The source of a shipped file is looked up in the plugin unless --root says otherwise.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-real.txt $fixtures/phpunit-real.xml", false);
+secbk_expect('the plugin is the default source root', $code === 0 && str_contains($out, 'Total: 6/6 lines (100.00%)'), $out);
+
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-nosource.txt $fixtures/phpunit-a.xml");
+secbk_expect('a shipped file without a source exits 2', $code === 2 && str_contains($out, 'classes/missing-source.php'), $out);
+
+// A report must not name a file outside tests/ and .dev/ that the release does not contain (an uncommitted file).
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-a.txt $fixtures/phpunit-extra.xml");
+secbk_expect('a file that is not on the release list fails', $code === 1, $out);
+secbk_expect(
+    'names the file of the Clover',
+    str_contains($out, 'in a coverage report but not in the release list: classes/extra.php'),
+    $out
+);
+secbk_expect('files of tests/ are no problem', !str_contains($out, 'tests/generator'), $out);
+
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-a.txt $fixtures/phpunit-a.xml $fixtures/run-extra.json");
+secbk_expect('a file of a JSON report that is not on the release list fails', $code === 1, $out);
+secbk_expect(
+    'names the file of the JSON',
+    str_contains($out, 'in a coverage report but not in the release list: classes/extra2.php'),
+    $out
+);
+secbk_expect('files of .dev/ are no problem', !str_contains($out, 'collector.php'), $out);
+
+// merge.php answers a request to a web server (a checkout of the repository keeps .dev/) with nothing.
+$cgi = [];
+\exec('command -v php-cgi 2>/dev/null', $cgi);
+if ($cgi === []) {
+    echo "SKIP: php-cgi was not found, so the refusal to run outside the command line is not tested\n";
+} else {
+    $output = [];
+    $code = 0;
+    \exec(escapeshellarg($cgi[0]) . " -q -f $merge 2>&1", $output, $code);
+    secbk_expect('merge.php refuses to run outside the command line', $code === 1 && implode('', $output) === '', "exit $code: " . implode("\n", $output));
+}
+
+foreach ($temporary as $path) {
+    @unlink($path);
+}
 echo "merge: {$pass} passed, {$fail} failed\n";
 exit($fail === 0 ? 0 : 1);

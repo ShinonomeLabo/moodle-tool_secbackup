@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1">
+  <project timestamp="1">
+    <file name="/var/www/html/public/admin/tool/secbackup/db/ignored.php">
+      <line num="2" type="stmt" count="1"/>
+    </file>
+    <file name="/var/www/html/public/admin/tool/secbackup/db/ignored-block.php">
+      <line num="3" type="stmt" count="1"/>
+    </file>
+  </project>
+</coverage>
