@@ -201,6 +201,22 @@ final class developer_settings_test extends \advanced_testcase {
             'key is a list' => [['trustedkeys' => [['a']]], 'standard base64'],
             'key is nothing' => [['trustedkeys' => [null]], 'standard base64'],
             'switch as number' => [['skipnetworkchecks' => 1], 'skipnetworkchecks must be true or false'],
+            'key with a leading blank' => [['trustedkeys' => [' ' . envelope_builder::PUBLIC_KEY]], 'standard base64'],
+            'key with a final line break' => [['trustedkeys' => [envelope_builder::PUBLIC_KEY . "\n"]], 'standard base64'],
+            'key with a line break inside' => [
+                ['trustedkeys' => [substr_replace(envelope_builder::PUBLIC_KEY, "\n", 20, 0)]],
+                'standard base64',
+            ],
+            'key without the padding' => [['trustedkeys' => [rtrim(envelope_builder::PUBLIC_KEY, '=')]], 'standard base64'],
+            'key with stray bits in the last character' => [
+                ['trustedkeys' => [substr(envelope_builder::PUBLIC_KEY, 0, 42) . 'x=']],
+                'standard base64',
+            ],
+            'trusted keys null' => [['trustedkeys' => null], 'trustedkeys must be an array'],
+            'first switch null' => [['allowhttp' => null], 'allowhttp must be true or false'],
+            'last switch null' => [['skipnetworkchecks' => null], 'skipnetworkchecks must be true or false'],
+            'name of one letter' => [['a' => 1], 'Unknown setting: a.'],
+            'name of 32 letters' => [[str_repeat('a', 32) => 1], 'Unknown setting: ' . str_repeat('a', 32) . '.'],
         ];
     }
 
@@ -219,6 +235,67 @@ final class developer_settings_test extends \advanced_testcase {
         } catch (\moodle_exception $e) {
             $this->assertSame('developersettings_invalid', $e->errorcode);
             $this->assertStringContainsString($reason, $e->debuginfo);
+        }
+    }
+
+    /**
+     * Names that do not look like the name of a setting.
+     *
+     * @return array
+     */
+    public static function odd_name_provider(): array {
+        return [
+            'a key and its value swapped' => [envelope_builder::PUBLIC_KEY],
+            'upper case letters' => ['AllowHttp'],
+            'a digit' => ['allowhttp2'],
+            'a dash' => ['allow-http'],
+            'a name of 33 letters' => [str_repeat('a', 33)],
+            'a line break at the end' => ["bogus\n"],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('odd_name_provider')]
+    /**
+     * A name that does not look like the name of a setting is refused without being printed.
+     *
+     * @dataProvider odd_name_provider
+     * @param string $name The name, used as a key of the value.
+     */
+    public function test_an_odd_name_is_not_printed(string $name): void {
+        try {
+            developer_settings::from_value([$name => true]);
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('developersettings_invalid', $e->errorcode);
+            $this->assertSame(
+                'Unknown setting. Names that do not look like the name of a setting are not shown.',
+                $e->debuginfo
+            );
+            $this->assertStringNotContainsString($name, $e->getMessage());
+        }
+    }
+
+    public function test_a_list_has_no_names_to_print(): void {
+        try {
+            developer_settings::from_value(['allowhttp']);
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame(
+                'Unknown setting. Names that do not look like the name of a setting are not shown.',
+                $e->debuginfo
+            );
+        }
+    }
+
+    public function test_names_that_look_right_are_listed_and_the_others_are_not(): void {
+        try {
+            developer_settings::from_value(['bogus' => 1, 'Odd Name' => 2, 'other' => 3]);
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame(
+                'Unknown setting: bogus, other. Names that do not look like the name of a setting are not shown.',
+                $e->debuginfo
+            );
         }
     }
 

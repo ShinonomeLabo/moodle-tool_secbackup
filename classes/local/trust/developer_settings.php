@@ -89,29 +89,48 @@ final class developer_settings {
         }
         $unknown = array_diff(array_keys($value), array_merge(['trustedkeys'], self::SWITCHES));
         if ($unknown !== []) {
-            throw self::invalid('Unknown setting: ' . implode(', ', $unknown) . '.');
+            throw self::invalid(self::unknown_reason($unknown));
         }
-        $keys = $value['trustedkeys'] ?? [];
+        // An explicit null is a value of the wrong type, not a setting that is left out.
+        $keys = array_key_exists('trustedkeys', $value) ? $value['trustedkeys'] : [];
         if (!is_array($keys)) {
             throw self::invalid('trustedkeys must be an array.');
         }
         $rawkeys = [];
         foreach ($keys as $key) {
             $raw = is_string($key) ? base64_decode($key, true) : false;
-            if ($raw === false || strlen($raw) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {
+            // Only the canonical text is accepted: the bytes have to encode back to the same text, which rules out blanks,
+            // line breaks, a missing "=" and stray bits in the last character.
+            if ($raw === false || strlen($raw) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES || base64_encode($raw) !== $key) {
                 throw self::invalid('Each trusted key must be the standard base64 of a 32-byte Ed25519 public key.');
             }
             $rawkeys[] = $raw;
         }
         $switches = [];
         foreach (self::SWITCHES as $name) {
-            $switch = $value[$name] ?? false;
+            $switch = array_key_exists($name, $value) ? $value[$name] : false;
             if (!is_bool($switch)) {
                 throw self::invalid($name . ' must be true or false.');
             }
             $switches[$name] = $switch;
         }
         return new self($rawkeys, $switches);
+    }
+
+    /**
+     * Describes setting names that are not known. A name is printed only if it looks like the name of a setting (1 to 32
+     * lower case letters). Anything else, for example a key and its value that were swapped by mistake, is not printed.
+     *
+     * @param array $names The keys of the value that are not settings.
+     * @return string Reason in English.
+     */
+    private static function unknown_reason(array $names): string {
+        $listed = array_filter($names, static fn($name): bool => is_string($name) && preg_match('/^[a-z]{1,32}\z/', $name) === 1);
+        $reason = $listed === [] ? 'Unknown setting.' : 'Unknown setting: ' . implode(', ', $listed) . '.';
+        if (count($listed) < count($names)) {
+            $reason .= ' Names that do not look like the name of a setting are not shown.';
+        }
+        return $reason;
     }
 
     /**
