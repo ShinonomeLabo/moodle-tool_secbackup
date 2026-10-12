@@ -27,6 +27,10 @@
 
 require_once(__DIR__ . '/../../../../../lib/behat/behat_base.php');
 
+use Behat\Mink\Exception\ExpectationException;
+use tool_secbackup\local\trust\developer_settings;
+use tool_secbackup\local\trust\sec_trust;
+
 /**
  * Behat steps of tool_secbackup.
  *
@@ -68,5 +72,60 @@ class behat_tool_secbackup extends behat_base {
             throw new \Exception("The Japanese language pack cannot be written to $file.");
         }
         get_string_manager()->reset_caches();
+    }
+
+    /**
+     * Checks that developer settings, put where the database or a cache of Moodle could put them, are not used.
+     *
+     * Behat is not PHPUnit, so here the plugin reads the constant of config.php and nothing else. The step puts the
+     * settings in $CFG and in the copy of config.php that Moodle keeps in it, as the database and the caches could, and
+     * checks that neither the settings nor the trusted keys change. The step takes the settings out again.
+     *
+     * @Then /^developer settings that the database or a cache could provide are ignored$/
+     */
+    public function developer_settings_that_the_database_or_a_cache_could_provide_are_ignored(): void {
+        global $CFG;
+
+        $publickey = sodium_crypto_sign_publickey(sodium_crypto_sign_keypair());
+        $planted = [
+            'trustedkeys' => [base64_encode($publickey)],
+            'allowhttp' => true,
+            'allowprivatehosts' => true,
+            'skipnetworkchecks' => true,
+        ];
+        // What config.php gives this site: nothing, or the constant that the site defines.
+        $expected = developer_settings::from_value(defined('TOOL_SECBACKUP_DEVELOPER') ? TOOL_SECBACKUP_DEVELOPER : null);
+
+        $hadsetting = property_exists($CFG, 'tool_secbackup_developer');
+        $setting = $CFG->tool_secbackup_developer ?? null;
+        $hadcopy = property_exists($CFG, 'config_php_settings');
+        $copy = $CFG->config_php_settings ?? null;
+        try {
+            $CFG->tool_secbackup_developer = $planted;
+            $CFG->config_php_settings = ['tool_secbackup_developer' => $planted] + (is_array($copy) ? $copy : []);
+            $actual = developer_settings::current();
+            $keyids = sec_trust::current()->key_ids();
+        } finally {
+            if ($hadsetting) {
+                $CFG->tool_secbackup_developer = $setting;
+            } else {
+                unset($CFG->tool_secbackup_developer);
+            }
+            if ($hadcopy) {
+                $CFG->config_php_settings = $copy;
+            } else {
+                unset($CFG->config_php_settings);
+            }
+        }
+
+        if ($actual != $expected) {
+            throw new ExpectationException(
+                'The plugin used developer settings that config.php did not define.',
+                $this->getSession()
+            );
+        }
+        if (in_array(sec_trust::kid($publickey), $keyids, true)) {
+            throw new ExpectationException('The plugin trusts a key that config.php did not give it.', $this->getSession());
+        }
     }
 }
