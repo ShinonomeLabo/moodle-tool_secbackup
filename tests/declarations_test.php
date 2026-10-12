@@ -82,6 +82,16 @@ final class declarations_test extends \advanced_testcase {
         $this->assertStringNotContainsStringIgnoringCase('moodle', self::strings('ja')['pluginname']);
     }
 
+    public function test_japanese_strings_call_the_plugin_a_linking_tool(): void {
+        // The plugin has one name in the Japanese strings. Written as escapes to keep this file ASCII.
+        $strings = self::strings('ja');
+        foreach ($strings as $id => $text) {
+            $this->assertStringNotContainsString("\u{30D7}\u{30E9}\u{30B0}\u{30A4}\u{30F3}", $text, $id);
+        }
+        $this->assertStringContainsString("\u{9023}\u{643A}\u{30C4}\u{30FC}\u{30EB}", $strings['privacy:metadata:service']);
+        $this->assertStringContainsString("\u{9023}\u{643A}\u{30C4}\u{30FC}\u{30EB}", $strings['envelope_untrusted']);
+    }
+
     public function test_japanese_strings_have_no_emoji(): void {
         foreach (self::strings('ja') as $id => $text) {
             $this->assertSame(0, preg_match('/[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]/u', $text), $id);
