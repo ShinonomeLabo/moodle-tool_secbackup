@@ -73,9 +73,22 @@ final class sec_trust_test extends \advanced_testcase {
     }
 
     public function test_no_production_key_is_embedded_yet(): void {
+        global $CFG;
         // The release plan embeds the production keys. When it does, this test fails on purpose:
         // replace it with a test of the embedded key IDs.
+        // The developer keys that this site's config.php may hold must not change the result.
+        $this->resetAfterTest();
+        unset($CFG->tool_secbackup_developer);
         $this->assertSame([], sec_trust::current()->key_ids());
+    }
+
+    public function test_a_key_id_made_of_digits_is_still_text(): void {
+        // PHP turns an array key such as "8074968321729597" into an integer. The key IDs have to come back as text.
+        $builder = new envelope_builder(str_repeat('00', 30) . '0d07');
+        $this->assertSame('8074968321729597', $builder->kid());
+        $trust = new sec_trust([base64_decode($builder->public_key_base64())]);
+        $this->assertSame(['8074968321729597'], $trust->key_ids());
+        $this->assertSame('enrollment', $trust->open($builder->body(['type' => 'enrollment']))['type']);
     }
 
     public function test_current_adds_the_developer_keys(): void {
@@ -166,6 +179,7 @@ final class sec_trust_test extends \advanced_testcase {
             'too large but signed' => [self::padded_body(sec_trust::MAX_BODY + 1)],
             'short key id' => [json_encode(['kid' => substr($good['kid'], 0, 15)] + $good)],
             'long key id' => [json_encode(['kid' => $good['kid'] . '0'] + $good)],
+            'key id with a line break' => [json_encode(['kid' => $good['kid'] . "\n"] + $good)],
             'key id is a list' => [json_encode(['kid' => [1]] + $good)],
             'payload is a number' => [json_encode(['payload' => 123] + $good)],
             'payload is empty' => [json_encode(['payload' => ''] + $good)],

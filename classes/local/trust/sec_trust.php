@@ -84,7 +84,8 @@ final class sec_trust {
      * @return string[]
      */
     public function key_ids(): array {
-        return array_keys($this->keys);
+        // PHP makes an integer of an array key that is all decimal digits, so give the IDs back as text.
+        return array_map(static fn(int|string $kid): string => (string) $kid, array_keys($this->keys));
     }
 
     /**
@@ -130,10 +131,11 @@ final class sec_trust {
     private static function well_formed(array $envelope): bool {
         $names = array_keys($envelope);
         sort($names);
+        // Use \z rather than $, which lets a final line break through.
         return $names === ['kid', 'payload', 'sig', 'v']
             && $envelope['v'] === 1
             && is_string($envelope['kid'])
-            && preg_match('/^[0-9a-f]{16}$/', $envelope['kid']) === 1
+            && preg_match('/^[0-9a-f]{16}\z/', $envelope['kid']) === 1
             && is_string($envelope['payload'])
             && is_string($envelope['sig']);
     }
