@@ -78,6 +78,9 @@ final class signing_keys_test extends \advanced_testcase {
         $loaded = signing_keys::load();
         $this->assertNotNull($loaded);
         $this->assertSame($pair->public_key(), $loaded->public_key());
+        // The public key is a copy of the second half of the secret: the first half has to come back as well.
+        $signature = $loaded->sign('message');
+        $this->assertTrue(sodium_crypto_sign_verify_detached($signature, 'message', $pair->public_key()));
 
         signing_keys::forget();
         $this->assertNull(signing_keys::load());
