@@ -1,8 +1,14 @@
 # Development environments
 
 One environment per Moodle version and database, built with moodle-docker.
-Large files live outside the repository in `SECBK_ENV_ROOT`
-(default `~/work/secbackup-env`).
+Large files (the Moodle checkouts, moodle-docker and moodle-plugin-ci) live outside the repository, in the
+directory `SECBK_ENV_ROOT` (default `$HOME/secbackup-env`). To keep them somewhere else on your machine, export
+`SECBK_ENV_ROOT` or write it once into the untracked file `.dev/env/local.env`, which `env.sh` reads (so every
+script here does) and `.gitignore` lists:
+
+    SECBK_ENV_ROOT="$HOME/work/secbackup-env"
+
+An exported `SECBK_ENV_ROOT` wins over `local.env`, which wins over the default.
 
     .dev/env/setup.sh 503                  # clone Moodle 5.3, moodle-docker and moodle-plugin-ci (once)
     .dev/env/up.sh 503 pgsql               # start the containers

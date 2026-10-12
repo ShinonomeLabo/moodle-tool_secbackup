@@ -33,7 +33,15 @@ esac
 secbk_php="${SECBK_PHP:-$secbk_php}"
 
 SECBK_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SECBK_ENV_ROOT="${SECBK_ENV_ROOT:-$HOME/work/secbackup-env}"
+# SECBK_ENV_ROOT is the directory that holds the Moodle checkouts, moodle-docker and moodle-plugin-ci. A value in the
+# caller's environment wins; else the untracked file .dev/env/local.env may set it for this machine; else the default.
+secbk_caller_env_root="${SECBK_ENV_ROOT:-}"
+if [ -f "$SECBK_REPO/.dev/env/local.env" ]; then
+    # shellcheck source=/dev/null
+    source "$SECBK_REPO/.dev/env/local.env"
+fi
+SECBK_ENV_ROOT="${secbk_caller_env_root:-${SECBK_ENV_ROOT:-$HOME/secbackup-env}}"
+unset secbk_caller_env_root
 SECBK_MOODLE="$SECBK_ENV_ROOT/moodle-$secbk_ver"
 SECBK_DOCKER="$SECBK_ENV_ROOT/moodle-docker-$secbk_ver"
 SECBK_BRANCH="$secbk_branch"

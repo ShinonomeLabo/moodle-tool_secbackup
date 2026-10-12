@@ -2,3 +2,4 @@
 .dev/ci/out/
 .dev/coverage/out/
 .DS_Store
+.dev/env/local.env
