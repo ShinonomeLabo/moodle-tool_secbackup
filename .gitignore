@@ -3,3 +3,6 @@
 .dev/coverage/out/
 .DS_Store
 .dev/env/local.env
+/phpunit.xml
+/tests/phpunit.xml
+/.phpunit.cache/

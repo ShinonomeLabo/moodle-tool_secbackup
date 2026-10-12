@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1">
+  <project timestamp="1">
+    <file name="/var/www/html/public/admin/tool/secbackup/classes/a.php">
+      <line num="3" type="stmt" count="1"/>
+      <line num="4" type="stmt" count="0"/>
+      <line num="5" type="stmt" count="2"/>
+    </file>
+    <file name="/var/www/html/public/admin/tool/secbackup/index.php">
+      <line num="20" type="stmt" count="0"/>
+      <line num="21" type="stmt" count="0"/>
+    </file>
+    <metrics files="2" statements="5" coveredstatements="2"/>
+  </project>
+</coverage>
