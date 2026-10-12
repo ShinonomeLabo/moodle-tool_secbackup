@@ -22,7 +22,8 @@ use tool_secbackup\local\trust\developer_settings;
  * The connection URL of the backup service, in a normal form.
  *
  * Only one strict shape is accepted, without parse_url(), so that the URL means the same thing
- * here, in Moodle's HTTP security checks and in curl.
+ * here, in Moodle's HTTP security checks and in curl. A pattern that has to match the whole text
+ * ends with \z and not with $, which also matches before a final line feed.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -77,7 +78,7 @@ final class endpoint {
         }
         if (
             strlen($text) > self::MAX_LENGTH
-            || preg_match('~^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$~s', $text, $m) !== 1
+            || preg_match('~^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?\z~s', $text, $m) !== 1
         ) {
             throw new endpoint_exception('endpoint_invalid');
         }
@@ -97,7 +98,7 @@ final class endpoint {
         }
         $path = rtrim($m[3], '/');
         if (
-            ($path !== '' && preg_match('~^(/[A-Za-z0-9._\~-]+)+$~', $path) !== 1)
+            ($path !== '' && preg_match('~^(/[A-Za-z0-9._\~-]+)+\z~', $path) !== 1)
             || preg_match('~/\.\.?(/|$)~', $path) === 1
         ) {
             throw new endpoint_exception('endpoint_path');
@@ -125,7 +126,7 @@ final class endpoint {
         $port = substr($authority, $colon + 1);
         $number = (int) $port;
         if (
-            preg_match('/^[0-9]{1,5}$/', $port) !== 1 || $number < 1 || $number > 65535
+            preg_match('/^[0-9]{1,5}\z/', $port) !== 1 || $number < 1 || $number > 65535
             || ($number !== $defaultport && !$settings->allow_private_hosts())
         ) {
             throw new endpoint_exception('endpoint_port');
@@ -145,7 +146,7 @@ final class endpoint {
         if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
             return $private;
         }
-        if (strlen($host) > 253 || preg_match('/^' . self::LABEL . '(\.' . self::LABEL . ')*$/', $host) !== 1) {
+        if (strlen($host) > 253 || preg_match('/^' . self::LABEL . '(\.' . self::LABEL . ')*\z/', $host) !== 1) {
             return false;
         }
         $labels = explode('.', $host);
@@ -218,7 +219,7 @@ final class endpoint {
      * @return string
      */
     public function path_of(string $relative): string {
-        if (preg_match('~^[a-z][a-z0-9-]*(/[a-z0-9-]+)*$~', $relative) !== 1) {
+        if (preg_match('~^[a-z][a-z0-9-]*(/[a-z0-9-]+)*\z~', $relative) !== 1) {
             throw new \coding_exception('Unexpected API path: ' . $relative);
         }
         return $this->path . '/' . $relative;

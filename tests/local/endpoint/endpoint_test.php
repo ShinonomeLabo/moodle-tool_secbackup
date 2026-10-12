@@ -119,6 +119,16 @@ final class endpoint_test extends \basic_testcase {
         endpoint::parse(self::URL, self::production())->join('../admin');
     }
 
+    public function test_join_refuses_a_name_that_ends_with_a_line_feed(): void {
+        $this->expectException(\coding_exception::class);
+        endpoint::parse(self::URL, self::production())->join("status\n");
+    }
+
+    public function test_path_of_refuses_a_name_that_ends_with_a_line_feed(): void {
+        $this->expectException(\coding_exception::class);
+        endpoint::parse(self::URL, self::production())->path_of("status\n");
+    }
+
     /**
      * URLs refused in production, with the reason.
      *
@@ -153,6 +163,18 @@ final class endpoint_test extends \basic_testcase {
             'encoded dot segment' => ['https://lms-backup.example.com/api/%2e%2e/admin', 'endpoint_path'],
             'empty segment' => ['https://lms-backup.example.com//api', 'endpoint_path'],
             'space in path' => ['https://lms-backup.example.com/api v1', 'endpoint_path'],
+            // The end of a pattern written with "$" also matches before a final line feed, so a line feed that ends the host,
+            // the port or the path must not slip through. Each row gives the code of the part that carries the character.
+            'line feed ending the path' => ["https://lms-backup.example.com/api\n/", 'endpoint_path'],
+            'line feed after the host' => ["https://lms-backup.example.com\n/api/lms-backup/v1", 'endpoint_host'],
+            'carriage return after the host' => ["https://lms-backup.example.com\r/api/lms-backup/v1", 'endpoint_host'],
+            'tab after the host' => ["https://lms-backup.example.com\t/api/lms-backup/v1", 'endpoint_host'],
+            'line feed before the port' => ["https://lms-backup.example.com\n:443/api/lms-backup/v1", 'endpoint_host'],
+            'carriage return before the port' => ["https://lms-backup.example.com\r:443/api/lms-backup/v1", 'endpoint_host'],
+            'tab before the port' => ["https://lms-backup.example.com\t:443/api/lms-backup/v1", 'endpoint_host'],
+            'line feed after the port' => ["https://lms-backup.example.com:443\n/api/lms-backup/v1", 'endpoint_port'],
+            'carriage return after the port' => ["https://lms-backup.example.com:443\r/api/lms-backup/v1", 'endpoint_port'],
+            'tab after the port' => ["https://lms-backup.example.com:443\t/api/lms-backup/v1", 'endpoint_port'],
         ];
     }
 
@@ -207,7 +229,8 @@ final class endpoint_test extends \basic_testcase {
     public function test_development_settings_keep_the_other_rules(): void {
         $refused = ['http://localhost:0/api' => 'endpoint_port', 'http://localhost:65536/api' => 'endpoint_port',
             'http://[::1]/api' => 'endpoint_host', 'http://127.1/api' => 'endpoint_host',
-            'http://fakesec/api?x' => 'endpoint_query'];
+            'http://fakesec/api?x' => 'endpoint_query',
+            "http://localhost\n:8099/api" => 'endpoint_host', "http://localhost:8099\n/api" => 'endpoint_port'];
         foreach ($refused as $input => $code) {
             try {
                 endpoint::parse($input, self::development());
