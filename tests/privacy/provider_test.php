@@ -41,7 +41,7 @@ final class provider_test extends \core_privacy\tests\provider_testcase {
     }
 
     public function test_metadata_strings_exist(): void {
-        $this->assertNotEmpty(get_string('privacy:metadata:service', 'tool_secbackup'));
-        $this->assertNotEmpty(get_string('privacy:metadata:service:sitedata', 'tool_secbackup'));
+        $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:service', 'tool_secbackup'));
+        $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:service:sitedata', 'tool_secbackup'));
     }
 }
