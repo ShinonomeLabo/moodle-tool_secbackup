@@ -27,4 +27,8 @@ defined('MOODLE_INTERNAL') || die();
 $string['pluginname'] = 'あんしんLMSバックアップ';
 $string['privacy:metadata:service'] = 'このプラグインは、このサイトを暗号化したバックアップを、あんしんLMSバックアップのサービスへ送ります。';
 $string['privacy:metadata:service:sitedata'] = 'サイト全体 (全利用者の個人データを含む、バックアップの対象のすべて)。';
+$string['publickey_base64'] = '公開鍵に使えない文字が入っています。プラットフォームの画面から、もう一度コピーしてください。';
+$string['publickey_length'] = '公開鍵が途中で切れています。プラットフォームの画面から、鍵の全体をもう一度コピーしてください。';
+$string['publickey_prefix'] = '公開鍵は「secbk1:」で始まります。プラットフォームの画面から、もう一度コピーしてください。';
 $string['secbackup:manage'] = 'あんしんLMSバックアップとの接続を管理する';
+$string['signingkey_corrupt'] = '保存した署名用の鍵を読めません。登録を解除してから、もう一度登録してください。';

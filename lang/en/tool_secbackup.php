@@ -27,4 +27,8 @@ defined('MOODLE_INTERNAL') || die();
 $string['pluginname'] = 'Shinonome LMS Backup';
 $string['privacy:metadata:service'] = 'The plugin sends encrypted backups of this site to the Shinonome LMS Backup service.';
 $string['privacy:metadata:service:sitedata'] = 'The whole site, including the personal data of all users (everything in the backup).';
+$string['publickey_base64'] = 'The public key contains characters that are not allowed. Copy it again from the platform screen.';
+$string['publickey_length'] = 'The public key is not complete. Copy the whole key again from the platform screen.';
+$string['publickey_prefix'] = 'The public key must start with "secbk1:". Copy it again from the platform screen.';
 $string['secbackup:manage'] = 'Manage the connection to Shinonome LMS Backup';
+$string['signingkey_corrupt'] = 'The stored signing key cannot be read. Remove the registration and register the site again.';
