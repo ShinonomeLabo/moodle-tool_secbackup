@@ -19,6 +19,7 @@ namespace tool_secbackup\privacy;
 use core_privacy\local\metadata\collection;
 use core_privacy\local\metadata\types\external_location;
 
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\privacy\provider::class)]
 /**
  * Tests for the privacy provider.
  *
