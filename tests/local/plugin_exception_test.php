@@ -37,7 +37,8 @@ final class plugin_exception_test extends \advanced_testcase {
     }
 
     public function test_the_key_error_codes_are_language_strings(): void {
-        foreach (['publickey_base64', 'publickey_length', 'publickey_prefix', 'signingkey_corrupt'] as $code) {
+        $codes = ['publickey_base64', 'publickey_length', 'publickey_prefix', 'signingkey_corrupt', 'signingkey_savefailed'];
+        foreach ($codes as $code) {
             $this->assertTrue(get_string_manager()->string_exists($code, 'tool_secbackup'), $code);
         }
     }

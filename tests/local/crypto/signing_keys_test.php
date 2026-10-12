@@ -133,4 +133,99 @@ final class signing_keys_test extends \advanced_testcase {
             }
         }
     }
+
+    public function test_a_failed_encryption_is_reported_without_the_secret(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        // An empty folder for the key of the data root, and Moodle may not create one: encrypt() finds no key.
+        $CFG->secretdataroot = make_request_directory();
+        $CFG->nokeygeneration = true;
+        $pair = signing_keypair::generate();
+        // The part of a string that getTraceAsString() shows is its first 15 characters.
+        $needles = [substr($pair->export_secret(), 0, 15), substr(base64_encode($pair->export_secret()), 0, 15)];
+
+        // Without this a trace holds no arguments, and the checks below would find nothing whatever the code does.
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        $this->assertNotFalse($previous);
+        try {
+            try {
+                self::throw_with_argument('control value');
+            } catch (\Exception $control) {
+                $this->assertTrue(self::trace_shows($control, ['control value']));
+            }
+            try {
+                signing_keys::save($pair);
+                $this->fail('No exception');
+            } catch (key_exception $e) {
+                $this->assertSame('signingkey_savefailed', $e->errorcode);
+                $this->assertNull($e->getPrevious());
+                $this->assertFalse(self::trace_shows($e, $needles));
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+        $this->assertFalse(get_config('tool_secbackup', 'signingsecret'));
+        $this->assertNull(signing_keys::load());
+    }
+
+    /**
+     * Throws an exception whose trace holds the argument, when PHP keeps arguments in traces.
+     *
+     * @param string $argument Any text.
+     * @throws \Exception Always.
+     */
+    private static function throw_with_argument(string $argument): void {
+        throw new \Exception('Control exception for ' . strlen($argument) . ' characters');
+    }
+
+    /**
+     * Tells whether the trace of an exception shows one of the texts, as an argument or in the trace as text.
+     *
+     * @param \Throwable $exception The exception.
+     * @param string[] $needles Texts that must not appear.
+     * @return bool
+     */
+    private static function trace_shows(\Throwable $exception, array $needles): bool {
+        $text = $exception->getMessage() . "\n" . $exception->getTraceAsString();
+        foreach ($needles as $needle) {
+            if (str_contains($text, $needle)) {
+                return true;
+            }
+        }
+        foreach ($exception->getTrace() as $frame) {
+            if (self::argument_shows($frame['args'] ?? [], $needles, 0)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tells whether an argument of a trace holds one of the texts, or is a key pair that holds the secret.
+     *
+     * Before PHP 8.2 the attribute that hides an argument does nothing, so a key pair is not counted there.
+     *
+     * @param mixed $value The argument, or an array of them.
+     * @param string[] $needles Texts that must not appear.
+     * @param int $depth How deep the arrays have been followed.
+     * @return bool
+     */
+    private static function argument_shows($value, array $needles, int $depth): bool {
+        if (is_string($value)) {
+            foreach ($needles as $needle) {
+                if (str_contains($value, $needle)) {
+                    return true;
+                }
+            }
+        } else if ($value instanceof signing_keypair) {
+            return PHP_VERSION_ID >= 80200;
+        } else if (is_array($value) && $depth < 5) {
+            foreach ($value as $item) {
+                if (self::argument_shows($item, $needles, $depth + 1)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 }

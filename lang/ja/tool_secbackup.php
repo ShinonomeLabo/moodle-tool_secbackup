@@ -32,3 +32,4 @@ $string['publickey_length'] = '公開鍵が途中で切れています。プラ�
 $string['publickey_prefix'] = '公開鍵は「secbk1:」で始まります。プラットフォームの画面から、もう一度コピーしてください。';
 $string['secbackup:manage'] = 'あんしんLMSバックアップとの接続を管理する';
 $string['signingkey_corrupt'] = '保存した署名用の鍵を読めません。登録を解除してから、もう一度登録してください。';
+$string['signingkey_savefailed'] = '署名用の鍵を暗号化できなかったため、保存しませんでした。データディレクトリにある暗号鍵のファイルを確かめてから、もう一度試してください。';

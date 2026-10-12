@@ -33,10 +33,21 @@ final class signing_keys {
     /**
      * Saves a key pair after a successful enrolment.
      *
-     * @param signing_keypair $pair The pair.
+     * The type of $pair is written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see
+     * signing_keypair::__construct()). The attribute keeps the pair out of the trace of the exception thrown here.
+     *
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The pair.
+     * @throws key_exception When Moodle cannot encrypt the secret, for example when the data root holds no encryption
+     *     key and Moodle may not create one. The exception of Moodle is not chained: the arguments in its trace
+     *     include the secret.
      */
-    public static function save(signing_keypair $pair): void {
-        set_config(self::SECRET, \core\encryption::encrypt(base64_encode($pair->export_secret())), 'tool_secbackup');
+    public static function save(#[\SensitiveParameter] signing_keypair $pair): void {
+        try {
+            $wrapped = \core\encryption::encrypt(base64_encode($pair->export_secret()));
+        } catch (\moodle_exception) {
+            throw new key_exception('signingkey_savefailed');
+        }
+        set_config(self::SECRET, $wrapped, 'tool_secbackup');
     }
 
     /**

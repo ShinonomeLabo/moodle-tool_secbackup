@@ -32,3 +32,4 @@ $string['publickey_length'] = 'The public key is not complete. Copy the whole ke
 $string['publickey_prefix'] = 'The public key must start with "secbk1:". Copy it again from the platform screen.';
 $string['secbackup:manage'] = 'Manage the connection to Shinonome LMS Backup';
 $string['signingkey_corrupt'] = 'The stored signing key cannot be read. Remove the registration and register the site again.';
+$string['signingkey_savefailed'] = 'The signing key could not be encrypted, so it was not saved. Check the encryption key file in the data directory and try again.';
