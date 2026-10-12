@@ -277,9 +277,10 @@ final class sec_trust_test extends \advanced_testcase {
     }
 
     public function test_the_whole_payload_comes_back(): void {
+        // The site name has multi-byte characters, written as escapes to keep this file ASCII.
         $payload = [
             'type' => 'enrollment',
-            'site_name' => '東雲 / テスト',
+            'site_name' => "\u{5B66}\u{6821} / \u{30C6}\u{30B9}\u{30C8}",
             'nested' => ['list' => [1, 2], 'none' => null, 'flag' => true],
         ];
         $this->assertSame($payload, self::trust()->open((new envelope_builder())->body($payload)));
