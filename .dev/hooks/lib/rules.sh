@@ -6,16 +6,19 @@
 # perl is required: it checks the pattern list and the Japanese text. Without it every message is rejected,
 # and install.sh refuses to enable the hooks.
 
+# git reads a commit through the replacement refs (refs/replace/*), but a push sends the original object. The
+# hooks have to check what is sent, so every git command that runs after this file is sourced ignores them.
+export GIT_NO_REPLACE_OBJECTS=1
+
 SECBACKUP_IDENTITY='Takayuki Fuwa <fuwa@shinonome.co.jp>'
 secbackup_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 : "${SECBACKUP_PATTERNS_FILE:=$secbackup_root/.dev/hooks/patterns.local}"
 
-# Prints the message without git comment lines. Returns 1 when the message cannot be read: grep exits
-# with 1 when no line is left, which is not an error here, and with 2 or more when it fails.
+# Prints the message as git stores it when it is edited: without the "#" lines, and without the scissors line of
+# git commit -v and the diff below it (git drops that line and everything after it). Fails when the message
+# cannot be read, also when sed fails after it printed a part.
 secbackup_strip_comments() {
-    local status=0
-    LC_ALL=C grep -v '^#' "$1" || status=$?
-    [ "$status" -le 1 ]
+    LC_ALL=C sed -e '/^# ------------------------ >8 ------------------------$/,$d' -e '/^#/d' -- "$1"
 }
 
 # Returns 0 when the file is valid UTF-8 text without control characters other than tab, CR and LF.
@@ -80,11 +83,13 @@ secbackup_check_message() {
         echo "コミットのメッセージが空です。" >&2
         return 1
     fi
-    # The words are searched in every line of the file, "#" lines included: git removes "#" lines only when
-    # the message is edited, it keeps them for -m and -F, and the stored messages that pre-push and
-    # check-history.sh read are final text. Only the empty and Japanese checks ignore "#" lines.
+    # The words are searched in every line of the file, "#" lines and the part below the scissors line included:
+    # git removes them only when the message is edited, it keeps them for -m and -F, and the stored messages that
+    # pre-push and check-history.sh read are final text. Only the empty and Japanese checks leave them out.
     # The search is byte-wise (LC_ALL=C), so that no locale can turn it into an error. grep exits with 0
     # when it finds the word, 1 when it does not and 2 or more when it fails.
+    # The loop can fail without running a single round: before bash 5.1 a here-string is written to a temporary
+    # file, and when that fails bash skips the loop. So the status of the loop is checked as well.
     while IFS= read -r pattern; do
         LC_ALL=C grep -qiF -- "$pattern" "$file"
         case $? in
@@ -98,7 +103,10 @@ secbackup_check_message() {
                 return 1
                 ;;
         esac
-    done <<< "$patterns"
+    done <<< "$patterns" || {
+        echo "拒む言葉の一覧で探せませんでした。" >&2
+        return 1
+    }
     if ! printf '%s' "$body" | perl -CSD -ne 'BEGIN { $found = 0 } $found = 1 if /[\p{Hiragana}\p{Katakana}\p{Han}]/; END { exit($found ? 0 : 1) }'; then
         echo "コミットのメッセージは日本語で書いてください (日本語の文字がありません)。" >&2
         return 1
@@ -113,4 +121,28 @@ secbackup_check_identity() {
         return 1
     fi
     return 0
+}
+
+# Usage: secbackup_check_commit <sha> <label>. Checks the stored message of a commit and its author and committer.
+# Returns 1 when the commit breaks a rule or cannot be read; the reasons and "  -> <label>" go to the standard
+# error. pre-push and check-history.sh both check a commit this way, so that the two gates cannot differ.
+secbackup_check_commit() {
+    local commit="$1" label="$2" tmp status=0
+    # With a template, mktemp makes the file in TMPDIR on every system (without one, macOS ignores TMPDIR).
+    if ! tmp="$(mktemp "${TMPDIR:-/tmp}/secbackup-message.XXXXXXXXXX")"; then
+        echo "一時ファイルを作れませんでした。" >&2
+        status=1
+    elif ! git log -1 --format=%B "$commit" > "$tmp"; then
+        # A message that was read only in part must not be checked.
+        echo "コミットのメッセージを読めませんでした。" >&2
+        status=1
+    elif ! secbackup_check_message "$tmp"; then
+        status=1
+    fi
+    [ -z "$tmp" ] || rm -f "$tmp"
+    secbackup_check_identity "$(git log -1 --format='%an <%ae>' "$commit")" || status=1
+    secbackup_check_identity "$(git log -1 --format='%cn <%ce>' "$commit")" || status=1
+    [ "$status" -eq 0 ] && return 0
+    echo "  -> $label" >&2
+    return 1
 }

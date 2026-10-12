@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Checks every commit that is about to be pushed, even if commit-msg was skipped with --no-verify.
-# It fails closed: a range or a commit that cannot be read rejects the push instead of being skipped.
+# Checks every commit that the pushed commits reach, not only the ones the remote lacks: a commit that came from
+# another remote, or from a clone without these hooks, is checked too. This also catches a commit made with
+# --no-verify, which skipped commit-msg.
+# It fails closed: a list of commits or a commit that cannot be read rejects the push instead of being skipped.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/rules.sh
@@ -8,37 +10,18 @@ source "$here/lib/rules.sh"
 
 zero='0000000000000000000000000000000000000000'
 status=0
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
 
 # git ends every line with a newline; a last line without one is still checked, not dropped.
-while read -r localref localsha remoteref remotesha || [ -n "$localref" ]; do
+# The id of the remote ref (the fourth field) is not used: the whole history of the pushed commit is checked.
+while read -r localref localsha remoteref _ || [ -n "$localref" ]; do
     [ "$localsha" = "$zero" ] && continue
-    if [ "$remotesha" = "$zero" ]; then
-        range=("$localsha" --not --remotes)
-    else
-        range=("$remotesha..$localsha")
-    fi
-    if ! commits="$(git rev-list "${range[@]}")"; then
+    if ! commits="$(git rev-list "$localsha")"; then
         echo "  -> $localref -> $remoteref: プッシュするコミットの一覧を取れませんでした。" >&2
         status=1
         continue
     fi
     for commit in $commits; do
-        if ! git log -1 --format=%B "$commit" > "$tmp"; then
-            echo "  -> $commit ($localref -> $remoteref): コミットのメッセージを読めませんでした。" >&2
-            status=1
-            continue
-        fi
-        if ! secbackup_check_message "$tmp"; then
-            echo "  -> $commit ($localref -> $remoteref)" >&2
-            status=1
-        fi
-        if ! secbackup_check_identity "$(git log -1 --format='%an <%ae>' "$commit")" \
-            || ! secbackup_check_identity "$(git log -1 --format='%cn <%ce>' "$commit")"; then
-            echo "  -> $commit ($localref -> $remoteref)" >&2
-            status=1
-        fi
+        secbackup_check_commit "$commit" "$commit ($localref -> $remoteref)" || status=1
     done
 done
 exit $status
