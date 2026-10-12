@@ -95,9 +95,9 @@ final class sec_trust_test extends \advanced_testcase {
         global $CFG;
         // The release plan embeds the production keys. When it does, this test fails on purpose:
         // replace it with a test of the embedded key IDs.
-        // The developer keys that this site's config.php may hold must not change the result.
+        // The developer keys that this site may have set in $CFG must not change the result.
         $this->resetAfterTest();
-        unset($CFG->config_php_settings['tool_secbackup_developer']);
+        unset($CFG->tool_secbackup_developer);
         $this->assertSame([], sec_trust::current()->key_ids());
     }
 
@@ -115,16 +115,6 @@ final class sec_trust_test extends \advanced_testcase {
         (new envelope_builder())->trust();
         $this->assertSame([envelope_builder::KID], sec_trust::current()->key_ids());
         $this->assertSame('enrollment', sec_trust::current()->open(self::FIXED)['type']);
-    }
-
-    public function test_a_key_that_only_cfg_holds_is_not_trusted(): void {
-        global $CFG;
-        $this->resetAfterTest();
-        unset($CFG->config_php_settings['tool_secbackup_developer']);
-        // The way Moodle puts a setting of its database, or of the cache in front of it, into $CFG.
-        $CFG->tool_secbackup_developer = ['trustedkeys' => [envelope_builder::PUBLIC_KEY]];
-        $this->assertSame([], sec_trust::current()->key_ids());
-        $this->expect_failure('envelope_untrusted', self::FIXED, sec_trust::current());
     }
 
     public function test_without_keys_everything_is_untrusted(): void {
@@ -330,7 +320,7 @@ final class sec_trust_test extends \advanced_testcase {
     public function test_current_does_not_ignore_invalid_developer_settings(): void {
         global $CFG;
         $this->resetAfterTest();
-        $CFG->config_php_settings['tool_secbackup_developer'] = ['trustedkey' => []];
+        $CFG->tool_secbackup_developer = ['trustedkey' => []];
         try {
             sec_trust::current();
             $this->fail('No exception');

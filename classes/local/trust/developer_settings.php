@@ -19,12 +19,12 @@ namespace tool_secbackup\local\trust;
 /**
  * Overrides for development and for the staging service, read only from config.php.
  *
- *     $CFG->tool_secbackup_developer = [
+ *     define('TOOL_SECBACKUP_DEVELOPER', [
  *         'trustedkeys' => ['<standard base64 of a 32-byte Ed25519 public key>'],
  *         'allowhttp' => true,
  *         'allowprivatehosts' => true,
  *         'skipnetworkchecks' => true,
- *     ];
+ *     ]);
  *
  * - trustedkeys: response signing keys to trust besides the keys embedded in sec_trust.
  * - allowhttp: accept http:// connection URLs.
@@ -32,10 +32,11 @@ namespace tool_secbackup\local\trust;
  *   and connect without Moodle's HTTP security list.
  * - skipnetworkchecks: skip the pinned root certificates, the name resolution check and the AWS range check.
  *
- * Nothing in the web interface can set these: whoever can edit config.php already controls the server. The value is read
- * from $CFG->config_php_settings, the copy of config.php that Moodle takes before it loads the settings of its database
- * and of the cache in front of it. Moodle copies those into $CFG for every name that config.php does not set, so a value
- * that only $CFG holds could have been written by someone with much less access than config.php.
+ * The settings are a constant because nothing but config.php can define one. Moodle copies the settings of its database and
+ * of the cache in front of it into $CFG, and a cache entry can even replace $CFG->config_php_settings, the copy of config.php
+ * that Moodle keeps there. So neither $CFG nor that copy is a place that only whoever can edit config.php can write to.
+ * Nothing in the web interface can set these: whoever can edit config.php already controls the server.
+ * While PHPUnit runs, the settings are read from $CFG->tool_secbackup_developer instead, so that a test can vary them.
  * While any of them is active, every page of the plugin shows a warning.
  *
  * @package    tool_secbackup
@@ -43,6 +44,9 @@ namespace tool_secbackup\local\trust;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class developer_settings {
+    /** @var string Name of the constant that config.php defines. */
+    public const CONSTANT = 'TOOL_SECBACKUP_DEVELOPER';
+
     /** @var string[] Names of the switches. */
     private const SWITCHES = ['allowhttp', 'allowprivatehosts', 'skipnetworkchecks'];
 
@@ -69,12 +73,31 @@ final class developer_settings {
      * @return self
      */
     public static function current(): self {
-        global $CFG;
-        return self::from_value($CFG->config_php_settings['tool_secbackup_developer'] ?? null);
+        return self::from_value(self::configured_value(defined('PHPUNIT_TEST') && PHPUNIT_TEST));
     }
 
     /**
-     * Reads overrides from a value of $CFG->tool_secbackup_developer.
+     * The value that config.php gave the developer settings, or null when it gave none.
+     *
+     * Outside PHPUnit this is the constant TOOL_SECBACKUP_DEVELOPER and nothing else. Not $CFG, not the copy of config.php
+     * in $CFG->config_php_settings, and not any setting of the database or of a cache: Moodle copies those into $CFG, and
+     * whoever can write to the database or to a cache must not be able to switch the developer settings on. Inside PHPUnit
+     * (the constant PHPUNIT_TEST) the value is $CFG->tool_secbackup_developer, which Moodle resets after each test.
+     *
+     * @param bool $inphpunit Whether PHPUnit is running.
+     * @param string $constant Name of the constant. Only the tests of this class pass another name.
+     * @return mixed The value, or null when there is none.
+     */
+    public static function configured_value(bool $inphpunit, string $constant = self::CONSTANT): mixed {
+        global $CFG;
+        if ($inphpunit) {
+            return $CFG->tool_secbackup_developer ?? null;
+        }
+        return defined($constant) ? constant($constant) : null;
+    }
+
+    /**
+     * Reads overrides from a value of the constant TOOL_SECBACKUP_DEVELOPER.
      *
      * @param mixed $value The value, or null when it is not set.
      * @return self
@@ -85,7 +108,7 @@ final class developer_settings {
             return new self([], array_fill_keys(self::SWITCHES, false));
         }
         if (!is_array($value)) {
-            throw self::invalid('$CFG->tool_secbackup_developer must be an array.');
+            throw self::invalid(self::CONSTANT . ' must be an array.');
         }
         $unknown = array_diff(array_keys($value), array_merge(['trustedkeys'], self::SWITCHES));
         if ($unknown !== []) {

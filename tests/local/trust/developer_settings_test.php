@@ -28,6 +28,9 @@ use tool_secbackup\tests\envelope_builder;
  * @covers     \tool_secbackup\local\trust\developer_settings
  */
 final class developer_settings_test extends \advanced_testcase {
+    /** @var string A name that no constant has. The tests that need a constant that is not defined ask for it. */
+    private const UNDEFINED = 'TOOL_SECBACKUP_TEST_CONSTANT_THAT_IS_NEVER_DEFINED';
+
     public function test_nothing_set_means_production_behaviour(): void {
         $settings = developer_settings::from_value(null);
         $this->assertFalse($settings->is_active());
@@ -37,11 +40,11 @@ final class developer_settings_test extends \advanced_testcase {
         $this->assertFalse($settings->skip_network_checks());
     }
 
-    public function test_reads_config_php(): void {
+    public function test_inside_phpunit_current_reads_cfg(): void {
         global $CFG;
         $this->resetAfterTest();
-        // Moodle keeps a copy of what config.php set in $CFG->config_php_settings, before it loads the database settings.
-        $CFG->config_php_settings['tool_secbackup_developer'] = [
+        // Inside PHPUnit the settings come from $CFG, so that a test can vary them. Moodle resets $CFG after each test.
+        $CFG->tool_secbackup_developer = [
             'trustedkeys' => [envelope_builder::PUBLIC_KEY],
             'allowhttp' => true,
             'allowprivatehosts' => true,
@@ -55,71 +58,108 @@ final class developer_settings_test extends \advanced_testcase {
         $this->assertTrue($settings->skip_network_checks());
     }
 
-    public function test_absent_config_is_not_active(): void {
+    public function test_inside_phpunit_an_absent_cfg_is_not_active(): void {
         global $CFG;
         $this->resetAfterTest();
-        unset($CFG->config_php_settings['tool_secbackup_developer']);
+        unset($CFG->tool_secbackup_developer);
         $this->assertFalse(developer_settings::current()->is_active());
     }
 
-    public function test_a_value_that_only_cfg_holds_is_ignored(): void {
+    public function test_inside_phpunit_the_configured_value_is_cfg_and_not_the_constant(): void {
         global $CFG;
         $this->resetAfterTest();
-        unset($CFG->config_php_settings['tool_secbackup_developer']);
-        // The way Moodle puts a setting of its database, or of the cache in front of it, into $CFG.
+        unset($CFG->tool_secbackup_developer);
+        $this->assertNull(developer_settings::configured_value(true));
+        $CFG->tool_secbackup_developer = ['allowhttp' => true];
+        $this->assertSame(['allowhttp' => true], developer_settings::configured_value(true));
+        // A constant that is defined (PHP_VERSION here) is not looked at.
+        $this->assertSame(['allowhttp' => true], developer_settings::configured_value(true, 'PHP_VERSION'));
+    }
+
+    public function test_outside_phpunit_a_constant_that_is_not_defined_gives_nothing(): void {
+        $this->assertFalse(defined(self::UNDEFINED));
+        $this->assertNull(developer_settings::configured_value(false, self::UNDEFINED));
+    }
+
+    public function test_outside_phpunit_the_value_of_the_constant_is_returned(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        // PHP_VERSION stands for a constant that config.php defined. $CFG does not change what is returned.
+        $this->assertSame(PHP_VERSION, developer_settings::configured_value(false, 'PHP_VERSION'));
+        $CFG->tool_secbackup_developer = ['allowhttp' => true];
+        $this->assertSame(PHP_VERSION, developer_settings::configured_value(false, 'PHP_VERSION'));
+    }
+
+    public function test_outside_phpunit_cfg_is_ignored(): void {
+        global $CFG;
+        $this->resetAfterTest();
         $CFG->tool_secbackup_developer = [
             'trustedkeys' => [envelope_builder::PUBLIC_KEY],
             'allowhttp' => true,
             'allowprivatehosts' => true,
             'skipnetworkchecks' => true,
         ];
-        $settings = developer_settings::current();
-        $this->assertFalse($settings->is_active());
-        $this->assertSame([], $settings->trusted_keys());
-        $this->assertFalse($settings->allow_http());
-        $this->assertFalse($settings->allow_private_hosts());
-        $this->assertFalse($settings->skip_network_checks());
+        $this->assertNull(developer_settings::configured_value(false, self::UNDEFINED));
     }
 
-    public function test_the_copy_of_config_php_wins_over_a_value_in_cfg(): void {
+    public function test_outside_phpunit_the_copy_of_config_php_is_ignored(): void {
         global $CFG;
         $this->resetAfterTest();
         $CFG->config_php_settings['tool_secbackup_developer'] = ['allowhttp' => true];
-        $CFG->tool_secbackup_developer = ['allowprivatehosts' => true];
-        $settings = developer_settings::current();
-        $this->assertTrue($settings->allow_http());
-        $this->assertFalse($settings->allow_private_hosts());
+        $this->assertNull(developer_settings::configured_value(false, self::UNDEFINED));
     }
 
-    public function test_a_row_of_the_config_table_does_not_break_the_settings(): void {
+    public function test_outside_phpunit_a_row_of_the_config_table_is_ignored(): void {
         global $CFG;
         $this->resetAfterTest();
-        unset($CFG->config_php_settings['tool_secbackup_developer']);
-        // A row of that name in the config table reaches $CFG as a text. It used to fail with a message about config.php.
+        // A row of that name in the config table reaches $CFG as a text.
         set_config('tool_secbackup_developer', 'yes');
         $this->assertSame('yes', $CFG->tool_secbackup_developer);
-        $this->assertFalse(developer_settings::current()->is_active());
+        $this->assertNull(developer_settings::configured_value(false, self::UNDEFINED));
     }
 
-    public function test_an_array_in_the_config_cache_does_not_add_a_trusted_key(): void {
+    public function test_outside_phpunit_the_config_cache_cannot_provide_the_settings(): void {
         global $CFG;
         $this->resetAfterTest();
-        unset($CFG->config_php_settings['tool_secbackup_developer']);
-        // Whoever can write to the cache store can put an array there; initialise_cfg() copies the cache into $CFG.
-        $planted = ['trustedkeys' => [envelope_builder::PUBLIC_KEY]];
+        // Whoever can write to the cache store can put anything there. initialise_cfg() copies the cache into $CFG for every
+        // name that the copy of config.php does not list. The copy does not list its own name, so the cache can replace it.
+        $planted = ['trustedkeys' => [envelope_builder::PUBLIC_KEY], 'allowhttp' => true];
         get_config('core');
         $cache = \cache::make('core', 'config');
         try {
             $cached = $cache->get('core');
             $this->assertIsArray($cached);
             $cached['tool_secbackup_developer'] = $planted;
+            $cached['config_php_settings'] = ['tool_secbackup_developer' => $planted];
             $cache->set('core', $cached);
             initialise_cfg();
             $this->assertSame($planted, $CFG->tool_secbackup_developer);
-            $this->assertSame([], developer_settings::current()->trusted_keys());
+            $this->assertSame(['tool_secbackup_developer' => $planted], $CFG->config_php_settings);
+            $this->assertNull(developer_settings::configured_value(false, self::UNDEFINED));
         } finally {
             $cache->delete('core');
         }
+    }
+
+    public function test_config_php_defines_a_constant_with_this_name(): void {
+        $this->assertSame('TOOL_SECBACKUP_DEVELOPER', developer_settings::CONSTANT);
+        $method = new \ReflectionMethod(developer_settings::class, 'configured_value');
+        $this->assertSame('TOOL_SECBACKUP_DEVELOPER', $method->getParameters()[1]->getDefaultValue());
+    }
+
+    public function test_the_reason_for_a_value_that_is_not_an_array_names_the_constant(): void {
+        try {
+            developer_settings::from_value('yes');
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('TOOL_SECBACKUP_DEVELOPER must be an array.', $e->debuginfo);
+        }
+    }
+
+    public function test_the_error_string_names_the_constant(): void {
+        $text = get_string('developersettings_invalid', 'tool_secbackup');
+        $this->assertStringContainsString('TOOL_SECBACKUP_DEVELOPER', $text);
+        $this->assertStringNotContainsString('$CFG', $text);
     }
 
     /**

@@ -82,6 +82,14 @@ final class declarations_test extends \advanced_testcase {
         $this->assertStringNotContainsStringIgnoringCase('moodle', self::strings('ja')['pluginname']);
     }
 
+    public function test_the_invalid_settings_string_names_the_constant_in_both_languages(): void {
+        foreach (['en', 'ja'] as $lang) {
+            $text = self::strings($lang)['developersettings_invalid'];
+            $this->assertStringContainsString('TOOL_SECBACKUP_DEVELOPER', $text, $lang);
+            $this->assertStringNotContainsString('$CFG', $text, $lang);
+        }
+    }
+
     public function test_japanese_strings_call_the_plugin_a_linking_tool(): void {
         // The plugin has one name in the Japanese strings. Written as escapes to keep this file ASCII.
         $strings = self::strings('ja');

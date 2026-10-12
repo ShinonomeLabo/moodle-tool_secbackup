@@ -24,7 +24,7 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$string['developersettings_invalid'] = 'The developer settings in config.php ($CFG->tool_secbackup_developer) are not valid. Turn on debugging to see the reason.';
+$string['developersettings_invalid'] = 'The developer settings in config.php (TOOL_SECBACKUP_DEVELOPER) are not valid. Turn on debugging to see the reason.';
 $string['envelope_malformed'] = 'The response from the service could not be read. Check that the connection URL is correct.';
 $string['envelope_signature'] = 'The signature of the response from the service could not be verified. Check that the connection URL is correct.';
 $string['envelope_untrusted'] = 'The response was signed with a key that this plugin does not trust. Check that the connection URL is correct.';
