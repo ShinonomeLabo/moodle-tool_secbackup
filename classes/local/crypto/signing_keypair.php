@@ -36,14 +36,24 @@ final class signing_keypair {
      * The type of $secretkey is written the way the PHPDoc checker of moodle-plugin-ci reads the signature: it counts
      * the tokens of the attribute as part of the type. It is plain "string" for PHP.
      *
-     * @param #[|\SensitiveParameter|]|string $secretkey Secret key (64 bytes).
+     * @param #[|\SensitiveParameter|]|string $secretkey Secret key (64 bytes): the seed, then the public key.
+     * @throws \coding_exception When the secret key does not have 64 bytes.
+     * @throws key_exception When the second half is not the public key that the seed makes.
      */
     public function __construct(#[\SensitiveParameter] string $secretkey) {
         if (strlen($secretkey) !== SODIUM_CRYPTO_SIGN_SECRETKEYBYTES) {
             throw new \coding_exception('An Ed25519 secret key has 64 bytes.');
         }
+        // Signing reads the public key from the second half of the secret key, so a half that does not belong to the
+        // seed would make signatures that give the secret away. Derive the public key from the seed and compare.
+        $derived = sodium_crypto_sign_seed_keypair(substr($secretkey, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES));
+        $public = sodium_crypto_sign_publickey($derived);
+        sodium_memzero($derived);
+        if (!hash_equals($public, sodium_crypto_sign_publickey_from_secretkey($secretkey))) {
+            throw new key_exception('signingkey_corrupt');
+        }
         $this->secret = $secretkey;
-        $this->public = sodium_crypto_sign_publickey_from_secretkey($secretkey);
+        $this->public = $public;
     }
 
     /**

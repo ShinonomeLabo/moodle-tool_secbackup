@@ -55,6 +55,15 @@ final class signing_keys_test extends \advanced_testcase {
         new signing_keypair(str_repeat('a', SODIUM_CRYPTO_SIGN_SECRETKEYBYTES + 1));
     }
 
+    public function test_rejects_a_public_half_that_does_not_belong_to_the_seed(): void {
+        try {
+            new signing_keypair(self::mismatching_secret());
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('signingkey_corrupt', $e->errorcode);
+        }
+    }
+
     public function test_the_secret_parameter_is_marked_sensitive(): void {
         $parameter = (new \ReflectionMethod(signing_keypair::class, '__construct'))->getParameters()[0];
         $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class));
@@ -101,6 +110,17 @@ final class signing_keys_test extends \advanced_testcase {
         $this->resetAfterTest();
         $toolong = str_repeat('a', SODIUM_CRYPTO_SIGN_SECRETKEYBYTES + 1);
         set_config('signingsecret', \core\encryption::encrypt(base64_encode($toolong)), 'tool_secbackup');
+        try {
+            signing_keys::load();
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('signingkey_corrupt', $e->errorcode);
+        }
+    }
+
+    public function test_a_stored_secret_with_a_public_half_that_does_not_match_is_reported(): void {
+        $this->resetAfterTest();
+        set_config('signingsecret', \core\encryption::encrypt(base64_encode(self::mismatching_secret())), 'tool_secbackup');
         try {
             signing_keys::load();
             $this->fail('No exception');
@@ -166,6 +186,17 @@ final class signing_keys_test extends \advanced_testcase {
         }
         $this->assertFalse(get_config('tool_secbackup', 'signingsecret'));
         $this->assertNull(signing_keys::load());
+    }
+
+    /**
+     * A 64-byte secret whose second half is the public key of another pair than the one its first half (the seed) makes.
+     *
+     * @return string
+     */
+    private static function mismatching_secret(): string {
+        $seedowner = signing_keypair::generate();
+        $other = signing_keypair::generate();
+        return substr($seedowner->export_secret(), 0, SODIUM_CRYPTO_SIGN_SEEDBYTES) . $other->public_key();
     }
 
     /**
