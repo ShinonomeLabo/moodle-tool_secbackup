@@ -14,3 +14,11 @@ Large files live outside the repository in `SECBK_ENV_ROOT`
     .dev/env/down.sh 503 pgsql --volumes   # remove the containers and all their data
 
 Web ports: 4.5 = 18045, 5.1 = 18051, 5.2 = 18052, 5.3 = 18053 (admin / test).
+
+## Dummy data
+
+    .dev/env/data.sh 503 pgsql S          # small site (3 courses, 30 users, about 60 files)
+    .dev/env/data.sh 503 pgsql M --seed=2 # medium site (10 courses, 200 users, about 600 files)
+
+Users are named `secbk_<time>_<n>` and courses `secbk-<time>-<n>`. A second run does nothing
+unless `--force` is given.
