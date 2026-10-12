@@ -268,7 +268,7 @@ final class developer_settings_test extends \advanced_testcase {
      * A value that is not valid is refused with the error developersettings_invalid and a reason.
      *
      * @dataProvider invalid_provider
-     * @param mixed $value Value of $CFG->tool_secbackup_developer.
+     * @param mixed $value Value of the constant TOOL_SECBACKUP_DEVELOPER.
      * @param string $reason Part of the reason in debuginfo.
      */
     public function test_invalid_values_are_refused(mixed $value, string $reason): void {
