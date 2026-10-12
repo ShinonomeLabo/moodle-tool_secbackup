@@ -181,9 +181,13 @@ final class sec_trust_test extends \advanced_testcase {
             'long key id' => [json_encode(['kid' => $good['kid'] . '0'] + $good)],
             'key id with a line break' => [json_encode(['kid' => $good['kid'] . "\n"] + $good)],
             'key id is a list' => [json_encode(['kid' => [1]] + $good)],
-            'payload is a number' => [json_encode(['payload' => 123] + $good)],
+            // The number 1234 reads as valid base64url text (3 bytes), so only the type check refuses it.
+            'payload is a number' => [json_encode(['payload' => 1234] + $good)],
+            'payload field is a list' => [json_encode(['payload' => ['a']] + $good)],
             'payload is empty' => [json_encode(['payload' => ''] + $good)],
             'signature is a number' => [json_encode(['sig' => 123] + $good)],
+            'signature field is a list' => [json_encode(['sig' => ['a']] + $good)],
+            'misspelt field' => [json_encode(array_diff_key($good, ['sig' => true]) + ['sign' => $good['sig']])],
             'signature not base64url' => [json_encode(['sig' => 'a+b/'] + $good)],
             'long signature' => [json_encode(['sig' => envelope_builder::b64url(str_repeat('a', 65))] + $good)],
             'payload nested too deep' => [self::signed_raw_payload(self::nested_object(16))],
@@ -256,6 +260,10 @@ final class sec_trust_test extends \advanced_testcase {
         $parts = $first->parts(['type' => 'enrollment']);
         $parts['sig'] = $second->signature($first->kid(), $parts['payload']);
         $this->expect_failure('envelope_signature', json_encode($parts), $trust);
+    }
+
+    public function test_the_body_limit_is_64_kib(): void {
+        $this->assertSame(65536, sec_trust::MAX_BODY);
     }
 
     public function test_a_body_of_exactly_the_largest_size_is_read(): void {
