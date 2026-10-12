@@ -60,9 +60,13 @@ class behat_tool_secbackup extends behat_base {
             $code .= '$string[' . var_export($id, true) . '] = ' . var_export($text, true) . ";\n";
         }
 
-        $dir = $CFG->dataroot . '/lang/ja';
-        check_dir_exists($dir);
-        file_put_contents($dir . '/langconfig.php', $code);
+        // The folder in which Moodle looks for language packs: the language folder of the dataroot, unless it is moved.
+        $dir = $CFG->langotherroot . '/ja';
+        make_writable_directory($dir);
+        $file = $dir . '/langconfig.php';
+        if (file_put_contents($file, $code) === false) {
+            throw new \Exception("The Japanese language pack cannot be written to $file.");
+        }
         get_string_manager()->reset_caches();
     }
 }
