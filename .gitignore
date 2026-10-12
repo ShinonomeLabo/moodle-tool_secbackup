@@ -4,5 +4,5 @@
 .DS_Store
 .dev/env/local.env
 /phpunit.xml
-/tests/phpunit.xml
+/tests/**/phpunit.xml
 /.phpunit.cache/
