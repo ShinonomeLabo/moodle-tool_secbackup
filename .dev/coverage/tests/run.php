@@ -123,6 +123,15 @@ $damaged = [
     'a file that maps to a map' => '{"files": {"' . $plugin . '/db/b.php": {"a": 27}}}',
     'executable that is not a map' => '{"files": {}, "executable": 3}',
     'a table that is not a list' => '{"files": {}, "executable": {"' . $plugin . '/db/b.php": 27}}',
+    'a list where files must be a map' => '{"files": [[27]]}',
+    'a list where executable must be a map' => '{"files": {}, "executable": [[27, 30]]}',
+    'a number as the name of a file' => '{"files": {"5": [27]}}',
+    'an empty name of a file' => '{"files": {"": [27]}}',
+    'a name with a parent folder' => '{"files": {"' . $plugin . '/tests/../db/b.php": [27]}}',
+    'a name with a parent folder before the plugin' => '{"files": {"/var/www/html/../html/admin/tool/secbackup/db/b.php": [27]}}',
+    'a name with a current folder' => '{"files": {"' . $plugin . '/./db/b.php": [27]}}',
+    'a name with a double slash' => '{"files": {"' . $plugin . '//db/b.php": [27]}}',
+    'the table of a name with a parent folder' => '{"files": {}, "executable": {"' . $plugin . '/tests/../db/b.php": [27]}}',
 ];
 foreach ($damaged as $label => $content) {
     $file = secbk_temp_report($content);
@@ -138,9 +147,25 @@ $file = secbk_temp_report('<coverage><project><file name="' . $plugin . '/db/b.p
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $file");
 secbk_expect('a truncated Clover exits 2', $code === 2 && str_contains($out, $file), $out);
 
+// A list with something in it is told apart from a map: the message says what is wrong.
+foreach (['files' => '{"files": [[27]]}', 'executable' => '{"files": {}, "executable": [[27, 30]]}'] as $key => $content) {
+    $file = secbk_temp_report($content);
+    [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $file");
+    secbk_expect("a list where $key must be a map is said so", str_contains($out, "\"$key\" is not a map"), $out);
+}
+
 // A run that executed nothing writes "files" as an empty list; that is a good report and the lines stay misses.
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-b.txt $fixtures/phpunit-static.xml $fixtures/run-nothing-executed.json");
 secbk_expect('a run that executed nothing is accepted', $code === 1 && str_contains($out, "db/b.php: 27, 30\n"), $out);
+
+// A name with two dots in a file name is a good name: it is only unknown to the release list.
+$file = secbk_temp_report('{"files": {"' . $plugin . '/classes/a..b.php": [3]}}');
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-a.txt $fixtures/phpunit-a.xml $file");
+secbk_expect(
+    'a file name with two dots is not a damaged report',
+    $code === 1 && str_contains($out, 'in a coverage report but not in the release list: classes/a..b.php'),
+    $out
+);
 
 // Nothing to count must not read as a pass.
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-empty.txt $fixtures/phpunit.xml");
@@ -164,6 +189,11 @@ secbk_expect(
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-lib.txt $fixtures/phpunit-lib.xml $fixtures/run-lib-empty.json");
 secbk_expect('an empty table fails', $code === 1, $out);
 secbk_expect('names the file of the empty table', str_contains($out, 'lib.php: nothing to count'), $out);
+
+// A shipped file that the Clover knows but without a single statement is named, so that it is not forgotten.
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-a-lib.txt $fixtures/phpunit-a-nostmt.xml");
+secbk_expect('a file without a statement is named', $code === 0 && str_contains($out, "lib.php: no statement to count\n"), $out);
+secbk_expect('and the others are counted', str_contains($out, 'Total: 3/3 lines (100.00%)'), $out);
 
 // The lines that the table of the runs takes away are listed, so that nobody has to trust the 100%.
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-access.txt $fixtures/phpunit-access.xml $fixtures/run-access.json");

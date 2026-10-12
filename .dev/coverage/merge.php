@@ -16,9 +16,10 @@
 // - the source of a shipped file contains codeCoverageIgnore: php-code-coverage removes such lines before it writes the
 //   Clover report, so they would never be counted;
 // - a report names a file that is neither on the release list nor in tests/ or .dev/ (a file that was not committed).
-// It stops with exit code 2 when an input cannot be used: a report that is missing, damaged or of another shape, an empty
-// list of shipped files, or a shipped file whose source cannot be found. The lines that the tables of the runs take away
-// are listed in the output, for every file, so that the 100% can be checked.
+// It stops with exit code 2 when an input cannot be used: a report that is missing, damaged or of another shape (also a
+// list where a map of files is expected, and a file name that is not a clean path), an empty list of shipped files, or a
+// shipped file whose source cannot be found. The lines that the tables of the runs take away are listed in the output,
+// for every file, so that the 100% can be checked; so is every shipped file that has no statement in the Clover reports.
 //
 // Usage: php merge.php --shipped=<file list> [--report=<output file>] [--root=<plugin source>] <report files...>
 // The source of the shipped files is searched in --root (default: the plugin that holds this .dev/).
@@ -71,8 +72,19 @@ function secbk_relative(string $path): ?string {
 }
 
 /**
+ * Tells whether the name of a file in a report is a clean path: not empty, no empty folder name (//) and no folder . or
+ * .. in it. Such a name would be read as another file (tests/../lib.php is in tests/), so it is not accepted.
+ *
+ * @param string $path The name.
+ * @return bool
+ */
+function secbk_clean_path(string $path): bool {
+    return $path !== '' && !str_contains($path, '//') && preg_match('~(^|/)\.\.?(/|$)~', $path) !== 1;
+}
+
+/**
  * Reads a JSON report of collector.php and checks its shape: an object with "files" and, optionally, "executable",
- * each a map of file names to lists of line numbers.
+ * each a map of clean file names to lists of line numbers.
  *
  * @param string $input Path of the report.
  * @return array The report.
@@ -94,10 +106,14 @@ function secbk_read_json(string $input): array {
         if (!array_key_exists($key, $data)) {
             continue;
         }
-        if (!is_array($data[$key])) {
+        // An empty map and an empty list are the same in PHP, but a list with something in it is not a map.
+        if (!is_array($data[$key]) || ($data[$key] !== [] && array_is_list($data[$key]))) {
             secbk_fail("$input: \"$key\" is not a map of file names to lists of line numbers");
         }
         foreach ($data[$key] as $path => $lines) {
+            if (!is_string($path) || !secbk_clean_path($path)) {
+                secbk_fail("$input: \"$key\" has a file name that is not a clean path: " . json_encode($path));
+            }
             if (!is_array($lines) || !array_is_list($lines) || count(array_filter($lines, 'is_int')) !== count($lines)) {
                 secbk_fail("$input: \"$key\" of $path is not a list of line numbers");
             }
@@ -208,6 +224,10 @@ foreach ($shipped as $file) {
     }
     if (!array_key_exists($file, $statements)) {
         $problems[] = "$file: not in any coverage report";
+        continue;
+    }
+    if ($statements[$file] === []) {
+        $notes[] = "$file: no statement to count";
         continue;
     }
     $missing = [];
