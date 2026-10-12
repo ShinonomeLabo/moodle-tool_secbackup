@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Tests for the commit message and identity rules in ../lib/rules.sh.
+# Tests for the commit hooks: the message and identity rules in ../lib/rules.sh, and the fail-closed
+# behaviour of ../pre-push and ../check-history.sh when a tool they depend on fails.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
 patterns="$(mktemp)"
 message="$(mktemp)"
-trap 'rm -f "$patterns" "$message"' EXIT
+work="$(mktemp -d)"
+trap 'rm -f "$patterns" "$message"; rm -rf "$work"' EXIT
 printf 'forbiddenword\nsecond phrase\n' > "$patterns"
 export SECBACKUP_PATTERNS_FILE="$patterns"
 # shellcheck source=../lib/rules.sh
@@ -69,6 +71,126 @@ expect_identity ok "configured identity" 'Takayuki Fuwa <fuwa@shinonome.co.jp>'
 expect_identity ng "other e-mail" 'Takayuki Fuwa <fuwa@example.com>'
 expect_identity ng "other name" 'Someone Else <fuwa@shinonome.co.jp>'
 expect_identity ng "empty" ''
+
+# Fail closed: a tool that fails must never let a message, a commit or a push through. The tools
+# (grep, tr, git) are replaced by test doubles that fail on request, so nothing below depends on the
+# locale or on the state of the machine.
+zeros="$(printf '%040d' 0)"
+ones="${zeros//0/1}"
+mkdir "$work/fakebin" || exit 2
+FAKE_REAL_GREP="$(command -v grep)"
+FAKE_REAL_TR="$(command -v tr)"
+FAKE_REAL_GIT="$(command -v git)"
+export FAKE_REAL_GREP FAKE_REAL_TR FAKE_REAL_GIT
+cat > "$work/fakebin/grep" <<'EOF'
+#!/usr/bin/env bash
+# grep that fails on request. Mode fail: the word search (-qiF) exits with 2. Mode strip: the comment
+# stripping (-v) prints one line and then exits with 2. Mode bytes: a call that does not run
+# byte-wise (LC_ALL=C) exits with 2.
+case "${FAKE_GREP_MODE-}" in
+    bytes) [ "${LC_ALL-}" = C ] || exit 2 ;;
+    fail) for argument in "$@"; do [ "$argument" = -qiF ] && exit 2; done ;;
+    strip) for argument in "$@"; do [ "$argument" = -v ] && { head -n 1 "${!#}"; exit 2; }; done ;;
+esac
+exec "$FAKE_REAL_GREP" "$@"
+EOF
+cat > "$work/fakebin/tr" <<'EOF'
+#!/usr/bin/env bash
+# tr that fails on request. Mode partial: the pattern list (tr '\r' ...) is cut after one line and the
+# call fails. Mode bytes: a call that does not run byte-wise (LC_ALL=C) fails.
+case "${FAKE_TR_MODE-}" in
+    bytes) [ "${LC_ALL-}" = C ] || exit 1 ;;
+    partial)
+        if [ "${1-}" = '\r' ]; then
+            "$FAKE_REAL_TR" "$@" | head -n 1
+            exit 1
+        fi
+        ;;
+esac
+exec "$FAKE_REAL_TR" "$@"
+EOF
+cat > "$work/fakebin/git" <<'EOF'
+#!/usr/bin/env bash
+# git that fails on request: the Nth "git log -1 --format=%B" call prints a first line and exits with 1.
+if [ "${1-}" = log ] && [ "${3-}" = '--format=%B' ] && [ -n "${FAKE_GIT_FAIL_ON-}" ]; then
+    count=$(( $(cat "$FAKE_GIT_COUNTER" 2>/dev/null || echo 0) + 1 ))
+    echo "$count" > "$FAKE_GIT_COUNTER"
+    if [ "$count" -eq "$FAKE_GIT_FAIL_ON" ]; then
+        echo '日本語の件名'
+        exit 1
+    fi
+fi
+exec "$FAKE_REAL_GIT" "$@"
+EOF
+chmod +x "$work/fakebin/grep" "$work/fakebin/tr" "$work/fakebin/git"
+
+# Like expect_message, but secbackup_check_message runs in a child shell with the given environment.
+expect_message_env() {
+    local expected="$1" label="$2" body="$3"
+    shift 3
+    printf '%s' "$body" > "$message"
+    # shellcheck disable=SC2016
+    if env "$@" "$BASH" -c 'source "$1/../lib/rules.sh"; secbackup_check_message "$2"' _ "$here" "$message" 2>/dev/null; then actual=ok; else actual=ng; fi
+    if [ "$actual" = "$expected" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL message: $label (expected $expected, got $actual)"; fi
+}
+
+# Runs a hook script in a repository with the given standard input and extra environment assignments.
+run_hook() {
+    local repo="$1" script="$2" input="$3"
+    shift 3
+    (cd "$repo" && printf '%s' "$input" | env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CEILING_DIRECTORIES="$work" "$@" "$BASH" "$here/../$script" origin remote.test)
+}
+
+expect_hook() {
+    local expected="$1" label="$2"
+    shift 2
+    if run_hook "$@" >/dev/null 2>&1; then actual=ok; else actual=ng; fi
+    if [ "$actual" = "$expected" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL hook: $label (expected $expected, got $actual)"; fi
+}
+
+# Commits for the temporary repositories: no hooks, no signing, no user configuration involved.
+commit_in() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        GIT_AUTHOR_NAME='Takayuki Fuwa' GIT_AUTHOR_EMAIL='fuwa@shinonome.co.jp' \
+        GIT_COMMITTER_NAME='Takayuki Fuwa' GIT_COMMITTER_EMAIL='fuwa@shinonome.co.jp' \
+        git -C "$1" -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -q --allow-empty -m "$2"
+}
+
+good="$work/good"
+bad="$work/bad"
+for repo in "$good" "$bad"; do git init -q "$repo" 2>/dev/null || exit 2; done
+commit_in "$good" '最初の変更を足す' || exit 2
+commit_in "$good" '次の変更を足す' || exit 2
+commit_in "$bad" '最初の変更を足す' || exit 2
+commit_in "$bad" 'Add a second change' || exit 2
+git -c protocol.file.allow=always clone -q --depth 1 "file://$good" "$work/shallow" 2>/dev/null || exit 2
+mkdir "$work/notrepo" || exit 2
+printf -v push_good 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$good" rev-parse HEAD)" "$zeros"
+printf -v push_bad 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$bad" rev-parse HEAD)" "$zeros"
+printf -v push_bad_unterminated 'refs/heads/main %s refs/heads/main %s' "$(git -C "$bad" rev-parse HEAD)" "$zeros"
+printf -v push_unknown 'refs/heads/main %s refs/heads/main %s\n' "$ones" "$zeros"
+
+# The word search: when grep itself fails (status 2) the message is rejected, and every search and
+# every cut of the text runs byte-wise (LC_ALL=C) whatever the locale of the caller is.
+expect_message_env ng "word search that fails" $'日本語の件名\n' PATH="$work/fakebin:$PATH" FAKE_GREP_MODE=fail
+expect_message_env ok "searches run byte-wise" $'日本語の件名\n' PATH="$work/fakebin:$PATH" FAKE_GREP_MODE=bytes FAKE_TR_MODE=bytes LC_ALL=POSIX
+# A message or a pattern list that was read only in part must not be used.
+expect_message_env ng "comment stripping that fails half-way" $'日本語の件名\n\nforbiddenword\n' PATH="$work/fakebin:$PATH" FAKE_GREP_MODE=strip
+expect_message_env ng "pattern list read that fails half-way" $'変更を足す\n\nsecond phrase\n' PATH="$work/fakebin:$PATH" FAKE_TR_MODE=partial
+
+# pre-push and check-history.sh read the history with git; when that fails they must fail too.
+expect_hook ok "pre-push of a good commit" "$good" pre-push "$push_good"
+expect_hook ng "pre-push of a commit with an English message" "$bad" pre-push "$push_bad"
+expect_hook ng "pre-push with an unknown object id" "$good" pre-push "$push_unknown"
+expect_hook ng "pre-push input whose last line has no newline" "$bad" pre-push "$push_bad_unterminated"
+printf 0 > "$work/counter"
+expect_hook ng "pre-push, message of the 2nd commit read in part" "$good" pre-push "$push_good" PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_ON=2 FAKE_GIT_COUNTER="$work/counter"
+expect_hook ok "check-history of a good history" "$good" check-history.sh ''
+expect_hook ng "check-history with an English commit" "$bad" check-history.sh ''
+expect_hook ng "check-history outside a repository" "$work/notrepo" check-history.sh ''
+expect_hook ng "check-history of a shallow clone" "$work/shallow" check-history.sh ''
+printf 0 > "$work/counter"
+expect_hook ng "check-history, message of the 2nd commit read in part" "$good" check-history.sh '' PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_ON=2 FAKE_GIT_COUNTER="$work/counter"
 
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
