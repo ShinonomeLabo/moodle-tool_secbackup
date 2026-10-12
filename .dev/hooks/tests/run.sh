@@ -60,6 +60,20 @@ expect_message ng "pattern in body, upper case" $'変更を足す\n\nFORBIDDENWO
 expect_message ng "second pattern with a space" $'変更を足す\n\nSecond Phrase\n'
 expect_message ok "similar but different word" $'変更を足す\n\nforbidden word\n'
 
+# A word that looks like a path (a slash at both ends, or a slash inside) is plain text like any other word, in
+# any case, so that the path of a machine cannot get into a message. The words below are stand-ins: the real ones
+# are only in the untracked list, and no tracked file may hold them.
+printf 'forbiddenword\n/stand-in/\nwork/stand-in\n' > "$patterns.paths"
+SECBACKUP_PATTERNS_FILE="$patterns.paths"
+expect_message ng "word with a slash at both ends" $'変更を足す\n\n/stand-in/file を直す\n'
+expect_message ng "word with a slash at both ends, upper case" $'変更を足す\n\n/STAND-IN/FILE\n'
+expect_message ng "word with a slash inside" $'変更を足す\n\nsee work/stand-in/x\n'
+expect_message ng "word with a slash inside, mixed case, in the subject" $'~/Work/Stand-In を直す\n'
+expect_message ng "word with a slash at both ends, on a # line" $'変更を足す\n# /stand-in/ in a git comment line\n'
+expect_message ok "similar text without the slashes" $'変更を足す\n\nstand-in と work stand-in\n'
+expect_message ok "word with a slash at both ends needs both slashes" $'変更を足す\n\n/stand-in だけ\n'
+SECBACKUP_PATTERNS_FILE="$patterns"
+
 # Fail closed: without the pattern list every message is rejected.
 SECBACKUP_PATTERNS_FILE="$patterns.missing"
 expect_message ng "missing pattern list" $'日本語の件名\n'
