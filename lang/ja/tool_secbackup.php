@@ -24,6 +24,10 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+$string['developersettings_invalid'] = 'config.php の開発用の設定 ($CFG->tool_secbackup_developer) に誤りがあります。理由は、デバッグの表示を有効にすると確かめられます。';
+$string['envelope_malformed'] = '接続先のサービスからの応答を読めませんでした。接続先の URL が正しいか確かめてください。';
+$string['envelope_signature'] = '接続先のサービスからの応答の署名を確かめられませんでした。接続先の URL が正しいか確かめてください。';
+$string['envelope_untrusted'] = 'この連携ツールが信頼していない鍵で署名された応答です。接続先の URL が正しいか確かめてください。';
 $string['pluginname'] = 'あんしんLMSバックアップ';
 $string['privacy:metadata:service'] = 'このプラグインは、このサイトを暗号化したバックアップを、あんしんLMSバックアップのサービスへ送ります。';
 $string['privacy:metadata:service:sitedata'] = 'サイト全体 (全利用者の個人データを含む、バックアップの対象のすべて)。';
