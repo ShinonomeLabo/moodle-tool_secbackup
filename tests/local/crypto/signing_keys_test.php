@@ -167,38 +167,118 @@ final class signing_keys_test extends \advanced_testcase {
         }
     }
 
-    public function test_a_failed_encryption_is_reported_without_the_secret(): void {
-        global $CFG;
-        $this->resetAfterTest();
-        // An empty folder for the key of the data root, and Moodle may not create one: encrypt() finds no key.
-        $CFG->secretdataroot = make_request_directory();
-        $CFG->nokeygeneration = true;
-        $pair = signing_keypair::generate();
-        // The part of a string that getTraceAsString() shows is its first 15 characters.
-        $needles = [substr($pair->export_secret(), 0, 15), substr(base64_encode($pair->export_secret()), 0, 15)];
+    /**
+     * Failures inside the encryption of Moodle that save() has to report.
+     *
+     * @return array
+     */
+    public static function failing_encryption_provider(): array {
+        return [
+            'Moodle finds no key' => ['nokey'],
+            'an exception that is not one of Moodle' => ['bare'],
+        ];
+    }
 
-        // Without this a trace holds no arguments, and the checks below would find nothing whatever the code does.
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_encryption_provider')]
+    /**
+     * A failed encryption is reported as a key_exception that shows no secret, and nothing is stored.
+     *
+     * @dataProvider failing_encryption_provider
+     * @param string $failure What fails, as in save_while_encryption_fails().
+     */
+    public function test_a_failed_encryption_is_reported_without_the_secret(string $failure): void {
+        $this->resetAfterTest();
+        [$cause, $e, $needles] = $this->save_while_encryption_fails($failure);
+
+        $this->assertSame('signingkey_savefailed', $e->errorcode);
+        $this->assertSame($cause, $e->debuginfo);
+        $this->assertNull($e->getPrevious());
+        $this->assertFalse(self::trace_shows($e, $needles));
+        $this->assertFalse(get_config('tool_secbackup', 'signingsecret'));
+        $this->assertNull(signing_keys::load());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_encryption_provider')]
+    /**
+     * The key pair itself is not left in the arguments of the trace either.
+     *
+     * @dataProvider failing_encryption_provider
+     * @param string $failure What fails, as in save_while_encryption_fails().
+     */
+    public function test_a_failed_encryption_does_not_leave_the_key_pair_in_the_trace(string $failure): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the key pair stays in the'
+                . ' arguments of the trace there.');
+        }
+        $this->resetAfterTest();
+        [, $e] = $this->save_while_encryption_fails($failure);
+        $this->assertFalse(self::trace_holds_a_pair($e));
+    }
+
+    /**
+     * Makes the encryption of Moodle fail, saves a key pair and returns what save() throws.
+     *
+     * A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the
+     * call: with it on, the checks of a trace would find nothing whatever the code does. Controls show that the
+     * encryption does fail and shows its own argument in its trace, and that the checks do find a text and a key pair
+     * in a trace.
+     *
+     * The key pair is made here and not passed in: a pair given as an argument would be in the trace of the exception.
+     *
+     * @param string $failure "nokey": Moodle has no key and may not create one. "bare": the exception that leaves
+     *     encrypt() is not one of Moodle's.
+     * @return array The class of the exception that encrypt() throws, the key_exception that save() throws, and the
+     *     texts of the secret that must not appear in it (the first 15 characters, which is what getTraceAsString()
+     *     shows of a string, of the secret itself and of its base64).
+     */
+    private function save_while_encryption_fails(string $failure): array {
+        global $CFG;
+        $pair = signing_keypair::generate();
+        $needles = [substr($pair->export_secret(), 0, 15), substr(base64_encode($pair->export_secret()), 0, 15)];
+        if ($failure === 'nokey') {
+            // An empty folder for the key of the data root, and Moodle may not create one: encrypt() finds no key.
+            $CFG->secretdataroot = make_request_directory();
+            $CFG->nokeygeneration = true;
+        } else {
+            // The folder of the key cannot be turned into text, so encrypt() fails with an exception of PHP.
+            $CFG->secretdataroot = new class implements \Stringable {
+                /**
+                 * Always fails.
+                 *
+                 * @return string
+                 */
+                public function __toString(): string {
+                    throw new \RuntimeException('Provoked by the test');
+                }
+            };
+        }
         $previous = ini_set('zend.exception_ignore_args', '0');
         $this->assertNotFalse($previous);
         try {
+            $cause = null;
             try {
-                self::throw_with_argument('control value');
-            } catch (\Exception $control) {
-                $this->assertTrue(self::trace_shows($control, ['control value']));
+                \core\encryption::encrypt('probe');
+            } catch (\Throwable $thrown) {
+                $cause = $thrown;
             }
+            $this->assertNotNull($cause, 'encrypt() has to fail for this test to mean anything');
+            if ($failure === 'bare') {
+                $this->assertNotInstanceOf(\moodle_exception::class, $cause);
+            } else {
+                $this->assertInstanceOf(\moodle_exception::class, $cause);
+            }
+            $this->assertTrue(self::trace_shows($cause, ['probe']), 'The trace of encrypt() shows its argument.');
+            $this->assertTrue(self::trace_holds_a_pair(self::exception_created_with($pair)));
+
             try {
                 signing_keys::save($pair);
-                $this->fail('No exception');
             } catch (key_exception $e) {
-                $this->assertSame('signingkey_savefailed', $e->errorcode);
-                $this->assertNull($e->getPrevious());
-                $this->assertFalse(self::trace_shows($e, $needles));
+                return [get_class($cause), $e, $needles];
             }
         } finally {
             ini_set('zend.exception_ignore_args', $previous);
         }
-        $this->assertFalse(get_config('tool_secbackup', 'signingsecret'));
-        $this->assertNull(signing_keys::load());
+        $this->fail('save() has to throw a key_exception');
     }
 
     /**
@@ -213,13 +293,14 @@ final class signing_keys_test extends \advanced_testcase {
     }
 
     /**
-     * Throws an exception whose trace holds the argument, when PHP keeps arguments in traces.
+     * Returns an exception created in a call with the argument, so that its trace holds the argument when PHP keeps
+     * arguments in traces.
      *
-     * @param string $argument Any text.
-     * @throws \Exception Always.
+     * @param mixed $argument Anything.
+     * @return \Exception
      */
-    private static function throw_with_argument(string $argument): void {
-        throw new \Exception('Control exception for ' . strlen($argument) . ' characters');
+    private static function exception_created_with(mixed $argument): \Exception {
+        return new \Exception('Control exception for ' . gettype($argument));
     }
 
     /**
@@ -236,8 +317,37 @@ final class signing_keys_test extends \advanced_testcase {
                 return true;
             }
         }
+        return self::any_argument($exception, static function ($argument) use ($needles): bool {
+            foreach ($needles as $needle) {
+                if (is_string($argument) && str_contains($argument, $needle)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    /**
+     * Tells whether an argument in the trace of an exception is a key pair, which holds the secret.
+     *
+     * @param \Throwable $exception The exception.
+     * @return bool
+     */
+    private static function trace_holds_a_pair(\Throwable $exception): bool {
+        return self::any_argument($exception, static fn($argument): bool => $argument instanceof signing_keypair);
+    }
+
+    /**
+     * Tells whether the test is true for an argument in the trace of an exception, or for an element of an array
+     * argument (followed five levels deep).
+     *
+     * @param \Throwable $exception The exception.
+     * @param callable $test Gets one value and returns a bool.
+     * @return bool
+     */
+    private static function any_argument(\Throwable $exception, callable $test): bool {
         foreach ($exception->getTrace() as $frame) {
-            if (self::argument_shows($frame['args'] ?? [], $needles, 0)) {
+            if (self::any_value($frame['args'] ?? [], $test, 0)) {
                 return true;
             }
         }
@@ -245,27 +355,20 @@ final class signing_keys_test extends \advanced_testcase {
     }
 
     /**
-     * Tells whether an argument of a trace holds one of the texts, or is a key pair that holds the secret.
+     * Tells whether the test is true for a value or for an element of it, when it is an array.
      *
-     * Before PHP 8.2 the attribute that hides an argument does nothing, so a key pair is not counted there.
-     *
-     * @param mixed $value The argument, or an array of them.
-     * @param string[] $needles Texts that must not appear.
+     * @param mixed $value The value.
+     * @param callable $test Gets one value and returns a bool.
      * @param int $depth How deep the arrays have been followed.
      * @return bool
      */
-    private static function argument_shows($value, array $needles, int $depth): bool {
-        if (is_string($value)) {
-            foreach ($needles as $needle) {
-                if (str_contains($value, $needle)) {
-                    return true;
-                }
-            }
-        } else if ($value instanceof signing_keypair) {
-            return PHP_VERSION_ID >= 80200;
-        } else if (is_array($value) && $depth < 5) {
+    private static function any_value(mixed $value, callable $test, int $depth): bool {
+        if ($test($value)) {
+            return true;
+        }
+        if (is_array($value) && $depth < 5) {
             foreach ($value as $item) {
-                if (self::argument_shows($item, $needles, $depth + 1)) {
+                if (self::any_value($item, $test, $depth + 1)) {
                     return true;
                 }
             }

@@ -37,15 +37,15 @@ final class signing_keys {
      * signing_keypair::__construct()). The attribute keeps the pair out of the trace of the exception thrown here.
      *
      * @param #[|\SensitiveParameter|]|signing_keypair $pair The pair.
-     * @throws key_exception When Moodle cannot encrypt the secret, for example when the data root holds no encryption
-     *     key and Moodle may not create one. The exception of Moodle is not chained: the arguments in its trace
-     *     include the secret.
+     * @throws key_exception When the secret cannot be encrypted: Moodle has no encryption key in the data root and may
+     *     not create one, or anything else fails inside the encryption. The failure is not chained, because the
+     *     arguments in its trace include the secret; the debug information is only its class name.
      */
     public static function save(#[\SensitiveParameter] signing_keypair $pair): void {
         try {
             $wrapped = \core\encryption::encrypt(base64_encode($pair->export_secret()));
-        } catch (\moodle_exception) {
-            throw new key_exception('signingkey_savefailed');
+        } catch (\Throwable $e) {
+            throw new key_exception('signingkey_savefailed', null, $e::class);
         }
         set_config(self::SECRET, $wrapped, 'tool_secbackup');
     }
