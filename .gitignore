@@ -1,0 +1,4 @@
+.dev/hooks/patterns.local
+.dev/ci/out/
+.dev/coverage/out/
+.DS_Store

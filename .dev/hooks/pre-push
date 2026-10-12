@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Checks every commit that is about to be pushed, even if commit-msg was skipped with --no-verify.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/rules.sh
+source "$here/lib/rules.sh"
+
+zero='0000000000000000000000000000000000000000'
+status=0
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+while read -r localref localsha remoteref remotesha; do
+    [ "$localsha" = "$zero" ] && continue
+    if [ "$remotesha" = "$zero" ]; then
+        range="$localsha --not --remotes"
+    else
+        range="$remotesha..$localsha"
+    fi
+    # shellcheck disable=SC2086
+    for commit in $(git rev-list $range); do
+        git log -1 --format=%B "$commit" > "$tmp"
+        if ! secbackup_check_message "$tmp"; then
+            echo "  -> $commit ($localref -> $remoteref)" >&2
+            status=1
+        fi
+        if ! secbackup_check_identity "$(git log -1 --format='%an <%ae>' "$commit")" \
+            || ! secbackup_check_identity "$(git log -1 --format='%cn <%ce>' "$commit")"; then
+            echo "  -> $commit ($localref -> $remoteref)" >&2
+            status=1
+        fi
+    done
+done
+exit $status

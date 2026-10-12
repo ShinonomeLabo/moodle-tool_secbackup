@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Rejects commits whose message or identity breaks the repository rules (see lib/rules.sh).
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/rules.sh
+source "$here/lib/rules.sh"
+
+secbackup_check_message "$1" || exit 1
+author="$(git var GIT_AUTHOR_IDENT | sed -E 's/ [0-9]+ [-+][0-9]{4}$//')"
+committer="$(git var GIT_COMMITTER_IDENT | sed -E 's/ [0-9]+ [-+][0-9]{4}$//')"
+secbackup_check_identity "$author" || exit 1
+secbackup_check_identity "$committer" || exit 1
+exit 0
