@@ -55,6 +55,19 @@ final class signing_keys_test extends \advanced_testcase {
         new signing_keypair(str_repeat('a', SODIUM_CRYPTO_SIGN_SECRETKEYBYTES + 1));
     }
 
+    public function test_a_pair_cannot_be_serialised(): void {
+        $pair = signing_keypair::generate();
+        $this->expectException(\coding_exception::class);
+        serialize($pair);
+    }
+
+    public function test_a_pair_cannot_be_put_to_sleep(): void {
+        // PHP calls __serialize() first when a class has both hooks, so only a direct call reaches this one.
+        $pair = signing_keypair::generate();
+        $this->expectException(\coding_exception::class);
+        $pair->__sleep();
+    }
+
     public function test_rejects_a_public_half_that_does_not_belong_to_the_seed(): void {
         try {
             new signing_keypair(self::mismatching_secret());

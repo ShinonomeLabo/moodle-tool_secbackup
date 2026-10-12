@@ -107,4 +107,24 @@ final class signing_keypair {
     public function __debuginfo(): array {
         return ['public' => base64_encode($this->public)];
     }
+
+    /**
+     * Refuses to be serialised: a session or a cache would keep the secret.
+     *
+     * @return array
+     * @throws \coding_exception Always.
+     */
+    public function __serialize(): array {
+        throw new \coding_exception('A signing key pair must not be serialised.');
+    }
+
+    /**
+     * Refuses to be serialised, for code that calls the older hook. PHP calls __serialize() first when both exist.
+     *
+     * @return array
+     * @throws \coding_exception Always.
+     */
+    public function __sleep(): array {
+        throw new \coding_exception('A signing key pair must not be serialised.');
+    }
 }
