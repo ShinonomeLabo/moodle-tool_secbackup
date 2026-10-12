@@ -64,7 +64,22 @@ expect_message ng "pattern list starting with a UTF-8 BOM" $'変更を足す\n\n
 printf ' \t\r\n\n   \r\n\t' > "$patterns.blank"
 SECBACKUP_PATTERNS_FILE="$patterns.blank"
 expect_message ng "pattern list with only blank and CR lines" $'日本語の件名\n'
-rm -f "$patterns.crlf" "$patterns.blanks" "$patterns.bom" "$patterns.blank"
+# Fail closed: a list that is not plain UTF-8 text is unreadable, because words read from it could
+# silently not match. That covers UTF-16, an invalid byte sequence, and NUL or any other control
+# character except tab, CR and LF.
+perl -e 'print "\xff\xfe", map { "$_\0" } split //, "forbiddenword\nsecond phrase\n"' > "$patterns.bin"
+SECBACKUP_PATTERNS_FILE="$patterns.bin"
+expect_message ng "UTF-16 pattern list" $'日本語の件名\n'
+printf 'caf\xe9\nforbiddenword\nsecond phrase\n' > "$patterns.bin"
+expect_message ng "pattern list with an invalid UTF-8 byte sequence" $'日本語の件名\n'
+for bytes in '\0' '\x1b' '\x7f' '\xc2\x85'; do
+    printf 'forbiddenword%b\nsecond phrase\n' "$bytes" > "$patterns.bin"
+    expect_message ng "pattern list with the control character $bytes" $'日本語の件名\n'
+done
+printf 'ＡＩ\n生成\n' > "$patterns.bin"
+expect_message ok "pattern list of valid UTF-8 words" $'日本語の件名\n'
+expect_message ng "word of a valid UTF-8 pattern list" $'変更\n\n生成した\n'
+rm -f "$patterns.crlf" "$patterns.blanks" "$patterns.bom" "$patterns.blank" "$patterns.bin"
 SECBACKUP_PATTERNS_FILE="$patterns"
 
 expect_identity ok "configured identity" 'Takayuki Fuwa <fuwa@shinonome.co.jp>'

@@ -16,13 +16,27 @@ secbackup_strip_comments() {
     [ "$status" -le 1 ]
 }
 
+# Returns 0 when the file is valid UTF-8 text without control characters other than tab, CR and LF.
+# Anything else (UTF-16, binary data, a damaged file) cannot be trusted: the words read from it would
+# silently not match. The whole file is checked at once, before any word is read.
+secbackup_is_plain_text() {
+    LC_ALL=C perl -MEncode -e '
+        local $/;
+        open(my $fh, "<:raw", $ARGV[0]) or exit 1;
+        my $text = eval { Encode::decode("UTF-8", scalar <$fh>, Encode::FB_CROAK | Encode::LEAVE_SRC) };
+        exit 1 unless defined $text;
+        exit($text =~ /(?![\t\r\n])\p{Cc}/ ? 1 : 0);
+    ' -- "$1"
+}
+
 # Prints the patterns of the local pattern file, one per line. The file may come from an editor or a
 # secret, so a CR counts as a line break (CRLF lists work), a UTF-8 BOM at the start of a line is
 # removed, blanks around a pattern are removed (blanks inside it are kept) and lines that are empty
-# after that are skipped. Returns 1 when the file cannot be read completely.
+# after that are skipped. Returns 1 when the file is not plain UTF-8 text or cannot be read completely.
 secbackup_patterns() {
     local line bom=$'\xef\xbb\xbf' statuses
     [ -s "$SECBACKUP_PATTERNS_FILE" ] || return 0
+    secbackup_is_plain_text "$SECBACKUP_PATTERNS_FILE" || return 1
     LC_ALL=C tr '\r' '\n' 2>/dev/null < "$SECBACKUP_PATTERNS_FILE" |
         while IFS= read -r line || [ -n "$line" ]; do
             line="${line#"$bom"}"
@@ -40,7 +54,7 @@ secbackup_patterns() {
 secbackup_check_message() {
     local file="$1" body pattern patterns
     if ! patterns="$(secbackup_patterns)"; then
-        echo "拒む言葉の一覧 ($SECBACKUP_PATTERNS_FILE) を読めませんでした。" >&2
+        echo "拒む言葉の一覧 ($SECBACKUP_PATTERNS_FILE) を読めませんでした。権限と、UTF-8 の文字だけで書かれていること (NUL などの制御文字がないこと) を確かめてください。" >&2
         return 1
     fi
     # Fail closed: a missing or empty list, or one without any usable pattern, rejects every message.
