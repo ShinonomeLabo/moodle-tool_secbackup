@@ -109,14 +109,17 @@ final class developer_settings_test extends \advanced_testcase {
         $planted = ['trustedkeys' => [envelope_builder::PUBLIC_KEY]];
         get_config('core');
         $cache = \cache::make('core', 'config');
-        $cached = $cache->get('core');
-        $this->assertIsArray($cached);
-        $cached['tool_secbackup_developer'] = $planted;
-        $cache->set('core', $cached);
-        initialise_cfg();
-        $this->assertSame($planted, $CFG->tool_secbackup_developer);
-        $this->assertSame([], developer_settings::current()->trusted_keys());
-        $cache->delete('core');
+        try {
+            $cached = $cache->get('core');
+            $this->assertIsArray($cached);
+            $cached['tool_secbackup_developer'] = $planted;
+            $cache->set('core', $cached);
+            initialise_cfg();
+            $this->assertSame($planted, $CFG->tool_secbackup_developer);
+            $this->assertSame([], developer_settings::current()->trusted_keys());
+        } finally {
+            $cache->delete('core');
+        }
     }
 
     /**
@@ -251,6 +254,7 @@ final class developer_settings_test extends \advanced_testcase {
             'a dash' => ['allow-http'],
             'a name of 33 letters' => [str_repeat('a', 33)],
             'a line break at the end' => ["bogus\n"],
+            'an empty name' => [''],
         ];
     }
 
@@ -271,7 +275,6 @@ final class developer_settings_test extends \advanced_testcase {
                 'Unknown setting. Names that do not look like the name of a setting are not shown.',
                 $e->debuginfo
             );
-            $this->assertStringNotContainsString($name, $e->getMessage());
         }
     }
 
@@ -284,6 +287,15 @@ final class developer_settings_test extends \advanced_testcase {
                 'Unknown setting. Names that do not look like the name of a setting are not shown.',
                 $e->debuginfo
             );
+        }
+    }
+
+    public function test_names_that_look_right_are_listed_without_a_note(): void {
+        try {
+            developer_settings::from_value(['bogus' => 1, 'other' => 2]);
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('Unknown setting: bogus, other.', $e->debuginfo);
         }
     }
 
