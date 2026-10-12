@@ -50,6 +50,11 @@ final class signing_keys_test extends \advanced_testcase {
         new signing_keypair('short');
     }
 
+    public function test_rejects_a_secret_that_is_too_long(): void {
+        $this->expectException(\coding_exception::class);
+        new signing_keypair(str_repeat('a', SODIUM_CRYPTO_SIGN_SECRETKEYBYTES + 1));
+    }
+
     public function test_the_secret_parameter_is_marked_sensitive(): void {
         $parameter = (new \ReflectionMethod(signing_keypair::class, '__construct'))->getParameters()[0];
         $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class));
@@ -87,6 +92,24 @@ final class signing_keys_test extends \advanced_testcase {
         } catch (key_exception $e) {
             $this->assertSame('signingkey_corrupt', $e->errorcode);
         }
+    }
+
+    public function test_a_stored_secret_that_is_too_long_is_reported(): void {
+        $this->resetAfterTest();
+        $toolong = str_repeat('a', SODIUM_CRYPTO_SIGN_SECRETKEYBYTES + 1);
+        set_config('signingsecret', \core\encryption::encrypt(base64_encode($toolong)), 'tool_secbackup');
+        try {
+            signing_keys::load();
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('signingkey_corrupt', $e->errorcode);
+        }
+    }
+
+    public function test_an_empty_stored_value_means_no_key(): void {
+        $this->resetAfterTest();
+        set_config('signingsecret', '', 'tool_secbackup');
+        $this->assertNull(signing_keys::load());
     }
 
     public function test_unreadable_storage_is_reported_with_its_cause(): void {

@@ -33,6 +33,12 @@ final class base64url_test extends \basic_testcase {
         $this->assertSame($data, base64url::decode($encoded));
     }
 
+    public function test_encode_leaves_out_the_padding(): void {
+        $this->assertSame('YQ', base64url::encode('a'));
+        $this->assertSame('YWI', base64url::encode('ab'));
+        $this->assertSame('ab', base64url::decode('YWI'));
+    }
+
     /**
      * Inputs that are not URL-safe base64 without padding.
      *

@@ -68,6 +68,7 @@ final class public_key_format_test extends \basic_testcase {
             'other prefix' => ['secbk2:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=', 'publickey_prefix'],
             'not base64' => ['secbk1:AQEB*QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=', 'publickey_base64'],
             'too short' => ['secbk1:AQEBAQ==', 'publickey_length'],
+            'too long' => ['secbk1:' . base64_encode(str_repeat("\x01", 33)), 'publickey_length'],
             'empty' => ['', 'publickey_prefix'],
         ];
     }
@@ -96,5 +97,10 @@ final class public_key_format_test extends \basic_testcase {
     public function test_encode_rejects_wrong_length(): void {
         $this->expectException(\coding_exception::class);
         public_key_format::encode('short');
+    }
+
+    public function test_encode_rejects_a_key_that_is_too_long(): void {
+        $this->expectException(\coding_exception::class);
+        public_key_format::encode(str_repeat("\x01", 33));
     }
 }
