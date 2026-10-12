@@ -47,19 +47,22 @@ expect_message ng "empty pattern list" $'日本語の件名\n'
 rm -f "$patterns.empty"
 SECBACKUP_PATTERNS_FILE="$patterns"
 
-# The list may come from an editor or a secret: CRLF line endings and blanks around a pattern
-# must not switch it off.
+# The list may come from an editor or a secret: CRLF line endings, blanks around a pattern and a
+# UTF-8 BOM at the start must not switch it off.
 printf 'forbiddenword\r\nsecond phrase\r\n' > "$patterns.crlf"
 SECBACKUP_PATTERNS_FILE="$patterns.crlf"
 expect_message ng "CRLF pattern list" $'変更を足す\n\nSecond Phrase\n'
 printf '\t forbiddenword \t\nsecond phrase\n' > "$patterns.blanks"
 SECBACKUP_PATTERNS_FILE="$patterns.blanks"
 expect_message ng "pattern with leading and trailing blanks" $'変更を足す\n\nforbiddenword\n'
+printf '\xef\xbb\xbfforbiddenword\nsecond phrase\n' > "$patterns.bom"
+SECBACKUP_PATTERNS_FILE="$patterns.bom"
+expect_message ng "pattern list starting with a UTF-8 BOM" $'変更を足す\n\nforbiddenword\n'
 # Fail closed: a list with no pattern left after normalising rejects every message.
 printf ' \t\r\n\n   \r\n\t' > "$patterns.blank"
 SECBACKUP_PATTERNS_FILE="$patterns.blank"
 expect_message ng "pattern list with only blank and CR lines" $'日本語の件名\n'
-rm -f "$patterns.crlf" "$patterns.blanks" "$patterns.blank"
+rm -f "$patterns.crlf" "$patterns.blanks" "$patterns.bom" "$patterns.blank"
 SECBACKUP_PATTERNS_FILE="$patterns"
 
 expect_identity ok "configured identity" 'Takayuki Fuwa <fuwa@shinonome.co.jp>'

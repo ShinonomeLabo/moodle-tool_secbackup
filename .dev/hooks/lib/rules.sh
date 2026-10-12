@@ -13,13 +13,15 @@ secbackup_strip_comments() {
 }
 
 # Prints the patterns of the local pattern file, one per line. The file may come from an editor or a
-# secret, so a CR counts as a line break (CRLF lists work), blanks around a pattern are removed
-# (blanks inside it are kept) and lines that are empty after that are skipped.
+# secret, so a CR counts as a line break (CRLF lists work), a UTF-8 BOM at the start of a line is
+# removed, blanks around a pattern are removed (blanks inside it are kept) and lines that are empty
+# after that are skipped.
 secbackup_patterns() {
-    local line
+    local line bom=$'\xef\xbb\xbf'
     [ -s "$SECBACKUP_PATTERNS_FILE" ] || return 0
     LC_ALL=C tr '\r' '\n' 2>/dev/null < "$SECBACKUP_PATTERNS_FILE" |
         while IFS= read -r line || [ -n "$line" ]; do
+            line="${line#"$bom"}"
             line="${line#"${line%%[![:blank:]]*}"}"
             line="${line%"${line##*[![:blank:]]}"}"
             if [ -n "$line" ]; then
