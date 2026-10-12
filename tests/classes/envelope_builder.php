@@ -113,10 +113,14 @@ final class envelope_builder {
     /**
      * Makes the test site trust this key through the developer settings.
      *
+     * The plugin reads the developer settings only from the copy of config.php that Moodle keeps in
+     * $CFG->config_php_settings, so they are written there.
+     *
      * @param array $extra Other developer settings.
      */
     public function trust(array $extra = []): void {
         global $CFG;
-        $CFG->tool_secbackup_developer = array_merge(['trustedkeys' => [$this->public_key_base64()]], $extra);
+        $settings = array_merge(['trustedkeys' => [$this->public_key_base64()]], $extra);
+        $CFG->config_php_settings['tool_secbackup_developer'] = $settings;
     }
 }

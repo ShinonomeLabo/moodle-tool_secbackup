@@ -32,7 +32,10 @@ namespace tool_secbackup\local\trust;
  *   and connect without Moodle's HTTP security list.
  * - skipnetworkchecks: skip the pinned root certificates, the name resolution check and the AWS range check.
  *
- * Nothing in the web interface can set these: whoever can edit config.php already controls the server.
+ * Nothing in the web interface can set these: whoever can edit config.php already controls the server. The value is read
+ * from $CFG->config_php_settings, the copy of config.php that Moodle takes before it loads the settings of its database
+ * and of the cache in front of it. Moodle copies those into $CFG for every name that config.php does not set, so a value
+ * that only $CFG holds could have been written by someone with much less access than config.php.
  * While any of them is active, every page of the plugin shows a warning.
  *
  * @package    tool_secbackup
@@ -67,7 +70,7 @@ final class developer_settings {
      */
     public static function current(): self {
         global $CFG;
-        return self::from_value($CFG->tool_secbackup_developer ?? null);
+        return self::from_value($CFG->config_php_settings['tool_secbackup_developer'] ?? null);
     }
 
     /**

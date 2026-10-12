@@ -40,7 +40,8 @@ final class developer_settings_test extends \advanced_testcase {
     public function test_reads_config_php(): void {
         global $CFG;
         $this->resetAfterTest();
-        $CFG->tool_secbackup_developer = [
+        // Moodle keeps a copy of what config.php set in $CFG->config_php_settings, before it loads the database settings.
+        $CFG->config_php_settings['tool_secbackup_developer'] = [
             'trustedkeys' => [envelope_builder::PUBLIC_KEY],
             'allowhttp' => true,
             'allowprivatehosts' => true,
@@ -57,8 +58,65 @@ final class developer_settings_test extends \advanced_testcase {
     public function test_absent_config_is_not_active(): void {
         global $CFG;
         $this->resetAfterTest();
-        unset($CFG->tool_secbackup_developer);
+        unset($CFG->config_php_settings['tool_secbackup_developer']);
         $this->assertFalse(developer_settings::current()->is_active());
+    }
+
+    public function test_a_value_that_only_cfg_holds_is_ignored(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        unset($CFG->config_php_settings['tool_secbackup_developer']);
+        // The way Moodle puts a setting of its database, or of the cache in front of it, into $CFG.
+        $CFG->tool_secbackup_developer = [
+            'trustedkeys' => [envelope_builder::PUBLIC_KEY],
+            'allowhttp' => true,
+            'allowprivatehosts' => true,
+            'skipnetworkchecks' => true,
+        ];
+        $settings = developer_settings::current();
+        $this->assertFalse($settings->is_active());
+        $this->assertSame([], $settings->trusted_keys());
+        $this->assertFalse($settings->allow_http());
+        $this->assertFalse($settings->allow_private_hosts());
+        $this->assertFalse($settings->skip_network_checks());
+    }
+
+    public function test_the_copy_of_config_php_wins_over_a_value_in_cfg(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->config_php_settings['tool_secbackup_developer'] = ['allowhttp' => true];
+        $CFG->tool_secbackup_developer = ['allowprivatehosts' => true];
+        $settings = developer_settings::current();
+        $this->assertTrue($settings->allow_http());
+        $this->assertFalse($settings->allow_private_hosts());
+    }
+
+    public function test_a_row_of_the_config_table_does_not_break_the_settings(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        unset($CFG->config_php_settings['tool_secbackup_developer']);
+        // A row of that name in the config table reaches $CFG as a text. It used to fail with a message about config.php.
+        set_config('tool_secbackup_developer', 'yes');
+        $this->assertSame('yes', $CFG->tool_secbackup_developer);
+        $this->assertFalse(developer_settings::current()->is_active());
+    }
+
+    public function test_an_array_in_the_config_cache_does_not_add_a_trusted_key(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        unset($CFG->config_php_settings['tool_secbackup_developer']);
+        // Whoever can write to the cache store can put an array there; initialise_cfg() copies the cache into $CFG.
+        $planted = ['trustedkeys' => [envelope_builder::PUBLIC_KEY]];
+        get_config('core');
+        $cache = \cache::make('core', 'config');
+        $cached = $cache->get('core');
+        $this->assertIsArray($cached);
+        $cached['tool_secbackup_developer'] = $planted;
+        $cache->set('core', $cached);
+        initialise_cfg();
+        $this->assertSame($planted, $CFG->tool_secbackup_developer);
+        $this->assertSame([], developer_settings::current()->trusted_keys());
+        $cache->delete('core');
     }
 
     /**
