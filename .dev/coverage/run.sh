@@ -17,15 +17,21 @@ run() { "$repo/.dev/env/run.sh" "$secbk_ver" "$secbk_db" "$@"; }
 # lacks the APACHE_DOCUMENT_ROOT that the container's main process has. A restart keeps the container's writable
 # layer, which holds the data of the PHPUnit and Behat test sites.
 ini=/usr/local/etc/php/conf.d/zz-secbk-coverage.ini
+# Restarts the container and waits, for at most three minutes, until the login page answers with HTTP 200.
 restart_web() {
-    "$SECBK_DOCKER/bin/moodle-docker-compose" restart webserver > /dev/null
-    for _ in $(seq 1 60); do
-        if curl -fsS -o /dev/null --max-time 10 "http://$MOODLE_DOCKER_WEB_PORT/login/index.php" 2> /dev/null; then
+    local url="http://$MOODLE_DOCKER_WEB_PORT/login/index.php"
+    local deadline=$((SECONDS + 180))
+    if ! "$SECBK_DOCKER/bin/moodle-docker-compose" restart webserver > /dev/null; then
+        echo "could not restart the web server of $COMPOSE_PROJECT_NAME" >&2
+        return 1
+    fi
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url")" = 200 ]; then
             return 0
         fi
         sleep 2
     done
-    echo "the web server did not come back" >&2
+    echo "the web server of $COMPOSE_PROJECT_NAME did not answer HTTP 200 at $url within 180 seconds of its restart" >&2
     return 1
 }
 collecting=0

@@ -5,9 +5,10 @@
 //
 // The statements of a file are the "stmt" lines of the Clover reports. PHPUnit takes them from a static analysis for a file
 // that no covered test loaded, and that analysis counts lines pcov never counts (the MOODLE_INTERNAL check, the item
-// lines of an array literal), which no run can execute. So once a collected run (JSON) has loaded a file, only the lines
-// in the run's table of executable lines ("executable") stay statements: the rule PHPUnit applies inside one run.
-// A line that is executable but was not executed is in that table, so a real miss is never hidden.
+// lines of an array literal), which no run can execute. So once collected runs (JSON) have loaded a file, only the lines
+// in the union of their tables of executable lines ("executable", executed or not) stay statements: the rule PHPUnit
+// applies inside one run. A line that is executable but was not executed is in a table, so a real miss is never hidden.
+// A file that no collected run loaded keeps all the lines of the Clover reports.
 //
 // Usage: php merge.php --shipped=<file list> [--report=<output file>] <report files...>
 
