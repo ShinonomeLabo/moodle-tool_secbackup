@@ -6,6 +6,8 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/rules.sh
 source "$here/lib/rules.sh"
+# The temporary file of secbackup_check_commit must not stay behind when a signal stops this script.
+trap secbackup_remove_message_file EXIT
 
 status=0
 count=0

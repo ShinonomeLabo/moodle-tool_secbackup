@@ -175,11 +175,18 @@ EOF
 cat > "$work/fakebin/git" <<'EOF'
 #!/usr/bin/env bash
 # git that fails or answers oddly on request. FAKE_GIT_FAIL_ON=N: the Nth "git log -1 --format=%B" call prints a
-# first line and exits with 1. FAKE_GIT_SHALLOW: "git rev-parse --is-shallow-repository" prints that text, or
-# fails when it is "fail" (git before 2.15 prints the option itself).
+# first line and exits with 1. FAKE_GIT_SIGNAL=NAME: the first such call prints a first line, sends that signal
+# to the process that called git (the hook) and ends at once, so the hook is stopped while it reads a message.
+# FAKE_GIT_SHALLOW: "git rev-parse --is-shallow-repository" prints that text, or fails when it is "fail" (git
+# before 2.15 prints the option itself).
 if [ "${1-}" = rev-parse ] && [ "${2-}" = --is-shallow-repository ] && [ -n "${FAKE_GIT_SHALLOW-}" ]; then
     [ "$FAKE_GIT_SHALLOW" = fail ] && exit 1
     echo "$FAKE_GIT_SHALLOW"
+    exit 0
+fi
+if [ "${1-}" = log ] && [ "${3-}" = '--format=%B' ] && [ -n "${FAKE_GIT_SIGNAL-}" ]; then
+    echo '日本語の件名'
+    kill -s "$FAKE_GIT_SIGNAL" "$PPID"
     exit 0
 fi
 if [ "${1-}" = log ] && [ "${3-}" = '--format=%B' ] && [ -n "${FAKE_GIT_FAIL_ON-}" ]; then
@@ -299,6 +306,16 @@ printf -v push_wrong_committer 'refs/heads/main %s refs/heads/main %s\n' "$(git 
 expect_message_env ng "word search that fails" $'日本語の件名\n' PATH="$work/fakebin:$PATH" FAKE_GREP_MODE=fail
 expect_message_env ok "searches run byte-wise" $'日本語の件名\n' PATH="$work/fakebin:$PATH" FAKE_GREP_MODE=bytes FAKE_SED_MODE=bytes FAKE_TR_MODE=bytes LC_ALL=POSIX
 expect_message_readonly ng "forbidden word while no file can be written (before bash 5.1 a here-string is a file)" $'日本語の件名\n\nforbiddenword\n'
+# bash 5.1 and later keep a here-string in a pipe as long as it fits (about 64 KiB) and write a longer one to a
+# temporary file. So the same test with a pattern list well over that size reaches the check in every version of
+# bash; the two other tests show that the long list itself works (the word is listed last, after 100 long words).
+perl -e 'print "x" x 1000, "\n" for 1 .. 100; print "forbiddenword\n"' > "$patterns.big"
+[ "$(( $(wc -c < "$patterns.big") ))" -gt 90000 ] || { echo "test setup: the long pattern list is too short" >&2; exit 2; }
+SECBACKUP_PATTERNS_FILE="$patterns.big"
+expect_message ok "pattern list over 64 KiB, message without a forbidden word" $'日本語の件名\n'
+expect_message ng "pattern list over 64 KiB, forbidden word listed last" $'日本語の件名\n\nforbiddenword\n'
+expect_message_readonly ng "forbidden word while no file can be written, pattern list over 64 KiB (bash 5 writes a file then)" $'日本語の件名\n\nforbiddenword\n'
+SECBACKUP_PATTERNS_FILE="$patterns"
 # A message or a pattern list that was read only in part must not be used. The message of the first test is
 # clean on purpose: with a forbidden word in it, the search of the words would reject it by itself and the
 # test would not reach the check that the stripping of the comments succeeded.
@@ -379,8 +396,23 @@ expect_check() {
 expect_check ok "install.sh stops with a message about perl when perl is missing" install_stops_without_perl
 expect_check ok "install.sh enables the hooks of its repository" install_enables_the_hooks
 
-# Every hook run above made a temporary file in $TMPDIR (that is, under $work) for the message of each commit
-# and has to remove it again.
+# A hook that a signal stops while it reads the message of a commit has to remove the temporary file it made for it.
+# The fake git sends the signal to the hook (the process that called it) and ends at once, so nothing depends on
+# timing: the hook has to die of the signal (status 128 + 15 for SIGTERM) and leave nothing in its own, empty
+# TMPDIR (under $work, like the rest). SIGINT and SIGHUP are not tried: a shell that was started in the background
+# or by nohup ignores them, and the result would depend on who runs the tests.
+interrupted_hook_leaves_nothing() {
+    local script="$1" input="$2" rc dir="$work/interrupted-$1"
+    mkdir "$dir" || return 1
+    run_hook "$good" "$script" "$input" TMPDIR="$dir" PATH="$work/fakebin:$PATH" FAKE_GIT_SIGNAL=TERM > /dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 143 ] && [ -z "$(ls -A "$dir")" ]
+}
+expect_check ok "pre-push stopped by SIGTERM while it reads a message removes its temporary file" interrupted_hook_leaves_nothing pre-push "$push_good"
+expect_check ok "check-history stopped by SIGTERM while it reads a message removes its temporary file" interrupted_hook_leaves_nothing check-history.sh ''
+
+# Every hook run above that ran to its end (the interrupted ones have their own TMPDIR) made a temporary file in
+# $TMPDIR, that is under $work, for the message of each commit and has to remove it again.
 no_temporary_file_left() { ! compgen -G "$work/secbackup-message.*" > /dev/null; }
 expect_check ok "the hooks leave no temporary file behind" no_temporary_file_left
 

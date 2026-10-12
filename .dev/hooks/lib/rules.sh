@@ -123,23 +123,35 @@ secbackup_check_identity() {
     return 0
 }
 
+# The temporary file of secbackup_check_commit. Its name is kept here, not in a local variable, so that an entry
+# point can remove the file when a signal stops it: an entry point that calls secbackup_check_commit runs
+# "trap secbackup_remove_message_file EXIT" (bash runs an EXIT trap also when SIGINT, SIGTERM or SIGHUP ends it).
+SECBACKUP_MESSAGE_FILE=
+
+# Removes the temporary file of secbackup_check_commit, if there is one.
+secbackup_remove_message_file() {
+    [ -z "$SECBACKUP_MESSAGE_FILE" ] || rm -f "$SECBACKUP_MESSAGE_FILE"
+    SECBACKUP_MESSAGE_FILE=
+}
+
 # Usage: secbackup_check_commit <sha> <label>. Checks the stored message of a commit and its author and committer.
 # Returns 1 when the commit breaks a rule or cannot be read; the reasons and "  -> <label>" go to the standard
-# error. pre-push and check-history.sh both check a commit this way, so that the two gates cannot differ.
+# error. pre-push and check-history.sh both check a commit this way, so that the two gates cannot differ. The
+# caller has to run "trap secbackup_remove_message_file EXIT" (see above).
 secbackup_check_commit() {
-    local commit="$1" label="$2" tmp status=0
+    local commit="$1" label="$2" status=0
     # With a template, mktemp makes the file in TMPDIR on every system (without one, macOS ignores TMPDIR).
-    if ! tmp="$(mktemp "${TMPDIR:-/tmp}/secbackup-message.XXXXXXXXXX")"; then
+    if ! SECBACKUP_MESSAGE_FILE="$(mktemp "${TMPDIR:-/tmp}/secbackup-message.XXXXXXXXXX")"; then
         echo "一時ファイルを作れませんでした。" >&2
         status=1
-    elif ! git log -1 --format=%B "$commit" > "$tmp"; then
+    elif ! git log -1 --format=%B "$commit" > "$SECBACKUP_MESSAGE_FILE"; then
         # A message that was read only in part must not be checked.
         echo "コミットのメッセージを読めませんでした。" >&2
         status=1
-    elif ! secbackup_check_message "$tmp"; then
+    elif ! secbackup_check_message "$SECBACKUP_MESSAGE_FILE"; then
         status=1
     fi
-    [ -z "$tmp" ] || rm -f "$tmp"
+    secbackup_remove_message_file
     secbackup_check_identity "$(git log -1 --format='%an <%ae>' "$commit")" || status=1
     secbackup_check_identity "$(git log -1 --format='%cn <%ce>' "$commit")" || status=1
     [ "$status" -eq 0 ] && return 0
