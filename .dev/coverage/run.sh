@@ -2,6 +2,10 @@
 # Runs PHPUnit, Behat and the command line scripts of one environment with coverage collection, and prints the merge.
 # Usage: .dev/coverage/run.sh <ver> <db>    (SECBK_PHP selects another PHP version, as in .dev/env/env.sh)
 # Exits non-zero when PHPUnit or Behat fails, or when a line of a shipped file was not executed.
+# Commit first: the list of the release files is taken from HEAD, so the run refuses to start while a file outside
+# .dev/ and tests/ is changed or new. While it runs, the web server of the environment records every request, also those
+# of a browser: leave the site alone, and do not run two environments of this checkout at the same time (they share
+# .dev/coverage/out/raw).
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=../env/env.sh
@@ -11,6 +15,40 @@ out="$repo/.dev/coverage/out/$name"
 raw="$repo/.dev/coverage/out/raw"
 plugin="/var/www/html/$SECBK_PLUGIN_PATH"
 run() { "$repo/.dev/env/run.sh" "$secbk_ver" "$secbk_db" "$@"; }
+
+# Prints the paths in the output of "git status --porcelain" (the argument) that are outside .dev/ and tests/. A renamed
+# file shows as "old -> new", and a name with unusual characters is quoted.
+outside_release_paths() {
+    local entry changed
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        entry="${entry:3}"
+        if [[ "$entry" == *" -> "* ]]; then
+            set -- "${entry%% -> *}" "${entry##* -> }"
+        else
+            set -- "$entry"
+        fi
+        for changed in "$@"; do
+            changed="${changed#\"}"
+            changed="${changed%\"}"
+            case "$changed" in
+                .dev/* | tests/*) ;;
+                *) printf '%s\n' "$changed" ;;
+            esac
+        done
+    done <<< "$1"
+}
+# The release list comes from HEAD (shipped_files.sh) but the files of the work tree are measured: a file that is changed
+# or new and not committed would be measured without being on the list.
+status="$(git -C "$repo" status --porcelain --untracked-files=all)"
+uncommitted="$(outside_release_paths "$status")"
+if [ -n "$uncommitted" ]; then
+    echo "commit first: the release list is taken from HEAD, and these paths outside .dev/ and tests/ are changed or new:" >&2
+    while IFS= read -r changed_path; do
+        echo "  $changed_path" >&2
+    done <<< "$uncommitted"
+    exit 1
+fi
 
 # Apache reads its PHP settings only when it starts, so the web server container is restarted to start and to stop
 # the collection. A graceful reload made the container exit (segmentation fault), and apachectl run by docker exec
@@ -39,7 +77,13 @@ stop_collecting() {
     if [ "$collecting" -eq 1 ]; then
         collecting=0
         rm -f "$raw/ENABLED"
-        run sh -c "rm -f $ini"
+        if ! run sh -c "rm -f $ini"; then
+            echo "the coverage settings $ini are still in the web server container of $COMPOSE_PROJECT_NAME." >&2
+            echo "Start the container if it is stopped, then remove them and restart the web server:" >&2
+            echo "  $repo/.dev/env/run.sh $secbk_ver $secbk_db rm -f $ini" >&2
+            echo "  $SECBK_DOCKER/bin/moodle-docker-compose restart webserver" >&2
+            return 1
+        fi
         restart_web
     fi
 }
@@ -54,9 +98,10 @@ mkdir -p "$out" "$raw"
 SECBK_COVERAGE="$plugin/.dev/coverage/out/$name/phpunit.xml" "$repo/.dev/env/phpunit.sh" "$secbk_ver" "$secbk_db" --fail-on-warning
 
 # Behat and CLI through the collector. OPcache is off, so that the web requests count the same lines as PHPUnit does.
+# The flag is set before anything is written, so that a failure half way still takes the settings away.
+collecting=1
 run sh -c "printf 'auto_prepend_file=$plugin/.dev/coverage/collector.php\nopcache.enable=0\npcov.enabled=1\npcov.directory=$plugin\n' > $ini"
 touch "$raw/ENABLED"
-collecting=1
 restart_web
 
 # The declaration files run when Moodle installs the plugin: reinstall it on the development site.
@@ -72,11 +117,29 @@ if [ -x "$repo/.dev/coverage/cli.sh" ]; then
     "$repo/.dev/coverage/cli.sh" "$secbk_ver" "$secbk_db"
 fi
 stop_collecting
-mv "$raw"/*.json "$out"/ 2>/dev/null || true
+
+# A report that is lost makes the merge count fewer lines, so the run must have left reports, and none half written.
+shopt -s nullglob
+unfinished=("$raw"/*.tmp)
+collected=("$raw"/*.json)
+shopt -u nullglob
+if [ "${#unfinished[@]}" -gt 0 ]; then
+    echo "a request was cut off while the collector wrote its report: ${unfinished[*]}" >&2
+    exit 1
+fi
+if [ "${#collected[@]}" -eq 0 ]; then
+    echo "the run left no JSON report in $raw: the collector recorded nothing" >&2
+    if [ "$behat_status" -ne 0 ]; then
+        echo "Behat failed (exit $behat_status)" >&2
+    fi
+    exit 1
+fi
+mv "${collected[@]}" "$out"/
 
 "$repo/.dev/coverage/shipped_files.sh" > "$out/shipped.txt"
 merge_status=0
-php "$repo/.dev/coverage/merge.php" --shipped="$out/shipped.txt" --report="$out/merge.txt" "$out"/phpunit.xml "$out"/*.json \
+reports=("$out"/phpunit.xml "$out"/*.json)
+php "$repo/.dev/coverage/merge.php" --shipped="$out/shipped.txt" --report="$out/merge.txt" "${reports[@]}" \
     || merge_status=$?
 if [ "$behat_status" -ne 0 ]; then
     echo "Behat failed (exit $behat_status)" >&2

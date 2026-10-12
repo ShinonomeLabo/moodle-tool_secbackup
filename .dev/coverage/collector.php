@@ -6,6 +6,9 @@
 // collector lives: in CI, the collector of the checkout records the copy that moodle-plugin-ci installed.
 // For every file the run loaded it writes the executed lines ("files") and the lines pcov counts as executable at all
 // ("executable"): pcov does not count every line a static analysis calls a statement, so the merge needs both.
+// A report that is lost or half written would make the merge count fewer lines, so a failure here is loud (an
+// exception) and a report appears under its name only when it is complete: it is written under a temporary name
+// first, and the merge reads *.json only.
 
 (function (): void {
     $raw = __DIR__ . '/out/raw';
@@ -32,10 +35,19 @@
             }
         }
         \pcov\clear();
-        if ($executable !== []) {
-            $kind = PHP_SAPI === 'cli' ? 'cli' : 'web';
-            $json = json_encode(['files' => $executed, 'executable' => $executable]);
-            file_put_contents($raw . '/' . $kind . '-' . bin2hex(random_bytes(8)) . '.json', $json);
+        if ($executable === []) {
+            return;
+        }
+        $json = json_encode(['files' => $executed, 'executable' => $executable], JSON_THROW_ON_ERROR);
+        $target = $raw . '/' . (PHP_SAPI === 'cli' ? 'cli' : 'web') . '-' . bin2hex(random_bytes(8)) . '.json';
+        $temporary = $target . '.tmp';
+        if (file_put_contents($temporary, $json) !== strlen($json)) {
+            @unlink($temporary);
+            throw new \RuntimeException("The coverage collector cannot write $temporary");
+        }
+        if (!rename($temporary, $target)) {
+            @unlink($temporary);
+            throw new \RuntimeException("The coverage collector cannot rename $temporary to $target");
         }
     });
 })();
