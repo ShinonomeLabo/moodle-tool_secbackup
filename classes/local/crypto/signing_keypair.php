@@ -127,4 +127,14 @@ final class signing_keypair {
     public function __sleep(): array {
         throw new \coding_exception('A signing key pair must not be serialised.');
     }
+
+    /**
+     * Refuses to be built from a serialised string: that skips the constructor and its check of the public key.
+     *
+     * @param array $data The serialised properties, ignored.
+     * @throws \coding_exception Always.
+     */
+    public function __unserialize(array $data): void {
+        throw new \coding_exception('A signing key pair must not be unserialised.');
+    }
 }

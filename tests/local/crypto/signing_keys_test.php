@@ -68,6 +68,18 @@ final class signing_keys_test extends \advanced_testcase {
         $pair->__sleep();
     }
 
+    public function test_a_crafted_string_cannot_build_a_pair(): void {
+        // The serialised form of an object whose constructor never ran: the seed of one pair, the public key of another.
+        $class = signing_keypair::class;
+        $secret = self::mismatching_secret();
+        $crafted = 'O:' . strlen($class) . ':"' . $class . '":2:{'
+            . self::serialised_private_property($class, 'secret', $secret)
+            . self::serialised_private_property($class, 'public', substr($secret, SODIUM_CRYPTO_SIGN_SEEDBYTES))
+            . '}';
+        $this->expectException(\coding_exception::class);
+        unserialize($crafted, ['allowed_classes' => [$class]]);
+    }
+
     public function test_rejects_a_public_half_that_does_not_belong_to_the_seed(): void {
         try {
             new signing_keypair(self::mismatching_secret());
@@ -192,6 +204,8 @@ final class signing_keys_test extends \advanced_testcase {
 
         $this->assertSame('signingkey_savefailed', $e->errorcode);
         $this->assertSame($cause, $e->debuginfo);
+        // No string of the plugin uses a value yet, so nothing else would notice a secret handed over as $a.
+        $this->assertNull($e->a);
         $this->assertNull($e->getPrevious());
         $this->assertFalse(self::trace_shows($e, $needles));
         $this->assertFalse(get_config('tool_secbackup', 'signingsecret'));
@@ -290,6 +304,19 @@ final class signing_keys_test extends \advanced_testcase {
         $seedowner = signing_keypair::generate();
         $other = signing_keypair::generate();
         return substr($seedowner->export_secret(), 0, SODIUM_CRYPTO_SIGN_SEEDBYTES) . $other->public_key();
+    }
+
+    /**
+     * The serialised form of a private property of a class: its name has the class between NUL bytes.
+     *
+     * @param string $class The class that declares the property.
+     * @param string $name The name of the property.
+     * @param string $value The value, a string.
+     * @return string
+     */
+    private static function serialised_private_property(string $class, string $name, string $value): string {
+        $key = "\0" . $class . "\0" . $name;
+        return 's:' . strlen($key) . ':"' . $key . '";s:' . strlen($value) . ':"' . $value . '";';
     }
 
     /**
