@@ -25,6 +25,14 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['developersettings_invalid'] = 'config.php の開発用の設定 (TOOL_SECBACKUP_DEVELOPER) に誤りがあります。理由は、デバッグの表示を有効にすると確かめられます。';
+$string['endpoint_empty'] = 'プラットフォームの画面に出ている接続先の URL を入れてください。';
+$string['endpoint_host'] = '接続先の URL のホスト名は使えません。プラットフォームの画面に出ている、IP アドレスではないホスト名の URL を使ってください。';
+$string['endpoint_invalid'] = '接続先の URL の形になっていません。プラットフォームの画面から、https:// で始まる URL の全体をコピーしてください。';
+$string['endpoint_path'] = '接続先の URL のパスに使えない文字が入っています。プラットフォームの画面から、もう一度コピーしてください。';
+$string['endpoint_port'] = '接続先の URL に、標準の番号 (443) 以外のポートは入れられません。';
+$string['endpoint_query'] = '接続先の URL に「?」や「#」は入れられません。プラットフォームの画面から、もう一度コピーしてください。';
+$string['endpoint_scheme'] = '接続先の URL は https:// で始めてください。';
+$string['endpoint_userinfo'] = '接続先の URL に、ユーザー名やパスワードは入れられません。';
 $string['envelope_malformed'] = '接続先のサービスからの応答を読めませんでした。接続先の URL が正しいか確かめてください。';
 $string['envelope_signature'] = '接続先のサービスからの応答の署名を確かめられませんでした。接続先の URL が正しいか確かめてください。';
 $string['envelope_untrusted'] = 'この連携ツールが信頼していない鍵で署名された応答です。接続先の URL が正しいか確かめてください。';

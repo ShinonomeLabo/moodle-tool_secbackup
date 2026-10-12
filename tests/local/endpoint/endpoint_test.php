@@ -1,0 +1,235 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+namespace tool_secbackup\local\endpoint;
+
+use tool_secbackup\local\trust\developer_settings;
+
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\endpoint\endpoint::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\endpoint\endpoint_exception::class)]
+/**
+ * Tests for the connection URL.
+ *
+ * @package    tool_secbackup
+ * @copyright  2026 Shinonome Laboratory LLC.
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @covers     \tool_secbackup\local\endpoint\endpoint
+ * @covers     \tool_secbackup\local\endpoint\endpoint_exception
+ */
+final class endpoint_test extends \basic_testcase {
+    /** @var string The connection URL in its normal form. */
+    private const URL = 'https://lms-backup.example.com/api/lms-backup/v1';
+
+    /**
+     * Production settings.
+     *
+     * @return developer_settings
+     */
+    private static function production(): developer_settings {
+        return developer_settings::from_value(null);
+    }
+
+    /**
+     * Development settings for a local service.
+     *
+     * @return developer_settings
+     */
+    private static function development(): developer_settings {
+        return developer_settings::from_value(['allowhttp' => true, 'allowprivatehosts' => true]);
+    }
+
+    /**
+     * Ways of writing the same URL.
+     *
+     * @return array
+     */
+    public static function same_url_provider(): array {
+        return [
+            'normal' => [self::URL],
+            'trailing slash' => [self::URL . '/'],
+            'several trailing slashes' => [self::URL . '///'],
+            'upper case host' => ['https://LMS-Backup.Example.COM/api/lms-backup/v1'],
+            'upper case scheme' => ['HTTPS://lms-backup.example.com/api/lms-backup/v1'],
+            'explicit port' => ['https://lms-backup.example.com:443/api/lms-backup/v1'],
+            'surrounding spaces' => ["  " . self::URL . " \n"],
+            'full-width spaces' => ["\u{3000}" . self::URL . "\u{3000}"],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('same_url_provider')]
+    /**
+     * Every way of writing the connection URL gives the same normal form, and the URLs are equal.
+     *
+     * @dataProvider same_url_provider
+     * @param string $input Typed URL.
+     */
+    public function test_variants_give_the_same_url(string $input): void {
+        $endpoint = endpoint::parse($input, self::production());
+        $this->assertSame(self::URL, $endpoint->url());
+        $this->assertTrue($endpoint->equals(endpoint::parse(self::URL, self::production())));
+    }
+
+    public function test_parts(): void {
+        $endpoint = endpoint::parse(self::URL, self::production());
+        $this->assertSame('https', $endpoint->scheme());
+        $this->assertSame('lms-backup.example.com', $endpoint->host());
+        $this->assertSame(443, $endpoint->port());
+        $this->assertSame('/api/lms-backup/v1', $endpoint->path());
+        $this->assertSame(self::URL . '/enroll', $endpoint->join('enroll'));
+        $this->assertSame('/api/lms-backup/v1/status', $endpoint->path_of('status'));
+    }
+
+    public function test_port_is_kept_in_the_url(): void {
+        $settings = developer_settings::from_value(['allowhttp' => true, 'allowprivatehosts' => true]);
+        $endpoint = endpoint::parse('http://LOCALHOST:8099/api/lms-backup/v1/', $settings);
+        $this->assertSame('localhost', $endpoint->host());
+        $this->assertSame(8099, $endpoint->port());
+        $this->assertSame('http://localhost:8099/api/lms-backup/v1/status', $endpoint->join('status'));
+        $this->assertSame('/api/lms-backup/v1/status', $endpoint->path_of('status'));
+    }
+
+    public function test_root_path(): void {
+        $endpoint = endpoint::parse('https://backup.example.org/', self::production());
+        $this->assertSame('https://backup.example.org', $endpoint->url());
+        $this->assertSame('', $endpoint->path());
+        $this->assertSame('/enroll', $endpoint->path_of('enroll'));
+    }
+
+    public function test_path_case_is_kept(): void {
+        $endpoint = endpoint::parse('https://lms-backup.example.com/API/lms-backup/v1', self::production());
+        $this->assertSame('https://lms-backup.example.com/API/lms-backup/v1', $endpoint->url());
+        $this->assertFalse($endpoint->equals(endpoint::parse(self::URL, self::production())));
+    }
+
+    public function test_join_refuses_unexpected_names(): void {
+        $this->expectException(\coding_exception::class);
+        endpoint::parse(self::URL, self::production())->join('../admin');
+    }
+
+    /**
+     * URLs refused in production, with the reason.
+     *
+     * @return array
+     */
+    public static function refused_provider(): array {
+        return [
+            'empty' => ['', 'endpoint_empty'],
+            'only spaces' => ["  \u{3000} ", 'endpoint_empty'],
+            'no scheme' => ['lms-backup.example.com/api/lms-backup/v1', 'endpoint_invalid'],
+            'too long' => ['https://lms-backup.example.com/' . str_repeat('a', 2100), 'endpoint_invalid'],
+            'http' => ['http://lms-backup.example.com/api/lms-backup/v1', 'endpoint_scheme'],
+            'ftp' => ['ftp://lms-backup.example.com/api', 'endpoint_scheme'],
+            'user name' => ['https://user@lms-backup.example.com/api', 'endpoint_userinfo'],
+            'user and password' => ['https://user:secret@lms-backup.example.com/api', 'endpoint_userinfo'],
+            'other port' => ['https://lms-backup.example.com:8443/api', 'endpoint_port'],
+            'empty port' => ['https://lms-backup.example.com:/api', 'endpoint_port'],
+            'port with letters' => ['https://lms-backup.example.com:44a/api', 'endpoint_port'],
+            'query' => ['https://lms-backup.example.com/api?x=1', 'endpoint_query'],
+            'empty query' => ['https://lms-backup.example.com/api?', 'endpoint_query'],
+            'fragment' => ['https://lms-backup.example.com/api#top', 'endpoint_query'],
+            'ipv4 address' => ['https://203.0.113.5/api', 'endpoint_host'],
+            'ipv6 address' => ['https://[2001:db8::1]/api', 'endpoint_host'],
+            'localhost' => ['https://localhost/api', 'endpoint_host'],
+            'short numeric address' => ['https://127.1/api', 'endpoint_host'],
+            'octal address' => ['https://0177.0.0.1/api', 'endpoint_host'],
+            'underscore' => ['https://app_yu.example.org/api', 'endpoint_host'],
+            'leading hyphen' => ['https://-app.example.org/api', 'endpoint_host'],
+            'space in host' => ['https://app yu.example.org/api', 'endpoint_host'],
+            'non-ascii host' => ["https://\u{4F8B}.jp/api", 'endpoint_host'],
+            'dot segment' => ['https://lms-backup.example.com/api/../admin', 'endpoint_path'],
+            'encoded dot segment' => ['https://lms-backup.example.com/api/%2e%2e/admin', 'endpoint_path'],
+            'empty segment' => ['https://lms-backup.example.com//api', 'endpoint_path'],
+            'space in path' => ['https://lms-backup.example.com/api v1', 'endpoint_path'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refused_provider')]
+    /**
+     * A URL that does not have the one accepted shape is refused with the reason for it.
+     *
+     * @dataProvider refused_provider
+     * @param string $input Typed URL.
+     * @param string $code Expected error code.
+     */
+    public function test_refused_in_production(string $input, string $code): void {
+        try {
+            endpoint::parse($input, self::production());
+            $this->fail('No exception');
+        } catch (endpoint_exception $e) {
+            $this->assertSame($code, $e->errorcode);
+        }
+    }
+
+    /**
+     * URLs that only the developer settings accept.
+     *
+     * @return array
+     */
+    public static function development_provider(): array {
+        return [
+            'fake service container' => ['http://fakesec/api/lms-backup/v1', 'http://fakesec/api/lms-backup/v1', 80],
+            'docker host' => ['http://host.docker.internal/api/lms-backup/v1/',
+                'http://host.docker.internal/api/lms-backup/v1', 80],
+            'loopback address' => ['http://127.0.0.1:80/api', 'http://127.0.0.1/api', 80],
+            'https localhost' => ['https://localhost/api', 'https://localhost/api', 443],
+            'fake service port' => ['http://localhost:8099/api/lms-backup/v1', 'http://localhost:8099/api/lms-backup/v1', 8099],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('development_provider')]
+    /**
+     * The developer settings accept a local service, and a port other than the default one stays in the URL.
+     *
+     * @dataProvider development_provider
+     * @param string $input Typed URL.
+     * @param string $url Expected normal form.
+     * @param int $port Expected port.
+     */
+    public function test_development_settings_accept_local_services(string $input, string $url, int $port): void {
+        $endpoint = endpoint::parse($input, self::development());
+        $this->assertSame($url, $endpoint->url());
+        $this->assertSame($port, $endpoint->port());
+    }
+
+    public function test_development_settings_keep_the_other_rules(): void {
+        $refused = ['http://localhost:0/api' => 'endpoint_port', 'http://localhost:65536/api' => 'endpoint_port',
+            'http://[::1]/api' => 'endpoint_host', 'http://127.1/api' => 'endpoint_host',
+            'http://fakesec/api?x' => 'endpoint_query'];
+        foreach ($refused as $input => $code) {
+            try {
+                endpoint::parse($input, self::development());
+                $this->fail('No exception for ' . $input);
+            } catch (endpoint_exception $e) {
+                $this->assertSame($code, $e->errorcode, $input);
+            }
+        }
+    }
+
+    public function test_allowhttp_alone_does_not_allow_private_hosts_or_ports(): void {
+        $settings = developer_settings::from_value(['allowhttp' => true]);
+        $accepted = endpoint::parse('http://lms-backup.example.com/api', $settings);
+        $this->assertSame('http://lms-backup.example.com/api', $accepted->url());
+        $refused = ['http://fakesec/api' => 'endpoint_host', 'http://lms-backup.example.com:8080/api' => 'endpoint_port'];
+        foreach ($refused as $input => $code) {
+            try {
+                endpoint::parse($input, $settings);
+                $this->fail('No exception for ' . $input);
+            } catch (endpoint_exception $e) {
+                $this->assertSame($code, $e->errorcode, $input);
+            }
+        }
+    }
+}

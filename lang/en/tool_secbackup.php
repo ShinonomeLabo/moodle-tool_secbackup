@@ -25,6 +25,14 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['developersettings_invalid'] = 'The developer settings in config.php (TOOL_SECBACKUP_DEVELOPER) are not valid. Turn on debugging to see the reason.';
+$string['endpoint_empty'] = 'Enter the connection URL shown on the platform screen.';
+$string['endpoint_host'] = 'The host name of the connection URL is not allowed. Use the URL shown on the platform screen, with a host name and not an IP address.';
+$string['endpoint_invalid'] = 'The connection URL is not a URL. Copy the whole URL, starting with https://, from the platform screen.';
+$string['endpoint_path'] = 'The path of the connection URL contains characters that are not allowed. Copy the URL again from the platform screen.';
+$string['endpoint_port'] = 'The connection URL must not contain a port number other than the standard one (443).';
+$string['endpoint_query'] = 'The connection URL must not contain "?" or "#". Copy the URL again from the platform screen.';
+$string['endpoint_scheme'] = 'The connection URL must start with https://.';
+$string['endpoint_userinfo'] = 'The connection URL must not contain a user name or a password.';
 $string['envelope_malformed'] = 'The response from the service could not be read. Check that the connection URL is correct.';
 $string['envelope_signature'] = 'The signature of the response from the service could not be verified. Check that the connection URL is correct.';
 $string['envelope_untrusted'] = 'The response was signed with a key that this plugin does not trust. Check that the connection URL is correct.';
