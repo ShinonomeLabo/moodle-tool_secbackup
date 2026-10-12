@@ -30,10 +30,15 @@ use tool_secbackup\tests\envelope_builder;
  * @covers     \tool_secbackup\local\trust\envelope_exception
  */
 final class sec_trust_test extends \advanced_testcase {
-    /** @var string A response the service signed with the RFC 8032 TEST 2 key. */
+    /** @var string A signed response made with the RFC 8032 TEST 2 key, the key that the backup service's tests use. */
     private const FIXED = '{"v":1,"kid":"39f713d0a644253f",'
         . '"payload":"eyJ0eXBlIjoiZW5yb2xsbWVudCIsInNpdGVfaWQiOiIxMTExMTExMS0yMjIyLTQzMzMtODQ0NC01NTU1NTU1NTU1NTUifQ",'
         . '"sig":"1qXTc4FPfq58qxt8DQXKaM8sQMyF-G_tJwTLKrdckxLLPFyI2EOn5jKGnmvUKIZBLiyy9adUUM3KQbpPmRwVAg"}';
+
+    /** @var string The response that the backup service's own tests pin, signed with the same key. */
+    private const SERVICE_VECTOR = '{"v":1,"kid":"39f713d0a644253f",'
+        . '"payload":"eyJ0eXBlIjoiZW5yb2xsbWVudCIsInNpdGVfaWQiOiIwYjlmNWE1Mi0zYzFlLTRkN2EtOWYyZS02YTFkMmMzYjRlNWYifQ",'
+        . '"sig":"WJxpIywlyGYwHy86MoSA8-4XHVUpXGdgqFsGKKdkmN4lCestpiGzesFmoR0S7qb95vm6MyYLxJ05dVZRwrTYCg"}';
 
     /**
      * A trust that knows only the test key.
@@ -65,6 +70,20 @@ final class sec_trust_test extends \advanced_testcase {
             ['type' => 'enrollment', 'site_id' => '11111111-2222-4333-8444-555555555555'],
             self::trust()->open(self::FIXED)
         );
+    }
+
+    public function test_opens_the_backup_services_test_vector(): void {
+        $this->assertSame(
+            ['type' => 'enrollment', 'site_id' => '0b9f5a52-3c1e-4d7a-9f2e-6a1d2c3b4e5f'],
+            self::trust()->open(self::SERVICE_VECTOR)
+        );
+    }
+
+    public function test_the_helper_builds_the_backup_services_test_vector_byte_for_byte(): void {
+        // The helper follows the procedure of the service without the plugin's classes. If both give the same bytes,
+        // the service and this test suite pin one and the same response.
+        $parts = (new envelope_builder())->parts(['type' => 'enrollment', 'site_id' => '0b9f5a52-3c1e-4d7a-9f2e-6a1d2c3b4e5f']);
+        $this->assertSame(json_decode(self::SERVICE_VECTOR, true), $parts);
     }
 
     public function test_key_id_matches_the_service(): void {
@@ -109,8 +128,8 @@ final class sec_trust_test extends \advanced_testcase {
     }
 
     public function test_without_keys_everything_is_untrusted(): void {
-        $this->expectException(envelope_exception::class);
-        (new sec_trust([]))->open(self::FIXED);
+        $this->expect_failure('envelope_untrusted', self::FIXED, new sec_trust([]));
+        $this->expect_failure('envelope_untrusted', self::SERVICE_VECTOR, new sec_trust([]));
     }
 
     public function test_another_key_is_untrusted(): void {
