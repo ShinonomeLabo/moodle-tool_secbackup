@@ -49,10 +49,11 @@ final class sec_trust_test extends \advanced_testcase {
      *
      * @param string $code Error code.
      * @param string $body Response body.
+     * @param sec_trust|null $trust The trust to ask; the one that knows only the test key when null.
      */
-    private function expect_failure(string $code, string $body): void {
+    private function expect_failure(string $code, string $body, ?sec_trust $trust = null): void {
         try {
-            self::trust()->open($body);
+            ($trust ?? self::trust())->open($body);
             $this->fail('No exception');
         } catch (envelope_exception $e) {
             $this->assertSame($code, $e->errorcode);
@@ -121,6 +122,27 @@ final class sec_trust_test extends \advanced_testcase {
     }
 
     /**
+     * A correctly signed response, padded with blanks to a length.
+     *
+     * @param int $length Length of the body in bytes.
+     * @return string
+     */
+    private static function padded_body(int $length): string {
+        $body = (new envelope_builder())->body(['type' => 'enrollment']);
+        return $body . str_repeat(' ', $length - strlen($body));
+    }
+
+    /**
+     * A JSON object nested in itself, with a number inside the innermost one.
+     *
+     * @param int $levels Number of objects.
+     * @return string
+     */
+    private static function nested_object(int $levels): string {
+        return str_repeat('{"a":', $levels) . '1' . str_repeat('}', $levels);
+    }
+
+    /**
      * Bodies that are not signed responses.
      *
      * @return array
@@ -141,6 +163,16 @@ final class sec_trust_test extends \advanced_testcase {
             'payload is not json' => [self::signed_raw_payload('nope')],
             'too large' => [str_repeat(' ', sec_trust::MAX_BODY + 1)],
             'too deep' => ['{"v":1,"kid":{"a":{"b":{"c":{"d":{}}}}},"payload":"","sig":""}'],
+            'too large but signed' => [self::padded_body(sec_trust::MAX_BODY + 1)],
+            'short key id' => [json_encode(['kid' => substr($good['kid'], 0, 15)] + $good)],
+            'long key id' => [json_encode(['kid' => $good['kid'] . '0'] + $good)],
+            'key id is a list' => [json_encode(['kid' => [1]] + $good)],
+            'payload is a number' => [json_encode(['payload' => 123] + $good)],
+            'payload is empty' => [json_encode(['payload' => ''] + $good)],
+            'signature is a number' => [json_encode(['sig' => 123] + $good)],
+            'signature not base64url' => [json_encode(['sig' => 'a+b/'] + $good)],
+            'long signature' => [json_encode(['sig' => envelope_builder::b64url(str_repeat('a', 65))] + $good)],
+            'payload nested too deep' => [self::signed_raw_payload(self::nested_object(16))],
         ];
     }
 
@@ -158,6 +190,101 @@ final class sec_trust_test extends \advanced_testcase {
     public function test_keys_must_have_32_bytes(): void {
         $this->expectException(\coding_exception::class);
         new sec_trust(['short']);
+    }
+
+    /**
+     * Values that are not a 32-byte public key.
+     *
+     * @return array
+     */
+    public static function invalid_key_provider(): array {
+        return [
+            'empty' => [''],
+            '31 bytes' => [str_repeat('a', 31)],
+            '33 bytes' => [str_repeat('a', 33)],
+            'a number' => [123],
+            'a list' => [['a']],
+            'nothing' => [null],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalid_key_provider')]
+    /**
+     * Only 32 bytes of text are accepted as a key.
+     *
+     * @dataProvider invalid_key_provider
+     * @param mixed $key The value given as a key.
+     */
+    public function test_every_key_must_be_32_bytes_of_text(mixed $key): void {
+        $this->expectException(\coding_exception::class);
+        new sec_trust([$key]);
+    }
+
+    public function test_a_key_given_twice_is_one_key(): void {
+        $raw = base64_decode(envelope_builder::PUBLIC_KEY);
+        $this->assertSame([envelope_builder::KID], (new sec_trust([$raw, $raw]))->key_ids());
+    }
+
+    public function test_each_trusted_key_verifies_its_own_responses(): void {
+        $first = new envelope_builder();
+        $second = new envelope_builder(str_repeat('07', 32));
+        $trust = new sec_trust([base64_decode($second->public_key_base64()), base64_decode($first->public_key_base64())]);
+        $this->assertSame([$second->kid(), $first->kid()], $trust->key_ids());
+        $this->assertSame('first', $trust->open($first->body(['type' => 'first']))['type']);
+        $this->assertSame('second', $trust->open($second->body(['type' => 'second']))['type']);
+    }
+
+    public function test_a_response_signed_by_another_trusted_key_fails_the_signature(): void {
+        // The key ID names the first key, but the second key signed: both are trusted, the signature still fails.
+        $first = new envelope_builder();
+        $second = new envelope_builder(str_repeat('07', 32));
+        $trust = new sec_trust([base64_decode($first->public_key_base64()), base64_decode($second->public_key_base64())]);
+        $parts = $first->parts(['type' => 'enrollment']);
+        $parts['sig'] = $second->signature($first->kid(), $parts['payload']);
+        $this->expect_failure('envelope_signature', json_encode($parts), $trust);
+    }
+
+    public function test_a_body_of_exactly_the_largest_size_is_read(): void {
+        $body = self::padded_body(sec_trust::MAX_BODY);
+        $this->assertSame(sec_trust::MAX_BODY, strlen($body));
+        $this->assertSame('enrollment', self::trust()->open($body)['type']);
+    }
+
+    public function test_a_payload_nested_up_to_the_limit_is_read(): void {
+        $this->assertIsArray(self::trust()->open(self::signed_raw_payload(self::nested_object(15)))['a']);
+    }
+
+    public function test_the_whole_payload_comes_back(): void {
+        $payload = [
+            'type' => 'enrollment',
+            'site_name' => '東雲 / テスト',
+            'nested' => ['list' => [1, 2], 'none' => null, 'flag' => true],
+        ];
+        $this->assertSame($payload, self::trust()->open((new envelope_builder())->body($payload)));
+    }
+
+    public function test_a_refused_response_is_a_plugin_exception_that_shows_nothing_of_the_body(): void {
+        try {
+            self::trust()->open('{"secret":"do not show"}');
+            $this->fail('No exception');
+        } catch (\tool_secbackup\local\plugin_exception $e) {
+            $this->assertInstanceOf(envelope_exception::class, $e);
+            $this->assertSame(get_string('envelope_malformed', 'tool_secbackup'), $e->message());
+            $this->assertNull($e->a);
+            $this->assertNull($e->debuginfo);
+        }
+    }
+
+    public function test_current_does_not_ignore_invalid_developer_settings(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->tool_secbackup_developer = ['trustedkey' => []];
+        try {
+            sec_trust::current();
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('developersettings_invalid', $e->errorcode);
+        }
     }
 
     public function test_the_error_codes_are_language_strings(): void {

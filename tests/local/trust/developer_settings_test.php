@@ -99,6 +99,23 @@ final class developer_settings_test extends \advanced_testcase {
         $this->assertFalse($settings->is_active());
     }
 
+    public function test_an_empty_array_is_not_active(): void {
+        $settings = developer_settings::from_value([]);
+        $this->assertFalse($settings->is_active());
+        $this->assertSame([], $settings->trusted_keys());
+    }
+
+    public function test_every_trusted_key_is_kept_in_order(): void {
+        $second = new envelope_builder(str_repeat('07', 32));
+        $settings = developer_settings::from_value(
+            ['trustedkeys' => [envelope_builder::PUBLIC_KEY, $second->public_key_base64()]]
+        );
+        $this->assertSame(
+            [base64_decode(envelope_builder::PUBLIC_KEY), base64_decode($second->public_key_base64())],
+            $settings->trusted_keys()
+        );
+    }
+
     /**
      * Values that must be refused, with a part of the reason.
      *
@@ -113,6 +130,19 @@ final class developer_settings_test extends \advanced_testcase {
             'key too short' => [['trustedkeys' => [base64_encode('short')]], 'standard base64'],
             'key not text' => [['trustedkeys' => [123]], 'standard base64'],
             'switch as text' => [['allowhttp' => 'yes'], 'allowhttp must be true or false'],
+            'false instead of an array' => [false, 'must be an array'],
+            'empty text instead of an array' => ['', 'must be an array'],
+            'several misspelt names' => [['allowhttp' => true, 'bogus' => 1, 'other' => 2], 'Unknown setting: bogus, other.'],
+            'key with a stray character' => [
+                ['trustedkeys' => [substr_replace(envelope_builder::PUBLIC_KEY, '!', 10, 0)]],
+                'standard base64',
+            ],
+            'key of 31 bytes' => [['trustedkeys' => [base64_encode(str_repeat('a', 31))]], 'standard base64'],
+            'key of 33 bytes' => [['trustedkeys' => [base64_encode(str_repeat('a', 33))]], 'standard base64'],
+            'second key not valid' => [['trustedkeys' => [envelope_builder::PUBLIC_KEY, 'x']], 'standard base64'],
+            'key is a list' => [['trustedkeys' => [['a']]], 'standard base64'],
+            'key is nothing' => [['trustedkeys' => [null]], 'standard base64'],
+            'switch as number' => [['skipnetworkchecks' => 1], 'skipnetworkchecks must be true or false'],
         ];
     }
 
@@ -131,6 +161,19 @@ final class developer_settings_test extends \advanced_testcase {
         } catch (\moodle_exception $e) {
             $this->assertSame('developersettings_invalid', $e->errorcode);
             $this->assertStringContainsString($reason, $e->debuginfo);
+        }
+    }
+
+    public function test_the_reason_does_not_repeat_a_key(): void {
+        // A public key is not secret, but the reason (shown with debugging on) still has no key value in it.
+        try {
+            developer_settings::from_value(['trustedkeys' => [envelope_builder::PUBLIC_KEY . '!']]);
+            $this->fail('No exception');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('developersettings_invalid', $e->errorcode);
+            $this->assertNull($e->a);
+            $this->assertStringNotContainsString(envelope_builder::PUBLIC_KEY, $e->debuginfo);
+            $this->assertStringNotContainsString(envelope_builder::PUBLIC_KEY, $e->getMessage());
         }
     }
 
