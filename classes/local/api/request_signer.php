@@ -90,10 +90,11 @@ final class request_signer {
         int $timestamp,
         string $nonce
     ): array {
-        if (preg_match('/^[A-Za-z0-9_-]{22}$/', $nonce) !== 1) {
+        // Both values become HTTP header values, so each pattern ends with \z: $ also matches before a final line feed.
+        if (preg_match('/^[A-Za-z0-9_-]{22}\z/', $nonce) !== 1) {
             throw new \coding_exception('A nonce has 22 URL-safe base64 characters.');
         }
-        if ($siteid !== null && preg_match('/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/', $siteid) !== 1) {
+        if ($siteid !== null && preg_match('/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/', $siteid) !== 1) {
             throw new \coding_exception('A site ID is a lower-case UUID.');
         }
         $text = self::canonical($method, $endpoint->host(), $endpoint->path_of($relative), '', (string) $timestamp, $nonce, $body);

@@ -130,7 +130,7 @@ final class request_signer_test extends \basic_testcase {
 
     public function test_new_nonces_are_22_url_safe_characters_and_differ(): void {
         $first = request_signer::new_nonce();
-        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{22}$/', $first);
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{22}\z/', $first);
         $this->assertNotSame($first, request_signer::new_nonce());
     }
 
@@ -142,5 +142,58 @@ final class request_signer_test extends \basic_testcase {
     public function test_wrong_site_id_is_a_coding_error(): void {
         $this->expectException(\coding_exception::class);
         request_signer::headers(self::pair(), 'GET', self::endpoint(), 'status', '', 'not-a-uuid', 1, 'AAAAAAAAAAAAAAAAAAAAAA');
+    }
+
+    /**
+     * Nonces and site IDs in a wrong shape: one value is wrong in each row, the other is good.
+     *
+     * Both values become HTTP header values, so a line feed before or after a good value must not get through.
+     *
+     * @return array
+     */
+    public static function malformed_values_provider(): array {
+        $nonce = 'AAAAAAAAAAAAAAAAAAAAAA';
+        $nonceerror = 'A nonce has';
+        $siteerror = 'A site ID is';
+        return [
+            'nonce with a trailing line feed' => [$nonce . "\n", self::SITE, $nonceerror],
+            'nonce with a leading line feed' => ["\n" . $nonce, self::SITE, $nonceerror],
+            'nonce one character long' => [$nonce . 'A', self::SITE, $nonceerror],
+            'nonce one character short' => [substr($nonce, 1), self::SITE, $nonceerror],
+            'site ID with a trailing line feed' => [$nonce, self::SITE . "\n", $siteerror],
+            'site ID with a leading line feed' => [$nonce, "\n" . self::SITE, $siteerror],
+            'upper-case site ID' => [$nonce, '1111111A-2222-4333-8444-55555555555A', $siteerror],
+            'empty site ID' => [$nonce, '', $siteerror],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformed_values_provider')]
+    /**
+     * A nonce or a site ID in a wrong shape is a coding error, even when only a line feed is wrong.
+     *
+     * @dataProvider malformed_values_provider
+     * @param string $nonce The nonce.
+     * @param string $siteid The site ID.
+     * @param string $message Start of the message that names the wrong value.
+     */
+    public function test_malformed_values_are_coding_errors(string $nonce, string $siteid, string $message): void {
+        $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage($message);
+        request_signer::headers(self::pair(), 'GET', self::endpoint(), 'status', '', $siteid, 1, $nonce);
+    }
+
+    public function test_every_url_safe_character_and_hex_letter_is_accepted(): void {
+        $headers = request_signer::headers(
+            self::pair(),
+            'GET',
+            self::endpoint(),
+            'status',
+            '',
+            '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d',
+            1,
+            'Az09_-Az09_-Az09_-Az09'
+        );
+        $this->assertSame('Az09_-Az09_-Az09_-Az09', $headers['X-SecBackup-Nonce']);
+        $this->assertSame('0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d', $headers['X-SecBackup-Site']);
     }
 }
