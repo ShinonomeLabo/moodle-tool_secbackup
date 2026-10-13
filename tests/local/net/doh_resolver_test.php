@@ -66,6 +66,7 @@ final class doh_resolver_test extends \advanced_testcase {
             $this->fail('No exception');
         } catch (transport_exception $e) {
             $this->assertSame('dns_doh_failed', $e->errorcode);
+            $this->assertSame('cloudflare', $e->debuginfo);
         }
     }
 
@@ -146,6 +147,13 @@ final class doh_resolver_test extends \advanced_testcase {
         $mock = self::answer(3, []);
         (new doh_resolver('google', $mock))->lookup('app.example.test');
         $this->assertSame('http://proxy.example.ac.jp:3128', $mock->getLastOptions()['proxy']);
+    }
+
+    public function test_the_message_is_the_language_string_without_the_debug_information(): void {
+        $e = new transport_exception('dns_not_found', 'cloudflare');
+        $this->assertSame(get_string('dns_not_found', 'tool_secbackup'), $e->message());
+        $this->assertSame('dns_not_found', $e->errorcode);
+        $this->assertSame('cloudflare', $e->debuginfo);
     }
 
     public function test_all_resolvers(): void {

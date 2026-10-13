@@ -42,10 +42,16 @@ final class dns_guard_test extends \advanced_testcase {
      * @param string $code Error code.
      * @param dns_guard $guard The guard.
      * @param string $service AWS service.
+     * @param bool $viaproxy Whether a proxy resolves the name.
      */
-    private function expect_problem(string $code, dns_guard $guard, string $service = aws_ranges::SERVICE_CLOUDFRONT): void {
+    private function expect_problem(
+        string $code,
+        dns_guard $guard,
+        string $service = aws_ranges::SERVICE_CLOUDFRONT,
+        bool $viaproxy = false
+    ): void {
         try {
-            $guard->check(network_fakes::HOST, false, $service);
+            $guard->check(network_fakes::HOST, $viaproxy, $service);
             $this->fail('No exception');
         } catch (transport_exception $e) {
             $this->assertSame($code, $e->errorcode);
@@ -76,6 +82,17 @@ final class dns_guard_test extends \advanced_testcase {
         $this->assertNull($guard->inspect(network_fakes::HOST, true)->os);
     }
 
+    public function test_with_a_proxy_the_resolver_answers_are_still_checked(): void {
+        $guard = new dns_guard(
+            network_fakes::ranges(),
+            [network_fakes::doh('cloudflare', ['203.0.113.1'])],
+            function (string $host): array {
+                $this->fail('The operating system must not be asked when a proxy resolves the name.');
+            }
+        );
+        $this->expect_problem('dns_outside_aws', $guard, aws_ranges::SERVICE_CLOUDFRONT, true);
+    }
+
     public function test_one_resolver_answering_is_enough(): void {
         $this->assertSame('13.225.9.9', network_fakes::guard(null, ['13.225.1.1'], ['13.225.9.9'])
             ->check(network_fakes::HOST, false, aws_ranges::SERVICE_CLOUDFRONT));
@@ -92,6 +109,10 @@ final class dns_guard_test extends \advanced_testcase {
             static fn(string $host): array => []
         );
         $this->expect_problem('dns_not_found', $guard);
+    }
+
+    public function test_a_name_that_one_resolver_cannot_find_stops(): void {
+        $this->expect_problem('dns_not_found', network_fakes::guard([], ['13.225.1.1'], ['13.225.9.9']));
     }
 
     public function test_resolver_answer_outside_aws_stops(): void {
@@ -125,5 +146,13 @@ final class dns_guard_test extends \advanced_testcase {
 
     public function test_create_uses_both_resolvers(): void {
         $this->assertSame(['cloudflare', 'google'], dns_guard::create()->resolver_names());
+    }
+
+    public function test_the_error_codes_are_language_strings(): void {
+        $codes = ['dns_doh_failed', 'dns_doh_unavailable', 'dns_not_found', 'dns_os_failed', 'dns_os_mismatch',
+            'dns_outside_aws'];
+        foreach ($codes as $code) {
+            $this->assertTrue(get_string_manager()->string_exists($code, 'tool_secbackup'), $code);
+        }
     }
 }

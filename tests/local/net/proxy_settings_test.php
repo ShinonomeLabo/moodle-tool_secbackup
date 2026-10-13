@@ -52,6 +52,16 @@ final class proxy_settings_test extends \advanced_testcase {
         $CFG->proxypassword = 'p:ss/w@rd';
         $this->assertSame('http://user%40school:p%3Ass%2Fw%40rd@proxy.example.ac.jp:8080', proxy_settings::for_url(self::URL));
         $this->assertStringNotContainsString('rd', proxy_settings::describe(self::URL));
+        $this->assertSame('HTTP proxy.example.ac.jp:8080', proxy_settings::describe(self::URL));
+    }
+
+    public function test_a_user_name_without_a_password_is_not_sent(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '3128';
+        $CFG->proxyuser = 'user';
+        $this->assertSame('http://proxy.example.ac.jp:3128', proxy_settings::for_url(self::URL));
     }
 
     public function test_socks5(): void {
