@@ -22,7 +22,7 @@ use tool_secbackup\local\trust\developer_settings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\api\request_signer::class)]
 /**
- * Tests for the request signatures (same text as the service's verifier).
+ * Tests for the request signatures (the same text the backup service verifies).
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
