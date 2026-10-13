@@ -577,6 +577,26 @@ final class transport_test extends \advanced_testcase {
         ], $fingerprints);
     }
 
+    /**
+     * curl is told to use the folder of the bundled roots as its directory of certificates (CURLOPT_CAPATH), so that it does not
+     * add the one of the system. OpenSSL reads a directory through files named after the hash of a subject, such as "4a6481c9.0"
+     * for a certificate and "4a6481c9.r0" for a revocation list. The folder holds none, so it adds no trust; a file named like
+     * that, added later, would. The pattern ignores case because a file system may.
+     */
+    public function test_the_folder_of_the_roots_holds_no_file_named_like_a_hash_of_openssl(): void {
+        $hashname = '/^[0-9a-f]{8}\.r?\d+\z/i';
+        foreach (['4a6481c9.0', '4a6481c9.12', '4a6481c9.r0', 'DEADBEEF.r3'] as $name) {
+            $this->assertSame(1, preg_match($hashname, $name), $name . ' is read by OpenSSL.');
+        }
+        foreach (['amazon-roots.pem', 'aws-ranges.json', '4a6481c9', '4a6481c9.0.bak', '4a6481c.0', 'x4a6481c9.0'] as $name) {
+            $this->assertSame(0, preg_match($hashname, $name), $name . ' is not read by OpenSSL.');
+        }
+        $names = scandir(dirname(transport::roots_file()));
+        $this->assertContains(basename(transport::roots_file()), $names, 'The folder is the one that is scanned.');
+        $found = array_values(array_filter($names, static fn(string $name): bool => preg_match($hashname, $name) === 1));
+        $this->assertSame([], $found);
+    }
+
     public function test_create_reads_the_site_settings(): void {
         global $CFG;
         $CFG->tool_secbackup_developer = ['skipnetworkchecks' => true];

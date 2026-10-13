@@ -116,8 +116,9 @@ final class transport {
         #[\SensitiveParameter] array $headers,
         #[\SensitiveParameter] string $body
     ): response {
-        // The method is a line of the text that the caller signed, and curl sends it as it is. A GET request has no body: the
-        // caller signed the hash of a body that would not be the one that is sent.
+        // Only GET and POST in upper case, as the request signer accepts them: it signs the method as a line of its text. PSR-7
+        // upper-cases a method itself, but it lets a line break through, and curl sends that as it is. A GET request has no
+        // body: the caller signed the hash of a body that would not be the one that is sent.
         if ($method !== 'GET' && $method !== 'POST') {
             throw new \coding_exception('A method is GET or POST.');
         }
