@@ -19,6 +19,8 @@ namespace tool_secbackup\local\net;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\TransferException;
+use GuzzleHttp\Psr7\Utils;
 use Psr\Http\Message\ResponseInterface;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\trust\developer_settings;
@@ -105,24 +107,40 @@ final class transport {
             static fn($name): bool => strtolower((string) $name) !== 'user-agent',
             ARRAY_FILTER_USE_KEY
         );
+        // Set when the size limit stops the transfer: the failure that Guzzle then reports does not say why.
+        $toolarge = false;
         $options = [
             'headers' => $others + ['User-Agent' => self::USER_AGENT],
             'body' => $body,
             'http_errors' => false,
             'allow_redirects' => false,
+            // The limit counts the bytes of the wire, so the response must not be decompressed.
+            'decode_content' => false,
             'timeout' => 30,
             'connect_timeout' => 10,
             'proxy' => $proxy,
             // The mocked transport also calls this with the exception that it is about to throw: the argument has no type.
-            'on_headers' => static function ($received): void {
+            'on_headers' => static function ($received) use (&$toolarge): void {
                 if (
                     $received instanceof ResponseInterface
                     && (int) $received->getHeaderLine('Content-Length') > self::MAX_RESPONSE
                 ) {
-                    throw new transport_exception('transport_too_large');
+                    $toolarge = true;
+                    throw new TransferException('The response is larger than the limit.');
                 }
             },
-            'curl' => [],
+            // Cuts the transfer as soon as more than the limit has arrived: a callback that returns 1 aborts it. (An
+            // exception thrown from the progress option of Guzzle comes out only when the whole transfer is over.)
+            'curl' => [
+                CURLOPT_NOPROGRESS => false,
+                CURLOPT_PROGRESSFUNCTION => static function ($handle, int $downloadtotal, int $downloaded) use (&$toolarge): int {
+                    if ($downloaded > self::MAX_RESPONSE) {
+                        $toolarge = true;
+                        return 1;
+                    }
+                    return 0;
+                },
+            ],
         ];
         if (!$this->settings->skip_network_checks()) {
             // Only an HTTP proxy looks the name up. With a SOCKS5 proxy this server does it, so its answer is checked and pinned.
@@ -141,12 +159,13 @@ final class transport {
         try {
             $response = (new \core\http_client($config))->request($method, $url, $options);
         } catch (GuzzleException $e) {
-            throw self::failure($e);
+            throw $toolarge ? new transport_exception('transport_too_large') : self::failure($e);
         }
         if ($response->getStatusCode() >= 300 && $response->getStatusCode() < 400) {
             throw new transport_exception('transport_redirect', 'HTTP ' . $response->getStatusCode());
         }
-        $responsebody = (string) $response->getBody();
+        // One byte more than the limit is enough to see that the body is too large; the rest is not read.
+        $responsebody = Utils::copyToString($response->getBody(), self::MAX_RESPONSE + 1);
         if (strlen($responsebody) > self::MAX_RESPONSE) {
             throw new transport_exception('transport_too_large');
         }
@@ -160,9 +179,6 @@ final class transport {
      * @return transport_exception
      */
     private static function failure(GuzzleException $e): transport_exception {
-        if ($e->getPrevious() instanceof transport_exception) {
-            return $e->getPrevious();
-        }
         if ($e->getMessage() === get_string('curlsecurityurlblocked', 'admin')) {
             return new transport_exception('transport_blocked');
         }

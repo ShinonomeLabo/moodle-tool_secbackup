@@ -20,8 +20,10 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\Psr7\PumpStream;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\RequestInterface;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\tests\network_fakes;
@@ -228,6 +230,68 @@ final class transport_test extends \advanced_testcase {
         $this->expect_failure('transport_too_large', new MockHandler([
             new Response(200, [], str_repeat('x', transport::MAX_RESPONSE + 1)),
         ]));
+    }
+
+    public function test_a_response_of_the_largest_size_is_read(): void {
+        $response = self::send(new MockHandler([new Response(200, [], str_repeat('x', transport::MAX_RESPONSE))]));
+        $this->assertSame(transport::MAX_RESPONSE, strlen($response->body));
+    }
+
+    public function test_a_declared_length_at_the_limit_is_read(): void {
+        $headers = ['Content-Length' => (string) transport::MAX_RESPONSE];
+        $this->assertSame('{}', self::send(new MockHandler([new Response(200, $headers, '{}')]))->body);
+    }
+
+    public function test_a_body_that_does_not_end_is_read_only_up_to_the_limit(): void {
+        $chunks = 0;
+        $source = static function () use (&$chunks) {
+            // 64 chunks of 64 KiB, 4 MiB in all: a reader that does not stop at the limit takes all of them.
+            return $chunks++ < 64 ? str_repeat('x', 65536) : false;
+        };
+        $this->expect_failure('transport_too_large', new MockHandler([new Response(200, [], new PumpStream($source))]));
+        // The limit and one more byte are 16 chunks and one byte.
+        $this->assertLessThanOrEqual(17, $chunks);
+    }
+
+    public function test_the_response_is_not_decompressed_so_that_the_limit_counts_the_bytes_of_the_wire(): void {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        self::send($mock);
+        $this->assertFalse($mock->getLastOptions()['decode_content']);
+    }
+
+    public function test_the_progress_callback_cuts_a_transfer_over_the_limit(): void {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        self::send($mock);
+        $curl = $mock->getLastOptions()['curl'];
+        $this->assertFalse($curl[CURLOPT_NOPROGRESS]);
+        // Returning 1 aborts the transfer at once; an exception from Guzzle's own progress option would come out late.
+        $progress = $curl[CURLOPT_PROGRESSFUNCTION];
+        $this->assertSame(0, $progress(null, 0, 0, 0, 0));
+        $this->assertSame(0, $progress(null, 0, transport::MAX_RESPONSE, 0, 0));
+        $this->assertSame(1, $progress(null, 0, transport::MAX_RESPONSE + 1, 0, 0));
+    }
+
+    public function test_a_transfer_cut_by_the_progress_callback_is_a_response_that_is_too_large(): void {
+        // What curl does when the callback returns 1: it stops with error 42, and Guzzle rejects the request with it.
+        $cutting = function (RequestInterface $request, array $options) {
+            $progress = $options['curl'][CURLOPT_PROGRESSFUNCTION];
+            $this->assertSame(1, $progress(null, 0, transport::MAX_RESPONSE + 1, 0, 0));
+            return new RequestException(
+                'cURL error 42: Operation was aborted by an application callback',
+                $request,
+                null,
+                null,
+                ['errno' => 42]
+            );
+        };
+        $this->expect_failure('transport_too_large', new MockHandler([$cutting]));
+    }
+
+    public function test_error_42_that_the_progress_callback_did_not_cause_is_another_failure(): void {
+        $e = $this->expect_failure('transport_failed', new MockHandler([
+            new RequestException('cURL error 42', new Request('POST', 'https://app.example.test/'), null, null, ['errno' => 42]),
+        ]));
+        $this->assertSame('cURL error 42', $e->debuginfo);
     }
 
     public function test_certificate_failure_is_reported_without_the_url(): void {
