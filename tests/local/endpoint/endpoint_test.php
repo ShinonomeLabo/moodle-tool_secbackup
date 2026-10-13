@@ -114,6 +114,12 @@ final class endpoint_test extends \basic_testcase {
         $this->assertFalse($endpoint->equals(endpoint::parse(self::URL, self::production())));
     }
 
+    public function test_localhost_is_refused_only_as_the_last_label(): void {
+        foreach (['https://localhost.example.com/api', 'https://a.notlocalhost/api'] as $url) {
+            $this->assertSame($url, endpoint::parse($url, self::production())->url());
+        }
+    }
+
     public function test_join_refuses_unexpected_names(): void {
         $this->expectException(\coding_exception::class);
         endpoint::parse(self::URL, self::production())->join('../admin');
@@ -153,6 +159,9 @@ final class endpoint_test extends \basic_testcase {
             'ipv4 address' => ['https://203.0.113.5/api', 'endpoint_host'],
             'ipv6 address' => ['https://[2001:db8::1]/api', 'endpoint_host'],
             'localhost' => ['https://localhost/api', 'endpoint_host'],
+            'name under localhost' => ['https://x.localhost/api', 'endpoint_host'],
+            'deeper name under localhost' => ['https://a.b.localhost/api', 'endpoint_host'],
+            'name under localhost in upper case' => ['https://X.LOCALHOST/api', 'endpoint_host'],
             'short numeric address' => ['https://127.1/api', 'endpoint_host'],
             'octal address' => ['https://0177.0.0.1/api', 'endpoint_host'],
             'underscore' => ['https://app_yu.example.org/api', 'endpoint_host'],
@@ -195,6 +204,19 @@ final class endpoint_test extends \basic_testcase {
         }
     }
 
+    public function test_text_that_is_not_utf8_is_invalid_and_not_empty(): void {
+        // The inputs are made here and shown in hexadecimal, so that a failure does not print bytes that are not text.
+        $inputs = ["https://lms-backup.example.com/api\xff", "https://lms-backup.\xe3.example.com/api", "\xff"];
+        foreach ($inputs as $input) {
+            try {
+                endpoint::parse($input, self::production());
+                $this->fail('No exception for ' . bin2hex($input));
+            } catch (endpoint_exception $e) {
+                $this->assertSame('endpoint_invalid', $e->errorcode, bin2hex($input));
+            }
+        }
+    }
+
     /**
      * URLs that only the developer settings accept.
      *
@@ -208,6 +230,7 @@ final class endpoint_test extends \basic_testcase {
             'loopback address' => ['http://127.0.0.1:80/api', 'http://127.0.0.1/api', 80],
             'https localhost' => ['https://localhost/api', 'https://localhost/api', 443],
             'fake service port' => ['http://localhost:8099/api/lms-backup/v1', 'http://localhost:8099/api/lms-backup/v1', 8099],
+            'name under localhost' => ['http://fake.localhost:8099/api', 'http://fake.localhost:8099/api', 8099],
         ];
     }
 
@@ -245,7 +268,8 @@ final class endpoint_test extends \basic_testcase {
         $settings = developer_settings::from_value(['allowhttp' => true]);
         $accepted = endpoint::parse('http://lms-backup.example.com/api', $settings);
         $this->assertSame('http://lms-backup.example.com/api', $accepted->url());
-        $refused = ['http://fakesec/api' => 'endpoint_host', 'http://lms-backup.example.com:8080/api' => 'endpoint_port'];
+        $refused = ['http://fakesec/api' => 'endpoint_host', 'http://x.localhost/api' => 'endpoint_host',
+            'http://lms-backup.example.com:8080/api' => 'endpoint_port'];
         foreach ($refused as $input => $code) {
             try {
                 endpoint::parse($input, $settings);

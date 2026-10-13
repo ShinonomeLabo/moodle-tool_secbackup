@@ -72,7 +72,11 @@ final class endpoint {
      * @throws endpoint_exception When the URL is refused.
      */
     public static function parse(string $input, developer_settings $settings): self {
-        $text = (string) preg_replace('/^[\s\x{3000}]+|[\s\x{3000}]+$/u', '', $input);
+        $text = preg_replace('/^[\s\x{3000}]+|[\s\x{3000}]+$/u', '', $input);
+        if ($text === null) {
+            // The pattern gives null for text that is not UTF-8: that is not a URL, and it is not an empty input either.
+            throw new endpoint_exception('endpoint_invalid');
+        }
         if ($text === '') {
             throw new endpoint_exception('endpoint_empty');
         }
@@ -137,6 +141,8 @@ final class endpoint {
     /**
      * Whether a host is a DNS name of the internet (or, with the developer settings, a local host).
      *
+     * A name with one label and a name under localhost are local hosts.
+     *
      * @param string $host Host in lower case.
      * @param developer_settings $settings Developer settings.
      * @return bool
@@ -153,6 +159,10 @@ final class endpoint {
         // The last label must start with a letter: curl reads names such as 127.1 as addresses.
         if (preg_match('/^[a-z]/', end($labels)) !== 1) {
             return false;
+        }
+        // The name localhost and every name under it mean this machine (RFC 6761), and curl resolves them to loopback itself.
+        if (end($labels) === 'localhost') {
+            return $private;
         }
         return count($labels) > 1 || $private;
     }
