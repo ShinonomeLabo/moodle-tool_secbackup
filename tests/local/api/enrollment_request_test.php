@@ -48,6 +48,14 @@ final class enrollment_request_test extends \advanced_testcase {
         $this->assertSame('A260B4050FD28D2B313C9A94', $request->encryption_fingerprint());
     }
 
+    public function test_the_body_keeps_slashes_and_characters_as_they_are(): void {
+        $site = ['wwwroot' => 'https://lms.example.ac.jp/moodle', 'moodle_release' => "5.3 \u{65E5}\u{672C}\u{8A9E}"];
+        $request = new enrollment_request(self::CODE, str_repeat("\x01", 32), $site, '2026101200');
+        $body = $request->body(signing_keypair::generate());
+        $this->assertStringContainsString('"wwwroot":"https://lms.example.ac.jp/moodle"', $body);
+        $this->assertStringContainsString("\"moodle_release\":\"5.3 \u{65E5}\u{672C}\u{8A9E}\"", $body);
+    }
+
     public function test_invalid_utf8_in_the_release_is_replaced(): void {
         $request = new enrollment_request(self::CODE, str_repeat("\x01", 32), ['moodle_release' => "5.3\xff"], '2026101200');
         $body = json_decode($request->body(signing_keypair::generate()), true);
@@ -148,11 +156,18 @@ final class enrollment_request_test extends \advanced_testcase {
     }
 
     public function test_debug_output_hides_the_code(): void {
-        $request = new enrollment_request(self::CODE, str_repeat("\x01", 32), [], '2026101200');
+        $request = new enrollment_request(
+            self::CODE,
+            str_repeat("\x01", 32),
+            ['wwwroot' => 'https://lms.example.ac.jp'],
+            '2026101200'
+        );
         ob_start();
         var_dump($request);
         $dump = (string) ob_get_clean();
         $this->assertStringNotContainsString('AAAA', $dump);
+        $this->assertStringContainsString('lms.example.ac.jp', $dump);
+        $this->assertStringContainsString('2026101200', $dump);
     }
 
     public function test_the_code_and_the_key_pair_parameters_are_marked_sensitive(): void {

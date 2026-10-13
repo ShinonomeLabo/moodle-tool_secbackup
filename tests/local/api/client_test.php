@@ -20,6 +20,7 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\endpoint\endpoint;
@@ -144,6 +145,19 @@ final class client_test extends \advanced_testcase {
     }
 
     /**
+     * The service's fingerprints are read the way a pasted one is: case and spaces do not matter.
+     */
+    public function test_fingerprints_in_the_answer_are_compared_after_normalising(): void {
+        $pair = signing_keypair::generate();
+        $service = self::service(['enrollpayload' => [
+            'signing_key_fingerprint' => strtolower(fingerprint::format(fingerprint::of($pair->public_key()))),
+            'encryption_key_fingerprint' => strtolower(fingerprint::format(self::request()->encryption_fingerprint())),
+        ]]);
+        $result = self::client($service->handler())->enroll(self::endpoint(), $pair, self::request());
+        $this->assertSame(fake_service::SITE_ID, $result->siteid);
+    }
+
+    /**
      * Enrolment answers that are signed correctly but belong to another request.
      *
      * @return array
@@ -157,6 +171,14 @@ final class client_test extends \advanced_testcase {
             'another signing key' => [['signing_key_fingerprint' => '0000 0000 0000 0000 0000 0000'], 'signing_key_fingerprint'],
             'another encryption key' => [
                 ['encryption_key_fingerprint' => '0000 0000 0000 0000 0000 0000'],
+                'encryption_key_fingerprint',
+            ],
+            'signing key fingerprint that is not a fingerprint' => [
+                ['signing_key_fingerprint' => 'not a fingerprint'],
+                'signing_key_fingerprint',
+            ],
+            'encryption key fingerprint that is not a fingerprint' => [
+                ['encryption_key_fingerprint' => 'A260B4050FD28D2B313C9A9'],
                 'encryption_key_fingerprint',
             ],
             'another type' => [['type' => 'status'], 'type'],
@@ -205,6 +227,24 @@ final class client_test extends \advanced_testcase {
             'local time' => [['enrolled_at' => '2026-10-12 00:00:00'], 'enrolled_at'],
             'impossible date' => [['enrolled_at' => '2026-02-30T00:00:00Z'], 'enrolled_at'],
             'number instead of text' => [['enrolled_at' => 1760000000], 'enrolled_at'],
+            'no type' => [['type' => null], 'type'],
+            'no site id' => [['site_id' => null], 'site_id'],
+            'no site name' => [['site_name' => null], 'site_name'],
+            'no platform name' => [['platform_name' => null], 'platform_name'],
+            'no encryption key fingerprint' => [['encryption_key_fingerprint' => null], 'encryption_key_fingerprint'],
+            'no signing key fingerprint' => [['signing_key_fingerprint' => null], 'signing_key_fingerprint'],
+            'no request nonce' => [['request_nonce' => null], 'request_nonce'],
+            'no enrolled at' => [['enrolled_at' => null], 'enrolled_at'],
+            'no api base' => [['api_base' => null], 'api_base'],
+            'number as type' => [['type' => 5], 'type'],
+            'number as site id' => [['site_id' => 5], 'site_id'],
+            'number as site name' => [['site_name' => 5], 'site_name'],
+            'number as platform name' => [['platform_name' => 5], 'platform_name'],
+            'number as request nonce' => [['request_nonce' => 5], 'request_nonce'],
+            'number as api base' => [['api_base' => 5], 'api_base'],
+            'site id with an upper case first group' => [['site_id' => 'AAAAAAAA-bbbb-4ccc-8ddd-eeeeeeeeeeee'], 'site_id'],
+            'site id with an upper case middle group' => [['site_id' => 'aaaaaaaa-bbbb-4ccc-8DDD-eeeeeeeeeeee'], 'site_id'],
+            'site id with an upper case last group' => [['site_id' => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeE'], 'site_id'],
         ];
     }
 
@@ -272,6 +312,87 @@ final class client_test extends \advanced_testcase {
         $result = self::client($service->handler())->enroll($endpoint, signing_keypair::generate(), self::request());
         $this->assertSame(self::API, $result->apibase);
         $this->assertSame(['POST /api/lms-backup/v1/enroll'], $service->state['requests']);
+    }
+
+    /**
+     * A handler that answers as the fake service does, with another HTTP status.
+     *
+     * @param fake_service $service The fake service.
+     * @param int $status The HTTP status.
+     * @return callable
+     */
+    private static function with_status(fake_service $service, int $status): callable {
+        $inner = $service->handler();
+        return fn($request, array $options) => $inner($request, $options)
+            ->then(fn(Response $response) => $response->withStatus($status));
+    }
+
+    public function test_only_the_status_201_is_an_enrolment(): void {
+        foreach ([200, 202, 204, 299] as $status) {
+            $service = self::service();
+            $e = $this->expect_api_error('api_unexpected', fn() => self::client(self::with_status($service, $status))
+                ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+            $this->assertSame($status, $e->httpstatus);
+        }
+    }
+
+    public function test_only_the_status_200_is_a_status_answer(): void {
+        foreach ([201, 202, 204, 299] as $status) {
+            $mock = new MockHandler([new Response($status, [], self::status_body([]))]);
+            $e = $this->expect_api_error('api_unexpected', fn() => self::client($mock)
+                ->status(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID));
+            $this->assertSame($status, $e->httpstatus);
+        }
+    }
+
+    public function test_the_nonce_of_the_answer_is_compared_whole(): void {
+        $service = self::service();
+        $inner = $service->handler();
+        $handler = function ($request, array $options) use ($inner) {
+            $nonce = $request->getHeaderLine('X-SecBackup-Nonce');
+            return $inner($request, $options)->then(function (Response $response) use ($nonce) {
+                $envelope = json_decode((string) $response->getBody(), true);
+                $payload = json_decode(base64_decode(strtr($envelope['payload'], '-_', '+/')), true);
+                $payload['request_nonce'] = substr($nonce, 0, 21) . (substr($nonce, -1) === 'A' ? 'B' : 'A');
+                return new Response(201, [], (new envelope_builder())->body($payload));
+            });
+        };
+        $e = $this->expect_api_error('enroll_response_mismatch', fn() => self::client($handler)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame('request_nonce', $e->debuginfo);
+    }
+
+    public function test_the_connection_url_of_the_answer_is_read_with_the_site_settings(): void {
+        $settings = developer_settings::from_value(['allowhttp' => true]);
+        $api = 'http://app.example.test/api/lms-backup/v1';
+        $service = new fake_service($api, array_merge(fake_service::initial_state(), ['now' => self::NOW]));
+        $client = new client(
+            new \tool_secbackup\local\net\transport($settings, network_fakes::passing_guard(), $service->handler()),
+            new \tool_secbackup\local\trust\sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]),
+            $settings,
+            static fn(): int => self::NOW
+        );
+        $result = $client->enroll(endpoint::parse($api, $settings), signing_keypair::generate(), self::request());
+        $this->assertSame($api, $result->apibase);
+    }
+
+    public function test_a_code_that_the_client_does_not_know_is_not_kept(): void {
+        $mock = new MockHandler([new Response(400, [], '{"error":{"code":"brand_new_error"}}')]);
+        $e = $this->expect_api_error('api_unexpected', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame('', $e->servercode);
+        $this->assertSame(400, $e->a);
+    }
+
+    public function test_the_service_time_of_a_known_error_is_kept(): void {
+        $mock = new MockHandler([new Response(401, [], '{"error":{"code":"signature_invalid","server_time":1760000123}}')]);
+        $e = $this->expect_api_error('api_signature_invalid', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(1760000123, $e->servertime);
+    }
+
+    public function test_the_clock_difference_that_the_pages_warn_about(): void {
+        $this->assertSame(120, client::CLOCK_SKEW_WARNING);
     }
 
     public function test_site_name_is_trimmed(): void {
