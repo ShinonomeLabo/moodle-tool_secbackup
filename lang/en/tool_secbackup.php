@@ -93,6 +93,7 @@ $string['message_reenrolled_subject'] = 'This site was registered again with {$a
 $string['messageprovider:connection'] = 'Changes to the connection with the backup service';
 $string['notifier_system'] = 'The system';
 $string['pluginname'] = 'Shinonome LMS Backup';
+$string['privacy:metadata:core_message'] = 'The plugin tells the site administrators about changes to the connection with the backup service through the messaging system. The message names the administrator who made the change.';
 $string['privacy:metadata:service'] = 'The plugin sends encrypted backups of this site to the Shinonome LMS Backup service.';
 $string['privacy:metadata:service:sitedata'] = 'The whole site, including the personal data of all users (everything in the backup).';
 $string['publickey_base64'] = 'The public key contains characters that are not allowed. Copy it again from the platform screen.';

@@ -93,6 +93,7 @@ $string['message_reenrolled_subject'] = 'このサイトを {$a->platform} に�
 $string['messageprovider:connection'] = 'バックアップのサービスとの接続の変更';
 $string['notifier_system'] = 'システム';
 $string['pluginname'] = 'あんしんLMSバックアップ';
+$string['privacy:metadata:core_message'] = '連携ツールは、バックアップのサービスとの接続が変わったことを、メッセージの仕組みでサイトの管理者に知らせます。メッセージには、変更を行った管理者の名前が入ります。';
 $string['privacy:metadata:service'] = 'この連携ツールは、このサイトを暗号化したバックアップを、あんしんLMSバックアップのサービスへ送ります。';
 $string['privacy:metadata:service:sitedata'] = 'サイト全体 (全利用者の個人データを含む、バックアップの対象のすべて)。';
 $string['publickey_base64'] = '公開鍵に使えない文字が入っています。プラットフォームの画面から、もう一度コピーしてください。';

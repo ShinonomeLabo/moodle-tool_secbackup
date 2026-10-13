@@ -18,6 +18,7 @@ namespace tool_secbackup\privacy;
 
 use core_privacy\local\metadata\collection;
 use core_privacy\local\metadata\types\external_location;
+use core_privacy\local\metadata\types\subsystem_link;
 use core_privacy\local\request\approved_contextlist;
 use core_privacy\local\request\approved_userlist;
 use core_privacy\local\request\contextlist;
@@ -38,7 +39,7 @@ final class provider_test extends \core_privacy\tests\provider_testcase {
         $collection = provider::get_metadata(new collection('tool_secbackup'));
         $items = $collection->get_collection();
 
-        $this->assertCount(1, $items);
+        $this->assertCount(2, $items);
         $item = reset($items);
         $this->assertInstanceOf(external_location::class, $item);
         $this->assertSame('tool_secbackup_service', $item->get_name());
@@ -46,8 +47,18 @@ final class provider_test extends \core_privacy\tests\provider_testcase {
         $this->assertSame(['sitedata' => 'privacy:metadata:service:sitedata'], $item->get_privacy_fields());
     }
 
+    public function test_metadata_declares_the_messages_to_the_administrators(): void {
+        $items = provider::get_metadata(new collection('tool_secbackup'))->get_collection();
+
+        $link = end($items);
+        $this->assertInstanceOf(subsystem_link::class, $link);
+        $this->assertSame('core_message', $link->get_name());
+        $this->assertSame('privacy:metadata:core_message', $link->get_summary());
+    }
+
     public function test_metadata_strings_exist(): void {
         $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:service', 'tool_secbackup'));
+        $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:core_message', 'tool_secbackup'));
         $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:service:sitedata', 'tool_secbackup'));
     }
 

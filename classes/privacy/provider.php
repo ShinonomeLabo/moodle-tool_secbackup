@@ -52,6 +52,7 @@ class provider implements
             ['sitedata' => 'privacy:metadata:service:sitedata'],
             'privacy:metadata:service'
         );
+        $collection->add_subsystem_link('core_message', [], 'privacy:metadata:core_message');
         return $collection;
     }
 
