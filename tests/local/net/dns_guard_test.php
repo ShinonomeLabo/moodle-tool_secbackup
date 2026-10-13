@@ -75,7 +75,7 @@ final class dns_guard_test extends \advanced_testcase {
             network_fakes::ranges(),
             [network_fakes::doh('cloudflare', ['13.225.1.1'])],
             function (string $host): array {
-                $this->fail('The operating system must not be asked when a proxy resolves the name.');
+                $this->fail('The operating system must not be asked when an HTTP proxy resolves the name.');
             }
         );
         $this->assertNull($guard->check(network_fakes::HOST, true, aws_ranges::SERVICE_CLOUDFRONT));
@@ -87,7 +87,7 @@ final class dns_guard_test extends \advanced_testcase {
             network_fakes::ranges(),
             [network_fakes::doh('cloudflare', ['203.0.113.1'])],
             function (string $host): array {
-                $this->fail('The operating system must not be asked when a proxy resolves the name.');
+                $this->fail('The operating system must not be asked when an HTTP proxy resolves the name.');
             }
         );
         $this->expect_problem('dns_outside_aws', $guard, aws_ranges::SERVICE_CLOUDFRONT, true);
@@ -117,6 +117,30 @@ final class dns_guard_test extends \advanced_testcase {
 
     public function test_resolver_answer_outside_aws_stops(): void {
         $this->expect_problem('dns_outside_aws', network_fakes::guard(['13.225.1.1'], ['203.0.113.1'], ['13.225.9.9']));
+    }
+
+    /**
+     * Answers of one resolver with one address outside the AWS ranges, wherever it stands in the list.
+     *
+     * @return array
+     */
+    public static function one_address_outside_provider(): array {
+        return [
+            'last' => [['13.225.1.1', '203.0.113.1']],
+            'first' => [['203.0.113.1', '13.225.1.1']],
+            'middle' => [['13.225.1.1', '203.0.113.1', '13.225.1.2']],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('one_address_outside_provider')]
+    /**
+     * Every address of a resolver has to be inside the ranges: one address outside them is enough to stop.
+     *
+     * @dataProvider one_address_outside_provider
+     * @param string[] $addresses The answer of the first resolver.
+     */
+    public function test_one_address_outside_the_ranges_stops(array $addresses): void {
+        $this->expect_problem('dns_outside_aws', network_fakes::guard($addresses, null, ['13.225.9.9']));
     }
 
     public function test_s3_addresses_are_not_cloudfront(): void {
