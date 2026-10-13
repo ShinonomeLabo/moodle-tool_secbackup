@@ -47,6 +47,14 @@ final class declarations_test extends \advanced_testcase {
         $this->assertMatchesRegularExpression('/^\d{10}$/', (string) $plugin->version);
     }
 
+    public function test_message_providers(): void {
+        $messageproviders = [];
+        include(self::dir() . '/db/messages.php');
+        $this->assertSame(['connection'], array_keys($messageproviders));
+        $this->assertSame('tool/secbackup:manage', $messageproviders['connection']['capability']);
+        $this->assertSame(['popup', 'email'], array_keys($messageproviders['connection']['defaults']));
+    }
+
     public function test_capabilities(): void {
         $capabilities = [];
         include(self::dir() . '/db/access.php');

@@ -61,6 +61,37 @@ $string['enroll_response_mismatch'] = 'サービスの署名付きの応答が�
 $string['envelope_malformed'] = '接続先のサービスからの応答を読めませんでした。接続先の URL が正しいか確かめてください。';
 $string['envelope_signature'] = '接続先のサービスからの応答の署名を確かめられませんでした。接続先の URL が正しいか確かめてください。';
 $string['envelope_untrusted'] = 'この連携ツールが信頼していない鍵で署名された応答です。接続先の URL が正しいか確かめてください。';
+$string['event_deregistered'] = 'バックアップのサービスとの登録の解除';
+$string['event_enrolled'] = 'バックアップのサービスへのサイトの登録';
+$string['message_deregistered_body'] = '{$a->user} が、このサイトの {$a->platform} との登録を解除しました。
+
+接続先: {$a->endpoint}
+プラットフォームでのサイト名: {$a->site}
+
+今後、バックアップは送られません。念のため、プラットフォームの画面でも、サイトの登録の削除か、登録コードの発行し直しを行ってください。
+
+{$a->url}';
+$string['message_deregistered_subject'] = '{$a->platform} との登録を解除しました';
+$string['message_enrolled_body'] = '{$a->user} が、このサイトを {$a->platform} に登録しました。
+
+接続先: {$a->endpoint}
+プラットフォームでのサイト名: {$a->site}
+
+心当たりが無い場合は、連携ツールの接続設定を確かめてください。
+
+{$a->url}';
+$string['message_enrolled_subject'] = 'このサイトを {$a->platform} に登録しました';
+$string['message_reenrolled_body'] = '{$a->user} が、新しい登録コードで、このサイトを {$a->platform} に登録し直しました。このサイトの前の鍵は使えなくなりました。
+
+接続先: {$a->endpoint}
+プラットフォームでのサイト名: {$a->site}
+
+心当たりが無い場合は、連携ツールの接続設定を確かめてください。
+
+{$a->url}';
+$string['message_reenrolled_subject'] = 'このサイトを {$a->platform} に登録し直しました';
+$string['messageprovider:connection'] = 'バックアップのサービスとの接続の変更';
+$string['notifier_system'] = 'システム';
 $string['pluginname'] = 'あんしんLMSバックアップ';
 $string['privacy:metadata:service'] = 'この連携ツールは、このサイトを暗号化したバックアップを、あんしんLMSバックアップのサービスへ送ります。';
 $string['privacy:metadata:service:sitedata'] = 'サイト全体 (全利用者の個人データを含む、バックアップの対象のすべて)。';

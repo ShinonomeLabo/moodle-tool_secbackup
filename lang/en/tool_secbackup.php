@@ -61,6 +61,37 @@ $string['enroll_response_mismatch'] = 'The signed answer of the service does not
 $string['envelope_malformed'] = 'The response from the service could not be read. Check that the connection URL is correct.';
 $string['envelope_signature'] = 'The signature of the response from the service could not be verified. Check that the connection URL is correct.';
 $string['envelope_untrusted'] = 'The response was signed with a key that this plugin does not trust. Check that the connection URL is correct.';
+$string['event_deregistered'] = 'Registration with the backup service removed';
+$string['event_enrolled'] = 'Site registered with the backup service';
+$string['message_deregistered_body'] = '{$a->user} removed the registration of this site with {$a->platform}.
+
+Connection URL: {$a->endpoint}
+Site name on the platform: {$a->site}
+
+Backups are no longer sent. To be safe, also remove the site or issue a new registration code on the platform screen.
+
+{$a->url}';
+$string['message_deregistered_subject'] = 'The registration with {$a->platform} was removed';
+$string['message_enrolled_body'] = '{$a->user} registered this site with {$a->platform}.
+
+Connection URL: {$a->endpoint}
+Site name on the platform: {$a->site}
+
+If you did not expect this, check the connection settings of the plugin.
+
+{$a->url}';
+$string['message_enrolled_subject'] = 'This site was registered with {$a->platform}';
+$string['message_reenrolled_body'] = '{$a->user} registered this site again with {$a->platform}, with a new registration code. The previous key of this site no longer works.
+
+Connection URL: {$a->endpoint}
+Site name on the platform: {$a->site}
+
+If you did not expect this, check the connection settings of the plugin.
+
+{$a->url}';
+$string['message_reenrolled_subject'] = 'This site was registered again with {$a->platform}';
+$string['messageprovider:connection'] = 'Changes to the connection with the backup service';
+$string['notifier_system'] = 'The system';
 $string['pluginname'] = 'Shinonome LMS Backup';
 $string['privacy:metadata:service'] = 'The plugin sends encrypted backups of this site to the Shinonome LMS Backup service.';
 $string['privacy:metadata:service:sitedata'] = 'The whole site, including the personal data of all users (everything in the backup).';
