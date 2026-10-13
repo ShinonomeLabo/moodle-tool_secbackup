@@ -44,8 +44,11 @@ final class transport {
     /** @var int[] curl error numbers of failed TLS handshakes and certificate checks. */
     private const TLS_ERRORS = [35, 51, 58, 60, 77, 83, 90, 91];
 
-    /** @var int[] curl error numbers of failed or timed-out connections. */
-    private const CONNECT_ERRORS = [5, 6, 7, 28, 52, 55, 56];
+    /**
+     * @var int[] curl error numbers of failed or timed-out connections. 97 is a failed handshake with a SOCKS proxy, which
+     *     libcurl before 7.73.0 reports as 7.
+     */
+    private const CONNECT_ERRORS = [5, 6, 7, 28, 52, 55, 56, 97];
 
     /** @var developer_settings Developer settings. */
     private developer_settings $settings;

@@ -403,7 +403,8 @@ final class transport_test extends \advanced_testcase {
         foreach ([35, 51, 58, 60, 77, 83, 90, 91] as $errno) {
             $rows["error $errno is a certificate or TLS failure"] = [$errno, 'transport_tls'];
         }
-        foreach ([5, 6, 7, 28, 52, 55, 56] as $errno) {
+        // 97 is what libcurl 7.73.0 and later report when the handshake with a SOCKS proxy fails; older versions report 7.
+        foreach ([5, 6, 7, 28, 52, 55, 56, 97] as $errno) {
             $rows["error $errno is a failed or timed out connection"] = [$errno, 'transport_connect'];
         }
         foreach ([1, 3, 18, 23, 47, 61] as $errno) {
