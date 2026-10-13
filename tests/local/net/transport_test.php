@@ -41,6 +41,12 @@ use tool_secbackup\tests\network_fakes;
  * @covers     \tool_secbackup\local\net\response
  */
 final class transport_test extends \advanced_testcase {
+    /** @var string A signature as the service gets it: no exception of send() keeps it in its message or in its trace. */
+    private const SIGNATURE = 'Zm9yIHRoZSB0cmFjZSB0ZXN0LCBub3QgYSByZWFsIHNpZ25hdHVyZQ';
+
+    /** @var string The body of an enrolment request: it holds a registration code. */
+    private const BODY = '{"enrollment_code":"SEC-BK-7QF2-MXA9-PDTW-4HJC-8NR5"}';
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
@@ -363,9 +369,10 @@ final class transport_test extends \advanced_testcase {
 
     public function test_a_transfer_cut_by_the_progress_callback_is_a_response_that_is_too_large(): void {
         // What curl does when the callback returns 1: it stops with error 42, and Guzzle rejects the request with it.
-        $cutting = function (RequestInterface $request, array $options) {
+        $returned = null;
+        $cutting = function (RequestInterface $request, array $options) use (&$returned) {
             $progress = $options['curl'][CURLOPT_PROGRESSFUNCTION];
-            $this->assertSame(1, $progress(null, 0, transport::MAX_RESPONSE + 1, 0, 0));
+            $returned = $progress(null, 0, transport::MAX_RESPONSE + 1, 0, 0);
             return new RequestException(
                 'cURL error 42: Operation was aborted by an application callback',
                 $request,
@@ -375,6 +382,8 @@ final class transport_test extends \advanced_testcase {
             );
         };
         $this->expect_failure('transport_too_large', new MockHandler([$cutting]));
+        // Checked here and not in the handler: send() turns an exception of a failed assertion inside the client into a failure.
+        $this->assertSame(1, $returned);
     }
 
     public function test_error_42_that_the_progress_callback_did_not_cause_is_another_failure(): void {
@@ -621,8 +630,9 @@ final class transport_test extends \advanced_testcase {
 
     #[\PHPUnit\Framework\Attributes\DataProvider('failing_send_provider')]
     /**
-     * An exception that send() throws keeps the signature and the body out of the arguments of its trace, and so does the
-     * Guzzle failure that it turns into one: the failure holds the request.
+     * An exception that send() throws keeps the signature and the body out of its message and out of the arguments of its
+     * trace, and has no previous exception, which would keep the trace of the call that made it. That holds for the Guzzle
+     * failure that send() turns into one, too: the failure holds the request.
      *
      * @dataProvider failing_send_provider
      * @param array $queue What the mocked network answers.
@@ -636,34 +646,115 @@ final class transport_test extends \advanced_testcase {
         string $relative,
         string $method
     ): void {
-        if (PHP_VERSION_ID < 80200) {
-            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the'
-                . ' arguments of the trace there.');
-        }
-        $signature = 'Zm9yIHRoZSB0cmFjZSB0ZXN0LCBub3QgYSByZWFsIHNpZ25hdHVyZQ';
-        $body = '{"enrollment_code":"SEC-BK-7QF2-MXA9-PDTW-4HJC-8NR5"}';
-        $headers = ['Accept' => 'application/json', 'X-SecBackup-Signature' => $signature];
         $guard = $namecheckfails
             ? network_fakes::guard(['13.225.1.1'], null, ['203.0.113.7'])
             : network_fakes::passing_guard();
+        $headers = ['Accept' => 'application/json', 'X-SecBackup-Signature' => self::SIGNATURE];
+        $e = $this->exception_from_send(new MockHandler($queue), $guard, $method, $relative, $headers);
+        $this->assert_nothing_secret_is_left($e);
+    }
 
-        // A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the
-        // calls: with it on, the check would find nothing whatever the code does.
+    /**
+     * Failures inside the HTTP client that are not Guzzle exceptions. Each row: what the mocked network does, the headers,
+     * the class that the exception names.
+     *
+     * @return array
+     */
+    public static function client_failure_provider(): array {
+        $good = ['Accept' => 'application/json', 'X-SecBackup-Signature' => self::SIGNATURE];
+        $refusing = static function (RequestInterface $request, array $options): void {
+            throw new \InvalidArgumentException('SSL CA bundle not found: /nowhere/amazon-roots.pem');
+        };
+        $failing = static function (RequestInterface $request, array $options): void {
+            throw new \TypeError('Something is wrong inside the handler');
+        };
+        return [
+            // PSR-7 refuses a header value with a line break, and a header name with a blank, when it builds the request.
+            'a header value with a line break' => [
+                [],
+                ['X-SecBackup-Signature' => self::SIGNATURE . "\r\nX-Injected: 1"] + $good,
+                \InvalidArgumentException::class,
+            ],
+            'a header name that is not allowed' => [[], ['Bad Name' => 'x'] + $good, \InvalidArgumentException::class],
+            'a handler that does not find the roots' => [[$refusing], $good, \InvalidArgumentException::class],
+            'an error of PHP inside the handler' => [[$failing], $good, \TypeError::class],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('client_failure_provider')]
+    /**
+     * Whatever is thrown inside the HTTP client, send() does not let it out: a Guzzle exception becomes a kind of failure,
+     * and anything else becomes "transport_failed" that names only the class. What Guzzle or PHP threw carries the arguments
+     * of Guzzle's calls, the request among them, and PSR-7 puts a refused header value into its message.
+     *
+     * @dataProvider client_failure_provider
+     * @param array $queue What the mocked network does.
+     * @param array $headers The headers of the call.
+     * @param string $class The class that the debug information names.
+     */
+    public function test_a_failure_inside_the_http_client_is_replaced_by_one_that_names_only_its_class(
+        array $queue,
+        array $headers,
+        string $class
+    ): void {
+        $e = $this->exception_from_send(new MockHandler($queue), network_fakes::passing_guard(), 'POST', 'enroll', $headers);
+        $this->assertInstanceOf(transport_exception::class, $e);
+        $this->assertSame('transport_failed', $e->errorcode);
+        $this->assertSame($class, $e->debuginfo);
+        $this->assert_nothing_secret_is_left($e);
+    }
+
+    /**
+     * Calls send() with PHP keeping the arguments of calls in traces, and returns what it throws.
+     *
+     * A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the call:
+     * with it on, the check would find nothing whatever the code does. A control exception shows that the check does see the
+     * arguments when PHP keeps them.
+     *
+     * @param MockHandler $mock What the mocked network does.
+     * @param dns_guard $guard Name check.
+     * @param string $method The method.
+     * @param string $relative Name of the API call.
+     * @param string[] $headers The headers.
+     * @return \Throwable What send() throws.
+     */
+    private function exception_from_send(
+        MockHandler $mock,
+        dns_guard $guard,
+        string $method,
+        string $relative,
+        array $headers
+    ): \Throwable {
         $previous = ini_set('zend.exception_ignore_args', '0');
         $this->assertNotFalse($previous);
         try {
-            $control = self::exception_created_with($headers, $body);
-            $this->assertTrue(self::trace_leaks($control, $signature, $body), 'A trace shows the arguments when PHP keeps them.');
+            $control = self::exception_created_with($headers, self::BODY);
+            $this->assertTrue(self::trace_leaks($control), 'A trace shows the arguments when PHP keeps them.');
             try {
-                $transport = new transport(developer_settings::from_value(null), $guard, new MockHandler($queue));
-                $transport->send($method, self::endpoint(), $relative, $headers, $body);
-            } catch (\Exception $e) {
-                $this->assertFalse(self::trace_leaks($e, $signature, $body), 'The signature or the body is in the trace.');
-                return;
+                $transport = new transport(developer_settings::from_value(null), $guard, $mock);
+                $transport->send($method, self::endpoint(), $relative, $headers, self::BODY);
+            } catch (\Throwable $e) {
+                return $e;
             }
-            $this->fail('send() has to throw');
         } finally {
             ini_set('zend.exception_ignore_args', $previous);
+        }
+        $this->fail('send() has to throw');
+    }
+
+    /**
+     * Asserts that an exception of send() keeps the signature and the body out of its message and out of the arguments of
+     * its trace, and has no previous exception.
+     *
+     * @param \Throwable $e The exception.
+     */
+    private function assert_nothing_secret_is_left(\Throwable $e): void {
+        $this->assertNull($e->getPrevious(), 'A previous exception keeps the trace of the call that made it.');
+        $this->assertStringNotContainsString(self::SIGNATURE, $e->getMessage());
+        $this->assertStringNotContainsString(self::BODY, $e->getMessage());
+        // Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the arguments of the trace.
+        if (PHP_VERSION_ID >= 80200) {
+            $this->assertFalse(self::trace_leaks($e), 'The signature or the body is in the trace.');
         }
     }
 
@@ -683,14 +774,12 @@ final class transport_test extends \advanced_testcase {
      * also inside arrays and as part of longer text, or hold a Guzzle exception or message, which holds the request.
      *
      * @param \Throwable $exception The exception.
-     * @param string $signature The signature.
-     * @param string $body The body.
      * @return bool
      */
-    private static function trace_leaks(\Throwable $exception, string $signature, string $body): bool {
+    private static function trace_leaks(\Throwable $exception): bool {
         foreach ($exception->getTrace() as $frame) {
             foreach ($frame['args'] ?? [] as $argument) {
-                if (self::holds($argument, $signature, $body)) {
+                if (self::holds($argument)) {
                     return true;
                 }
             }
@@ -706,20 +795,18 @@ final class transport_test extends \advanced_testcase {
      * Tells whether an argument is, or holds, the signature or the body, or is an exception or a message.
      *
      * @param mixed $argument An argument of a call in a trace.
-     * @param string $signature The signature.
-     * @param string $body The body.
      * @return bool
      */
-    private static function holds(mixed $argument, string $signature, string $body): bool {
+    private static function holds(mixed $argument): bool {
         if ($argument instanceof \Throwable || $argument instanceof MessageInterface) {
             return true;
         }
         if (is_string($argument)) {
-            return str_contains($argument, $signature) || str_contains($argument, $body);
+            return str_contains($argument, self::SIGNATURE) || str_contains($argument, self::BODY);
         }
         if (is_array($argument)) {
             foreach ($argument as $item) {
-                if (self::holds($item, $signature, $body)) {
+                if (self::holds($item)) {
                     return true;
                 }
             }

@@ -103,7 +103,8 @@ final class transport {
      * @return response
      * @throws \coding_exception When the method is not GET or POST, a GET request has a body, or the name of the call is not
      *         allowed: that is a mistake of the caller.
-     * @throws transport_exception When the checks fail or the connection fails.
+     * @throws transport_exception When the checks fail or the connection fails, and when anything else fails inside the HTTP
+     *         client (transport_failed, with the name of the class).
      */
     public function send(
         string $method,
@@ -178,10 +179,16 @@ final class transport {
         if ($this->settings->allow_private_hosts()) {
             $config['ignoresecurity'] = true;
         }
+        // Every exception that leaves this method is made here, where the headers and the body are hidden from its trace. One that
+        // was made inside the HTTP client holds the arguments of Guzzle's calls, the request among them.
         try {
             $response = (new \core\http_client($config))->request($method, $url, $options);
         } catch (GuzzleException $e) {
             throw $toolarge ? new transport_exception('transport_too_large') : self::failure($e);
+        } catch (\Throwable $e) {
+            // PSR-7 refusing a header, a bundle of roots that is missing, an error of PHP: only the class is kept, and the
+            // exception is not linked. PSR-7 even puts the refused header value into its message.
+            throw new transport_exception('transport_failed', get_class($e));
         }
         if ($response->getStatusCode() >= 300 && $response->getStatusCode() < 400) {
             throw new transport_exception('transport_redirect', 'HTTP ' . $response->getStatusCode());
