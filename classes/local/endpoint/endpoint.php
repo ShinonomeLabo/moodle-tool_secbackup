@@ -117,7 +117,7 @@ final class endpoint {
      * @param int $defaultport 443 or 80.
      * @param developer_settings $settings Developer settings.
      * @return array [host in lower case, port]
-     * @throws endpoint_exception When the port is refused.
+     * @throws endpoint_exception With endpoint_host for an IPv6 address, and with endpoint_port when the port is refused.
      */
     private static function split_authority(string $authority, int $defaultport, developer_settings $settings): array {
         if (str_starts_with($authority, '[')) {
@@ -227,6 +227,7 @@ final class endpoint {
      *
      * @param string $relative Name of the call, such as "enroll".
      * @return string
+     * @throws \coding_exception When the name is not a lower case word (letters, digits, hyphens), or such words joined by slashes.
      */
     public function path_of(string $relative): string {
         if (preg_match('~^[a-z][a-z0-9-]*(/[a-z0-9-]+)*\z~', $relative) !== 1) {
@@ -240,6 +241,7 @@ final class endpoint {
      *
      * @param string $relative Name of the call, such as "enroll".
      * @return string
+     * @throws \coding_exception When the name is not a lower case word (letters, digits, hyphens), or such words joined by slashes.
      */
     public function join(string $relative): string {
         return $this->origin() . $this->path_of($relative);

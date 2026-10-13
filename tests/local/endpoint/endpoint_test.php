@@ -52,6 +52,27 @@ final class endpoint_test extends \basic_testcase {
     }
 
     /**
+     * A connection URL of an exact length in bytes, in a shape that is accepted.
+     *
+     * @param int $length The length, at least 32.
+     * @return string
+     */
+    private static function url_of_length(int $length): string {
+        $start = 'https://lms-backup.example.com/';
+        return $start . str_repeat('a', $length - strlen($start));
+    }
+
+    /**
+     * A host name of an exact length in characters, made of labels of at most 63 characters.
+     *
+     * @param int $length The length, from 193 to 255.
+     * @return string
+     */
+    private static function host_of_length(int $length): string {
+        return implode('.', [str_repeat('a', 63), str_repeat('b', 63), str_repeat('c', 63), str_repeat('d', $length - 192)]);
+    }
+
+    /**
      * Ways of writing the same URL.
      *
      * @return array
@@ -114,6 +135,36 @@ final class endpoint_test extends \basic_testcase {
         $this->assertFalse($endpoint->equals(endpoint::parse(self::URL, self::production())));
     }
 
+    /**
+     * Connection URLs that differ from http://localhost:8099/api in one part only.
+     *
+     * @return array
+     */
+    public static function other_url_provider(): array {
+        return [
+            'scheme' => ['https://localhost:8099/api'],
+            'host' => ['http://fakesec:8099/api'],
+            'port' => ['http://localhost:8098/api'],
+            'path' => ['http://localhost:8099/other'],
+            'root path' => ['http://localhost:8099'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('other_url_provider')]
+    /**
+     * Two connection URLs are the same only when the scheme, the host, the port and the path are all the same.
+     *
+     * @dataProvider other_url_provider
+     * @param string $other The other URL.
+     */
+    public function test_urls_that_differ_in_one_part_are_not_equal(string $other): void {
+        $settings = self::development();
+        $endpoint = endpoint::parse('http://localhost:8099/api', $settings);
+        $this->assertTrue($endpoint->equals(endpoint::parse('http://LOCALHOST:8099/api/', $settings)));
+        $this->assertFalse($endpoint->equals(endpoint::parse($other, $settings)));
+        $this->assertFalse(endpoint::parse($other, $settings)->equals($endpoint));
+    }
+
     public function test_localhost_is_refused_only_as_the_last_label(): void {
         foreach (['https://localhost.example.com/api', 'https://a.notlocalhost/api'] as $url) {
             $this->assertSame($url, endpoint::parse($url, self::production())->url());
@@ -146,6 +197,7 @@ final class endpoint_test extends \basic_testcase {
             'only spaces' => ["  \u{3000} ", 'endpoint_empty'],
             'no scheme' => ['lms-backup.example.com/api/lms-backup/v1', 'endpoint_invalid'],
             'too long' => ['https://lms-backup.example.com/' . str_repeat('a', 2100), 'endpoint_invalid'],
+            'input of 2049 bytes' => [self::url_of_length(2049), 'endpoint_invalid'],
             'http' => ['http://lms-backup.example.com/api/lms-backup/v1', 'endpoint_scheme'],
             'ftp' => ['ftp://lms-backup.example.com/api', 'endpoint_scheme'],
             'user name' => ['https://user@lms-backup.example.com/api', 'endpoint_userinfo'],
@@ -164,10 +216,17 @@ final class endpoint_test extends \basic_testcase {
             'name under localhost in upper case' => ['https://X.LOCALHOST/api', 'endpoint_host'],
             'short numeric address' => ['https://127.1/api', 'endpoint_host'],
             'octal address' => ['https://0177.0.0.1/api', 'endpoint_host'],
+            'decimal integer address' => ['https://2130706433/api', 'endpoint_host'],
+            'hexadecimal integer address' => ['https://0x7f000001/api', 'endpoint_host'],
+            'hexadecimal last label' => ['https://a.0x7f/api', 'endpoint_host'],
             'underscore' => ['https://app_yu.example.org/api', 'endpoint_host'],
             'leading hyphen' => ['https://-app.example.org/api', 'endpoint_host'],
             'space in host' => ['https://app yu.example.org/api', 'endpoint_host'],
             'non-ascii host' => ["https://\u{4F8B}.jp/api", 'endpoint_host'],
+            'empty label' => ['https://lms-backup..example.com/api', 'endpoint_host'],
+            'trailing dot' => ['https://lms-backup.example.com./api', 'endpoint_host'],
+            'label of 64 characters' => ['https://' . str_repeat('a', 64) . '.example.com/api', 'endpoint_host'],
+            'host of 254 characters' => ['https://' . self::host_of_length(254) . '/api', 'endpoint_host'],
             'dot segment' => ['https://lms-backup.example.com/api/../admin', 'endpoint_path'],
             'encoded dot segment' => ['https://lms-backup.example.com/api/%2e%2e/admin', 'endpoint_path'],
             'empty segment' => ['https://lms-backup.example.com//api', 'endpoint_path'],
@@ -201,7 +260,28 @@ final class endpoint_test extends \basic_testcase {
             $this->fail('No exception');
         } catch (endpoint_exception $e) {
             $this->assertSame($code, $e->errorcode);
+            $this->assertTrue(get_string_manager()->string_exists($e->errorcode, 'tool_secbackup'), $e->errorcode);
         }
+    }
+
+    public function test_the_error_codes_are_language_strings(): void {
+        $codes = ['endpoint_empty', 'endpoint_host', 'endpoint_invalid', 'endpoint_path', 'endpoint_port', 'endpoint_query',
+            'endpoint_scheme', 'endpoint_userinfo'];
+        foreach ($codes as $code) {
+            $this->assertTrue(get_string_manager()->string_exists($code, 'tool_secbackup'), $code);
+        }
+    }
+
+    public function test_the_longest_accepted_values(): void {
+        $settings = self::production();
+        $host = self::host_of_length(253);
+        $this->assertSame(253, strlen($host));
+        $this->assertSame('https://' . $host, endpoint::parse('https://' . $host, $settings)->url());
+        $label = 'https://' . str_repeat('a', 63) . '.example.com/api';
+        $this->assertSame($label, endpoint::parse($label, $settings)->url());
+        $url = self::url_of_length(2048);
+        $this->assertSame(2048, strlen($url));
+        $this->assertSame($url, endpoint::parse($url, $settings)->url());
     }
 
     public function test_text_that_is_not_utf8_is_invalid_and_not_empty(): void {
@@ -253,6 +333,7 @@ final class endpoint_test extends \basic_testcase {
         $refused = ['http://localhost:0/api' => 'endpoint_port', 'http://localhost:65536/api' => 'endpoint_port',
             'http://[::1]/api' => 'endpoint_host', 'http://127.1/api' => 'endpoint_host',
             'http://fakesec/api?x' => 'endpoint_query',
+            'http://2130706433/api' => 'endpoint_host', 'http://0x7f000001/api' => 'endpoint_host',
             "http://localhost\n:8099/api" => 'endpoint_host', "http://localhost:8099\n/api" => 'endpoint_port'];
         foreach ($refused as $input => $code) {
             try {
@@ -277,6 +358,17 @@ final class endpoint_test extends \basic_testcase {
             } catch (endpoint_exception $e) {
                 $this->assertSame($code, $e->errorcode, $input);
             }
+        }
+    }
+
+    public function test_allowprivatehosts_alone_does_not_allow_http(): void {
+        $settings = developer_settings::from_value(['allowprivatehosts' => true]);
+        $this->assertSame('https://fakesec:8443/api', endpoint::parse('https://fakesec:8443/api', $settings)->url());
+        try {
+            endpoint::parse('http://fakesec/api', $settings);
+            $this->fail('No exception');
+        } catch (endpoint_exception $e) {
+            $this->assertSame('endpoint_scheme', $e->errorcode);
         }
     }
 }
