@@ -46,6 +46,7 @@ final class aws_ranges_test extends \basic_testcase {
         $ranges = aws_ranges::from_json(self::SAMPLE);
         $this->assertFalse($ranges->contains('2600:9000::1', aws_ranges::SERVICE_CLOUDFRONT));
         $this->assertFalse($ranges->contains('not an address', aws_ranges::SERVICE_CLOUDFRONT));
+        $this->assertFalse($ranges->contains("13.225.158.68\n", aws_ranges::SERVICE_CLOUDFRONT));
     }
 
     public function test_metadata(): void {
@@ -74,6 +75,12 @@ final class aws_ranges_test extends \basic_testcase {
             'prefix length 33' => ['{"syncToken":"1","createDate":"x","services":{"CLOUDFRONT":["13.225.0.0/33"],"S3":[]}}'],
             'bad address' => ['{"syncToken":"1","createDate":"x","services":{"CLOUDFRONT":["300.1.1.1/8"],"S3":[]}}'],
             'no prefix length' => ['{"syncToken":"1","createDate":"x","services":{"CLOUDFRONT":["13.225.0.0"],"S3":[]}}'],
+            'line feed after a CLOUDFRONT prefix' => [
+                '{"syncToken":"1","createDate":"x","services":{"CLOUDFRONT":["13.225.0.0/16\n"],"S3":[]}}',
+            ],
+            'line feed after an S3 prefix' => [
+                '{"syncToken":"1","createDate":"x","services":{"CLOUDFRONT":[],"S3":["3.5.152.0/21\n"]}}',
+            ],
         ];
     }
 
@@ -93,7 +100,7 @@ final class aws_ranges_test extends \basic_testcase {
         $ranges = aws_ranges::bundled();
         $this->assertGreaterThan(50, $ranges->count(aws_ranges::SERVICE_CLOUDFRONT));
         $this->assertGreaterThan(5, $ranges->count(aws_ranges::SERVICE_S3));
-        $this->assertMatchesRegularExpression('/^\d+$/', $ranges->sync_token());
-        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/', $ranges->create_date());
+        $this->assertMatchesRegularExpression('/^\d+\z/', $ranges->sync_token());
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\z/', $ranges->create_date());
     }
 }

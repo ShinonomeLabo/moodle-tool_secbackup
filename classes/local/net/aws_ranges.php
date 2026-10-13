@@ -94,9 +94,10 @@ final class aws_ranges {
      * @return int[]
      */
     private static function network(mixed $prefix): array {
+        // The pattern ends with \z: $ also matches before a final line feed.
         if (
             !is_string($prefix)
-            || preg_match('~^([0-9.]+)/([0-9]|[12][0-9]|3[0-2])$~', $prefix, $m) !== 1
+            || preg_match('~^([0-9.]+)/([0-9]|[12][0-9]|3[0-2])\z~', $prefix, $m) !== 1
             || ($network = ip2long($m[1])) === false
         ) {
             throw new \coding_exception('The AWS range list contains an invalid prefix.');

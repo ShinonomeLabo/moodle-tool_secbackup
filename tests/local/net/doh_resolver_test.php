@@ -77,6 +77,7 @@ final class doh_resolver_test extends \advanced_testcase {
             ['name' => 'd111.cloudfront.net', 'type' => 1, 'TTL' => 60, 'data' => '13.225.1.2'],
             ['name' => 'd111.cloudfront.net', 'type' => 28, 'TTL' => 60, 'data' => '2600:9000::1'],
             ['name' => 'd111.cloudfront.net', 'type' => 1, 'TTL' => 60, 'data' => 'not an address'],
+            ['name' => 'd111.cloudfront.net', 'type' => 1, 'TTL' => 60, 'data' => "13.225.1.7\n"],
             'not a record',
         ]);
         $resolver = new doh_resolver('cloudflare', $mock);
