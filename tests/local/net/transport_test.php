@@ -573,6 +573,14 @@ final class transport_test extends \advanced_testcase {
         $this->assertInstanceOf(transport::class, transport::create());
     }
 
+    public function test_the_error_codes_are_language_strings(): void {
+        $codes = ['transport_blocked', 'transport_connect', 'transport_failed', 'transport_redirect', 'transport_tls',
+            'transport_too_large'];
+        foreach ($codes as $code) {
+            $this->assertTrue(get_string_manager()->string_exists($code, 'tool_secbackup'), $code);
+        }
+    }
+
     public function test_the_headers_the_body_and_the_failure_are_marked_sensitive(): void {
         $marked = [];
         foreach (['send', 'failure'] as $name) {
