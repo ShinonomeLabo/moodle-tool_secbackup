@@ -78,6 +78,56 @@ final class enrollment_request_test extends \advanced_testcase {
     }
 
     /**
+     * Release texts as Moodle writes them, and as the service accepts them (at most 100 characters, none of category C).
+     *
+     * @return array
+     */
+    public static function release_provider(): array {
+        return [
+            'a normal release' => ['5.3 (Build: 20261005)', '5.3 (Build: 20261005)'],
+            '100 characters are kept' => [str_repeat('a', 100), str_repeat('a', 100)],
+            '101 characters are cut to 100' => [str_repeat('a', 101), str_repeat('a', 100)],
+            'japanese text is cut by characters' => [str_repeat("\u{3042}", 101), str_repeat("\u{3042}", 100)],
+            'a tab is removed' => ["5.3\t(Build)", '5.3(Build)'],
+            'a line feed is removed' => ["5.3\n(Build)", '5.3(Build)'],
+            'a zero width space is removed' => ["5.3\u{200B}(Build)", '5.3(Build)'],
+            'a right to left override is removed' => ["5.3\u{202E}(Build)", '5.3(Build)'],
+            'removed characters do not count' => [str_repeat("a\u{200B}", 100) . 'b', str_repeat('a', 100)],
+            'an invalid byte becomes the replacement character' => ["5.3\xff", "5.3\u{FFFD}"],
+            'an invalid byte at the cut is one character' => [
+                str_repeat('a', 99) . "\xffb",
+                str_repeat('a', 99) . "\u{FFFD}",
+            ],
+            'an empty release stays empty' => ['', ''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('release_provider')]
+    /**
+     * The release sent to the service is cleaned and cut so that the service does not refuse it.
+     *
+     * @dataProvider release_provider
+     * @param string $release The release of this Moodle.
+     * @param string $sent The release in the request.
+     */
+    public function test_the_release_is_cleaned_and_cut(string $release, string $sent): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->release = $release;
+        $request = enrollment_request::for_this_site(self::CODE, str_repeat("\x01", 32));
+        $body = json_decode($request->body(signing_keypair::generate()), true);
+        $this->assertSame($sent, $body['site']['moodle_release']);
+    }
+
+    public function test_the_plugin_version_has_ten_digits(): void {
+        $this->resetAfterTest();
+        set_config('version', '2026101200', 'tool_secbackup');
+        $request = enrollment_request::for_this_site(self::CODE, str_repeat("\x01", 32));
+        $body = json_decode($request->body(signing_keypair::generate()), true);
+        $this->assertMatchesRegularExpression('/^\d{10}\z/', $body['plugin_version']);
+    }
+
+    /**
      * Versions of Moodle as the configuration table keeps them (text), and as the service wants them.
      *
      * @return array

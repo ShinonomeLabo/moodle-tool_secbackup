@@ -71,11 +71,24 @@ final class enrollment_request {
         global $CFG, $DB;
         return new self($code, $encryptionkey, [
             'wwwroot' => $CFG->wwwroot,
-            'moodle_release' => (string) $CFG->release,
+            'moodle_release' => self::release_text((string) $CFG->release),
             // Moodle keeps the version as text, so 2024100703.10 may read 2024100703.1. The service wants two decimals.
             'moodle_version' => number_format((float) $CFG->version, 2, '.', ''),
             'db_family' => self::db_family($DB),
         ], (string) get_config('tool_secbackup', 'version'));
+    }
+
+    /**
+     * The release text in the form the service accepts: at most 100 characters, and none of Unicode category C.
+     *
+     * An invalid byte becomes U+FFFD (as in body()), which is not of category C, so that no step below gets invalid UTF-8.
+     *
+     * @param string $release The release of this Moodle.
+     * @return string
+     */
+    private static function release_text(string $release): string {
+        $valid = (string) json_decode(json_encode($release, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE));
+        return \core_text::substr((string) preg_replace('/\p{C}/u', '', $valid), 0, 100);
     }
 
     /**
