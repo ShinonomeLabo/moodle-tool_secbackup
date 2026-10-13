@@ -110,6 +110,92 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame([401, 'signature_required'], self::status_with([$name => $value] + self::headers()));
     }
 
+    /**
+     * An enrolment body that the service takes.
+     *
+     * @return array
+     */
+    private static function body(): array {
+        return [
+            'enrollment_code' => fake_service::CODE,
+            'signing_public_key' => base64_encode(str_repeat("\x02", 32)),
+            'encryption_key_fingerprint' => 'A260 B405 0FD2 8D2B 313C 9A94',
+            'site' => [
+                'wwwroot' => 'https://lms.example.ac.jp',
+                'moodle_release' => '5.3 (Build: 20261005)',
+                'moodle_version' => '2026100500.00',
+                'db_family' => 'postgres',
+            ],
+            'plugin_version' => '2026101200',
+        ];
+    }
+
+    /**
+     * Sends an enrolment body with signature headers of the right shape.
+     *
+     * @param array $body The body.
+     * @return array [HTTP status, error code]
+     */
+    private static function enroll_with(array $body): array {
+        $answer = self::service()->handle(
+            'POST',
+            'app.example.test',
+            '/api/lms-backup/v1/enroll',
+            self::headers(),
+            json_encode($body)
+        );
+        return [$answer[0], json_decode($answer[2], true)['error']['code']];
+    }
+
+    public function test_a_body_in_the_service_format_goes_on_to_the_signature_check(): void {
+        $this->assertSame([401, 'signature_invalid'], self::enroll_with(self::body()));
+    }
+
+    /**
+     * Bodies that the service refuses, each as a change to the good body.
+     *
+     * @return array
+     */
+    public static function refused_body_provider(): array {
+        $site = static fn(string $key, $value): \Closure => static function (array $body) use ($key, $value): array {
+            $body['site'][$key] = $value;
+            return $body;
+        };
+        $top = static fn(string $key, $value): \Closure => static function (array $body) use ($key, $value): array {
+            $body[$key] = $value;
+            return $body;
+        };
+        return [
+            'a field the service does not know' => [$top('extra', 'x')],
+            'a site field the service does not know' => [$site('extra', 'x')],
+            'a public key of 43 characters' => [$top('signing_public_key', substr(base64_encode(str_repeat("\x02", 32)), 1))],
+            'a connection url that is not http or https' => [$site('wwwroot', 'ftp://lms.example.ac.jp')],
+            'a connection url that is not a url' => [$site('wwwroot', 'lms.example.ac.jp')],
+            'a connection url of 256 characters' => [$site('wwwroot', 'https://lms.example.ac.jp/' . str_repeat('a', 230))],
+            'an empty release' => [$site('moodle_release', '')],
+            'a release of 101 characters' => [$site('moodle_release', str_repeat('a', 101))],
+            'a release with a line feed' => [$site('moodle_release', "5.3\n")],
+            'a release with a zero width space' => [$site('moodle_release', "5.3\u{200B}")],
+            'a version without decimals in the wrong place' => [$site('moodle_version', '2026100500.0')],
+            'a version of 9 digits' => [$site('moodle_version', '202610050.00')],
+            'a version with a trailing line feed' => [$site('moodle_version', "2026100500.00\n")],
+            'a database that is not known' => [$site('db_family', 'mssql')],
+            'a plugin version of 9 digits' => [$top('plugin_version', '202610120')],
+            'a plugin version with a trailing line feed' => [$top('plugin_version', "2026101200\n")],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refused_body_provider')]
+    /**
+     * A body that breaks one of the service's rules is refused before anything else is checked.
+     *
+     * @dataProvider refused_body_provider
+     * @param \Closure $change Change to the good body.
+     */
+    public function test_bodies_that_the_service_refuses(\Closure $change): void {
+        $this->assertSame([422, 'invalid_request'], self::enroll_with($change(self::body())));
+    }
+
     public function test_it_uses_nothing_of_the_plugin_or_of_moodle(): void {
         // The development server loads this file without Moodle, and a test that uses the plugin's own classes to check the
         // plugin would pass even when both are wrong in the same way.

@@ -182,6 +182,7 @@ final class fake_service {
         if (
             $key === false
             || strlen($key) !== 32
+            || !self::body_follows_the_rules($data)
             || !is_string($data['enrollment_code'] ?? null)
             || !is_string($data['encryption_key_fingerprint'] ?? null)
             || !is_array($data['site'] ?? null)
@@ -223,6 +224,40 @@ final class fake_service {
             $parts['sig'] = envelope_builder::b64url(str_repeat("\0", 64));
         }
         return [201, ['Content-Type' => 'application/json'], json_encode($parts, JSON_UNESCAPED_SLASHES)];
+    }
+
+    /**
+     * The service's rules for the enrolment body: only the known fields, and each in its form.
+     *
+     * @param array $data The decoded body; its signing key has been decoded already.
+     * @return bool
+     */
+    private static function body_follows_the_rules(array $data): bool {
+        $site = $data['site'] ?? null;
+        if (
+            !is_array($site)
+            || !is_string($data['plugin_version'] ?? null)
+            || array_diff(array_keys($data), ['enrollment_code', 'signing_public_key', 'encryption_key_fingerprint', 'site',
+                'plugin_version']) !== []
+            || array_diff(array_keys($site), ['wwwroot', 'moodle_release', 'moodle_version', 'db_family']) !== []
+            || strlen((string) $data['signing_public_key']) !== 44
+            || !is_string($site['wwwroot'] ?? null)
+            || !is_string($site['moodle_release'] ?? null)
+            || !is_string($site['moodle_version'] ?? null)
+            || !is_string($site['db_family'] ?? null)
+        ) {
+            return false;
+        }
+        // The patterns end with \z, not $, which also matches before a final line feed.
+        return filter_var($site['wwwroot'], FILTER_VALIDATE_URL) !== false
+            && in_array(strtolower((string) parse_url($site['wwwroot'], PHP_URL_SCHEME)), ['http', 'https'], true)
+            && strlen($site['wwwroot']) <= 255
+            && $site['moodle_release'] !== ''
+            && mb_strlen($site['moodle_release']) <= 100
+            && preg_match('/\p{C}/u', $site['moodle_release']) === 0
+            && preg_match('/^\d{10}(\.\d{2})?\z/', $site['moodle_version']) === 1
+            && in_array($site['db_family'], ['mysql', 'mariadb', 'postgres'], true)
+            && preg_match('/^\d{10}\z/', $data['plugin_version']) === 1;
     }
 
     /**
