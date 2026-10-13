@@ -227,6 +227,7 @@ final class client_test extends \advanced_testcase {
             'local time' => [['enrolled_at' => '2026-10-12 00:00:00'], 'enrolled_at'],
             'impossible date' => [['enrolled_at' => '2026-02-30T00:00:00Z'], 'enrolled_at'],
             'number instead of text' => [['enrolled_at' => 1760000000], 'enrolled_at'],
+            'enrolled at with a trailing line feed' => [['enrolled_at' => "2026-10-12T03:04:05Z\n"], 'enrolled_at'],
             'no type' => [['type' => null], 'type'],
             'no site id' => [['site_id' => null], 'site_id'],
             'no site name' => [['site_name' => null], 'site_name'],
@@ -403,8 +404,12 @@ final class client_test extends \advanced_testcase {
 
     public function test_answer_signed_by_another_key_is_refused(): void {
         $service = self::service(['mode' => 'untrusted_key']);
-        $this->expectException(envelope_exception::class);
-        self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
+        try {
+            self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
+            $this->fail('No exception');
+        } catch (envelope_exception $e) {
+            $this->assertSame('envelope_untrusted', $e->errorcode);
+        }
     }
 
     public function test_answer_with_a_broken_signature_is_refused(): void {
@@ -455,6 +460,15 @@ final class client_test extends \advanced_testcase {
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
     }
 
+    public function test_an_address_with_a_trailing_line_feed_is_not_an_address(): void {
+        $body = json_encode(['error' => ['code' => 'ip_not_allowed', 'ip' => "198.51.100.7\n"]]);
+        $mock = new MockHandler([new Response(403, [], $body)]);
+        $e = $this->expect_api_error('api_ip_not_allowed', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertNull($e->a);
+        $this->assertStringNotContainsString("\n", (string) $e->debuginfo);
+    }
+
     public function test_clock_difference_is_reported_in_minutes(): void {
         $service = self::service();
         $client = self::client($service->handler(), self::NOW + 600);
@@ -484,11 +498,17 @@ final class client_test extends \advanced_testcase {
     public static function service_time_provider(): array {
         $now = self::NOW;
         return [
-            'twenty seconds ahead is one minute' => [(string) ($now + 20), $now + 20, 1],
-            'eighty-nine seconds ahead is one minute' => [(string) ($now + 89), $now + 89, 1],
-            'ninety seconds ahead is two minutes' => [(string) ($now + 90), $now + 90, 2],
+            'twenty seconds ahead is no explanation' => [(string) ($now + 20), $now + 20, null],
+            'eighty-nine seconds ahead is no explanation' => [(string) ($now + 89), $now + 89, null],
+            'ninety seconds ahead is no explanation' => [(string) ($now + 90), $now + 90, null],
+            'the same time is no explanation' => [(string) $now, $now, null],
+            'two hundred and ninety-nine seconds ahead is no explanation' => [(string) ($now + 299), $now + 299, null],
+            'two hundred and ninety-nine seconds behind is no explanation' => [(string) ($now - 299), $now - 299, null],
+            'three hundred seconds ahead is five minutes' => [(string) ($now + 300), $now + 300, 5],
+            'three hundred seconds behind is five minutes' => [(string) ($now - 300), $now - 300, 5],
+            'three hundred and twenty-nine seconds ahead is five minutes' => [(string) ($now + 329), $now + 329, 5],
+            'three hundred and thirty seconds ahead is six minutes' => [(string) ($now + 330), $now + 330, 6],
             'ten minutes behind' => [(string) ($now - 600), $now - 600, 10],
-            'the same time is one minute' => [(string) $now, $now, 1],
             'the smallest time' => ['0', 0, 29333333],
             'the largest time' => ['999999999999', 999999999999, 16637333333],
             'a negative time' => ['-1', null, null],
@@ -533,6 +553,86 @@ final class client_test extends \advanced_testcase {
         $e = $this->expect_api_error('api_rate_limited', fn() => self::client(self::service(['mode' => 'rate_limited'])->handler())
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame(30, $e->retryafter);
+    }
+
+    /**
+     * Answers of a busy service in the shapes the web server and the framework give them.
+     *
+     * @return array
+     */
+    public static function busy_provider(): array {
+        $text = 'Service words that must not show 7f3a';
+        return [
+            'rate limit as a page' => [429, '<html><body>' . $text . '</body></html>', 'api_rate_limited', $text, ''],
+            'rate limit as json without an error' => [
+                429,
+                json_encode(['message' => $text, 'status' => 429]),
+                'api_rate_limited',
+                $text,
+                '',
+            ],
+            'rate limit in the service format' => [
+                429,
+                json_encode(['error' => ['code' => 'too_many_requests', 'message' => $text]]),
+                'api_rate_limited',
+                $text,
+                'too_many_requests',
+            ],
+            'maintenance as a page' => [503, '<html><body>' . $text . '</body></html>', 'api_unavailable', $text, ''],
+            'maintenance as json without an error' => [
+                503,
+                json_encode(['message' => $text, 'status' => 503]),
+                'api_unavailable',
+                $text,
+                '',
+            ],
+            'maintenance in the service format' => [
+                503,
+                json_encode(['error' => ['code' => 'service_unavailable', 'message' => $text]]),
+                'api_unavailable',
+                $text,
+                'service_unavailable',
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('busy_provider')]
+    /**
+     * A busy service gives its own message and the time to wait, and nothing it wrote reaches the exception.
+     *
+     * @dataProvider busy_provider
+     * @param int $status HTTP status.
+     * @param string $body The answer.
+     * @param string $expected Plugin error code.
+     * @param string $text Words of the service that must stay out.
+     * @param string $servercode The code the exception keeps.
+     */
+    public function test_busy_answers_in_any_shape(
+        int $status,
+        string $body,
+        string $expected,
+        string $text,
+        string $servercode
+    ): void {
+        $mock = new MockHandler([new Response($status, ['Retry-After' => '30'], $body)]);
+        $e = $this->expect_api_error($expected, fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(30, $e->retryafter);
+        $this->assertSame($status, $e->httpstatus);
+        $this->assertSame($servercode, $e->servercode);
+        $this->assert_words_stay_out($e, $text);
+    }
+
+    /**
+     * Asserts that the words of the service are neither in the debug information nor in any message.
+     *
+     * @param api_exception $e The exception.
+     * @param string $text The words.
+     */
+    private function assert_words_stay_out(api_exception $e, string $text): void {
+        $this->assertNull($e->debuginfo);
+        $this->assertStringNotContainsString($text, $e->getMessage());
+        $this->assertStringNotContainsString($text, $e->message());
     }
 
     public function test_the_retry_time_is_kept_for_the_other_answers_too(): void {
@@ -680,11 +780,14 @@ final class client_test extends \advanced_testcase {
      * @param string $expected Plugin error code.
      */
     public function test_known_error_codes(string $servercode, int $status, string $expected): void {
-        $mock = new MockHandler([new Response($status, [], json_encode(['error' => ['code' => $servercode]]))]);
+        $text = 'Service words that must not show 7f3a';
+        $body = json_encode(['error' => ['code' => $servercode, 'message' => $text]]);
+        $mock = new MockHandler([new Response($status, [], $body)]);
         $e = $this->expect_api_error($expected, fn() => self::client($mock)
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame($servercode, $e->servercode);
         $this->assertSame($status, $e->httpstatus);
+        $this->assert_words_stay_out($e, $text);
     }
 
     public function test_status_after_enrolment(): void {
@@ -851,6 +954,14 @@ final class client_test extends \advanced_testcase {
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame(get_string('api_ip_not_allowed_address', 'tool_secbackup', '198.51.100.7'), $e->message());
         $this->assertStringContainsString('198.51.100.7', $e->message());
+    }
+
+    public function test_the_message_with_the_address_asks_to_check_it_in_both_languages(): void {
+        // The address comes from an answer that is not signed, so the message names it twice: as seen, and to be checked.
+        foreach (['en', 'ja'] as $lang) {
+            $strings = get_string_manager()->load_component_strings('tool_secbackup', $lang, true);
+            $this->assertSame(2, substr_count($strings['api_ip_not_allowed_address'], '{$a}'), $lang);
+        }
     }
 
     public function test_the_message_with_the_minutes_shows_them(): void {
