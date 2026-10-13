@@ -55,6 +55,12 @@ final class enroller_test extends \advanced_testcase {
         network_fakes::no_security_list();
     }
 
+    protected function tearDown(): void {
+        // The observers a test replaced are not given back to the next test by every Moodle version.
+        \core\event\manager::phpunit_reset();
+        parent::tearDown();
+    }
+
     /**
      * A fake service with a fixed clock.
      *
@@ -189,7 +195,7 @@ final class enroller_test extends \advanced_testcase {
         }
     }
 
-    public function test_names_from_the_service_reach_the_message_as_plain_text(): void {
+    public function test_names_from_the_service_are_kept_in_the_settings_and_the_stored_message(): void {
         $messages = $this->redirectMessages();
         $service = self::service(['enrollpayload' => ['site_name' => '<b>A&B</b>', 'platform_name' => '<i>P&Q</i>']]);
         self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
@@ -200,7 +206,8 @@ final class enroller_test extends \advanced_testcase {
         foreach ($sent as $message) {
             $this->assertStringContainsString('<i>P&Q</i>', $message->subject);
             $this->assertStringContainsString('<b>A&B</b>', $message->fullmessage);
-            $this->assertSame('', $message->fullmessagehtml);
+            $this->assertStringContainsString(s('<b>A&B</b>'), $message->fullmessagehtml);
+            $this->assertStringNotContainsString('<b>', $message->fullmessagehtml);
             $this->assertEquals(FORMAT_PLAIN, $message->fullmessageformat);
         }
     }
@@ -229,17 +236,108 @@ final class enroller_test extends \advanced_testcase {
         $events = $this->redirectEvents();
         $messages = $this->redirectMessages();
         self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $secret = signing_keys::load()->export_secret();
+        $this->assertSame(SODIUM_CRYPTO_SIGN_SECRETKEYBYTES, strlen($secret));
+
         $logged = array_values(array_filter($events->get_events(), static fn($event): bool => $event instanceof site_enrolled));
-        $texts = [$logged[0]->get_description(), $logged[0]->get_url()->out(false), json_encode($logged[0]->other)];
+        $texts = [$logged[0]->get_description(), $logged[0]->get_url()->out(false), json_encode($logged[0]->get_data())];
         foreach ($messages->get_messages() as $message) {
-            $texts[] = $message->subject . $message->fullmessage . $message->contexturl;
+            $texts[] = json_encode($message);
         }
+        $this->assertNotEmpty($messages->get_messages());
+        $forms = [$secret, base64_encode($secret), bin2hex($secret), rtrim(strtr(base64_encode($secret), '+/', '-_'), '='),
+            substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES), bin2hex(substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES)),
+            base64_encode(substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES))];
         foreach ($texts as $text) {
             $this->assertStringNotContainsString(fake_service::CODE, $text);
             $this->assertStringNotContainsString(str_replace('-', '', fake_service::CODE), $text);
             $this->assertStringNotContainsString(fake_service::ENCRYPTION_KEY, $text);
-            $this->assertStringNotContainsString('signingsecret', $text);
+            foreach ($forms as $form) {
+                $this->assertStringNotContainsString($form, $text);
+            }
         }
+        // The control: the search finds the secret when it is there.
+        $this->assertStringContainsString(base64_encode($secret), 'x' . base64_encode($secret) . 'x');
+    }
+
+    /**
+     * Makes another user a site administrator.
+     *
+     * @return \stdClass The user.
+     */
+    private function add_admin(): \stdClass {
+        $user = $this->getDataGenerator()->create_user();
+        set_config('siteadmins', get_config('core', 'siteadmins') . ',' . $user->id);
+        return $user;
+    }
+
+    public function test_every_administrator_is_told_with_the_text_of_the_kind(): void {
+        $second = $this->add_admin();
+        $service = self::service();
+        $messages = $this->redirectMessages();
+        self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $first = $messages->get_messages();
+        $messages->clear();
+        $service->state['codeused'] = false;
+        self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $again = $messages->get_messages();
+
+        $platform = (object) ['platform' => fake_service::PLATFORM_NAME];
+        foreach (
+            [[$first, 'message_enrolled_subject', 'registered this site with'],
+                [$again, 'message_reenrolled_subject', 'registered this site again with']] as [$sent, $subject, $sentence]
+        ) {
+            $this->assertEqualsCanonicalizing(
+                [(int) get_admin()->id, (int) $second->id],
+                array_map(static fn($message): int => (int) $message->useridto, $sent)
+            );
+            foreach ($sent as $message) {
+                $this->assertSame(get_string($subject, 'tool_secbackup', $platform), $message->subject);
+                $this->assertStringContainsString($sentence, $message->fullmessage);
+            }
+        }
+    }
+
+    /**
+     * Makes the event of the registration throw an Error when it is triggered (an Error is not caught by Moodle).
+     */
+    private function make_the_event_throw(): void {
+        \core\event\manager::phpunit_replace_observers([[
+            'eventname' => '\tool_secbackup\event\site_enrolled',
+            'callback' => static function (): void {
+                throw new \Error('Provoked by the test');
+            },
+            'internal' => false,
+            'priority' => 0,
+            'includefile' => null,
+        ]]);
+    }
+
+    public function test_a_failure_to_log_does_not_undo_the_registration(): void {
+        // Moodle holds events back while a transaction is open, and PHPUnit wraps each test in one.
+        $this->preventResetByRollback();
+        $this->make_the_event_throw();
+        $messages = $this->redirectMessages();
+
+        $result = self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+
+        $this->assertDebuggingCalled('The registration could not be logged: Error', DEBUG_DEVELOPER);
+        $this->assertSame(fake_service::SITE_ID, $result->siteid);
+        $this->assertTrue(state::load()->is_enrolled());
+        $this->assertNotNull(signing_keys::load());
+        $this->assertCount(count(get_admins()), $messages->get_messages());
+    }
+
+    public function test_a_failure_to_tell_the_administrators_does_not_undo_the_registration(): void {
+        $this->add_admin();
+        unset_config('popup_provider_tool_secbackup_connection_locked', 'message');
+
+        $result = self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+
+        $this->assertDebuggingCalledCount(2);
+        $this->assertSame(fake_service::SITE_ID, $result->siteid);
+        $this->assertTrue(state::load()->is_enrolled());
+        $this->assertNotNull(signing_keys::load());
     }
 
     /**

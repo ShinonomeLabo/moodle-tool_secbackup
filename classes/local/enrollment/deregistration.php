@@ -51,6 +51,9 @@ final class deregistration {
 
     /**
      * Forgets the registration, logs it and tells the site administrators.
+     *
+     * Once the registration is gone, a failure to log it or to tell the administrators is reported with debugging()
+     * and does not leave this method.
      */
     public static function run(): void {
         $state = state::load();
@@ -58,10 +61,15 @@ final class deregistration {
             return;
         }
         state::clear();
-        site_deregistered::create([
-            'context' => \context_system::instance(),
-            'other' => ['endpoint' => $state->endpoint_url(), 'siteid' => $state->site_id()],
-        ])->trigger();
+        // The registration is gone: nothing below may undo that by throwing.
+        try {
+            site_deregistered::create([
+                'context' => \context_system::instance(),
+                'other' => ['endpoint' => $state->endpoint_url(), 'siteid' => $state->site_id()],
+            ])->trigger();
+        } catch (\Throwable $e) {
+            debugging('The removal of the registration could not be logged: ' . $e::class, DEBUG_DEVELOPER);
+        }
         notifier::send('deregistered', $state->platform_name(), $state->site_name(), $state->endpoint_url());
     }
 }

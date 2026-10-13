@@ -66,7 +66,8 @@ final class enroller {
      * @param endpoint $endpoint Connection URL. While the site is registered, it must be the registered one.
      * @param string $encryptionkey The site's encryption public key (32 bytes), pasted from the platform screen.
      * @param #[|\SensitiveParameter|]|string $code Registration code, normalised.
-     * @return enroll_result The verified answer.
+     * @return enroll_result The verified answer. Once the registration is saved, a failure to log it or to tell the
+     *     administrators is reported with debugging() and does not leave this method.
      */
     public function enroll(endpoint $endpoint, string $encryptionkey, #[\SensitiveParameter] string $code): enroll_result {
         $previous = state::load();
@@ -76,10 +77,15 @@ final class enroller {
         $pair = signing_keypair::generate();
         $result = $this->client->enroll($endpoint, $pair, enrollment_request::for_this_site($code, $encryptionkey));
         state::save_enrollment($result, public_key_format::encode($encryptionkey), $pair, ($this->clock)());
-        site_enrolled::create([
-            'context' => \context_system::instance(),
-            'other' => ['endpoint' => $result->apibase, 'siteid' => $result->siteid, 'again' => $previous->is_enrolled()],
-        ])->trigger();
+        // The registration is saved and the code is used up: nothing below may undo that by throwing.
+        try {
+            site_enrolled::create([
+                'context' => \context_system::instance(),
+                'other' => ['endpoint' => $result->apibase, 'siteid' => $result->siteid, 'again' => $previous->is_enrolled()],
+            ])->trigger();
+        } catch (\Throwable $e) {
+            debugging('The registration could not be logged: ' . $e::class, DEBUG_DEVELOPER);
+        }
         notifier::send(
             $previous->is_enrolled() ? 'reenrolled' : 'enrolled',
             $result->platformname,

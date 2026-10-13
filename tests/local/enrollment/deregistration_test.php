@@ -39,6 +39,12 @@ final class deregistration_test extends \advanced_testcase {
         $this->setAdminUser();
     }
 
+    protected function tearDown(): void {
+        // The observers a test replaced are not given back to the next test by every Moodle version.
+        \core\event\manager::phpunit_reset();
+        parent::tearDown();
+    }
+
     public function test_run_forgets_logs_and_tells_the_admins(): void {
         $result = new enroll_result(
             '11111111-2222-4333-8444-555555555555',
@@ -67,6 +73,78 @@ final class deregistration_test extends \advanced_testcase {
         $sent = $messages->get_messages();
         $this->assertCount(count(get_admins()), $sent);
         $this->assertStringContainsString('Example Platform', $sent[0]->subject);
+    }
+
+    /**
+     * Saves a registration.
+     */
+    private function enrolled(): void {
+        $result = new enroll_result(
+            '11111111-2222-4333-8444-555555555555',
+            'Example site',
+            'Example Platform',
+            'https://app.example.test/api/lms-backup/v1',
+            1760000000,
+            0
+        );
+        state::save_enrollment(
+            $result,
+            'secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+            signing_keypair::generate(),
+            1760000000
+        );
+    }
+
+    public function test_every_administrator_is_told_that_the_registration_was_removed(): void {
+        $second = $this->getDataGenerator()->create_user();
+        set_config('siteadmins', get_config('core', 'siteadmins') . ',' . $second->id);
+        $this->enrolled();
+        $messages = $this->redirectMessages();
+
+        deregistration::run();
+
+        $sent = $messages->get_messages();
+        $this->assertEqualsCanonicalizing(
+            [(int) get_admin()->id, (int) $second->id],
+            array_map(static fn($message): int => (int) $message->useridto, $sent)
+        );
+        foreach ($sent as $message) {
+            $this->assertSame('The registration with Example Platform was removed', $message->subject);
+            $this->assertStringContainsString('removed the registration of this site with', $message->fullmessage);
+        }
+    }
+
+    public function test_a_failure_to_log_does_not_leave_run(): void {
+        // Moodle holds events back while a transaction is open, and PHPUnit wraps each test in one.
+        $this->preventResetByRollback();
+        $this->enrolled();
+        \core\event\manager::phpunit_replace_observers([[
+            'eventname' => '\tool_secbackup\event\site_deregistered',
+            'callback' => static function (): void {
+                throw new \Error('Provoked by the test');
+            },
+            'internal' => false,
+            'priority' => 0,
+            'includefile' => null,
+        ]]);
+        $messages = $this->redirectMessages();
+
+        deregistration::run();
+
+        $this->assertDebuggingCalled('The removal of the registration could not be logged: Error', DEBUG_DEVELOPER);
+        $this->assertFalse(state::load()->is_enrolled());
+        $this->assertCount(count(get_admins()), $messages->get_messages());
+    }
+
+    public function test_a_failure_to_tell_the_administrators_does_not_leave_run(): void {
+        $this->enrolled();
+        unset_config('popup_provider_tool_secbackup_connection_locked', 'message');
+
+        deregistration::run();
+
+        $this->assertDebuggingCalledCount(1);
+        $this->assertFalse(state::load()->is_enrolled());
+        $this->assertNull(signing_keys::load());
     }
 
     public function test_run_without_a_registration_does_nothing(): void {
