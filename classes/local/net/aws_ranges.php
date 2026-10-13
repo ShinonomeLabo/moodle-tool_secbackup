@@ -30,6 +30,9 @@ final class aws_ranges {
     /** @var string Amazon S3 in ap-northeast-1, which stores the backups. */
     public const SERVICE_S3 = 'S3';
 
+    /** @var int Fewest prefixes that a list may have for a service: the tool that makes the list refuses fewer. */
+    private const MIN_PREFIXES = 5;
+
     /** @var array Networks by service: lists of [network, mask] as integers. */
     private array $networks;
 
@@ -64,27 +67,31 @@ final class aws_ranges {
     /**
      * Reads a list in the format of data/aws-ranges.json.
      *
+     * The list has to be exactly what the tool writes: two strings, and for each service a list of at least five prefixes
+     * that are strings of the form a.b.c.d/n with n from 8 to 32. A list with fewer prefixes, or a prefix that covers
+     * a large part of the internet, would make the check of the addresses meaningless.
+     *
      * @param string $json The list.
      * @return self
+     * @throws \coding_exception When the list is not valid.
      */
     public static function from_json(string $json): self {
         $data = json_decode($json, true);
-        if (
-            !is_array($data)
-            || !isset(
-                $data['syncToken'],
-                $data['createDate'],
-                $data['services'][self::SERVICE_CLOUDFRONT],
-                $data['services'][self::SERVICE_S3]
-            )
-        ) {
+        if (!is_array($data) || !is_string($data['syncToken'] ?? null) || !is_string($data['createDate'] ?? null)) {
             throw new \coding_exception('The AWS range list is not valid.');
         }
         $networks = [];
         foreach ([self::SERVICE_CLOUDFRONT, self::SERVICE_S3] as $service) {
-            $networks[$service] = array_map([self::class, 'network'], $data['services'][$service]);
+            $prefixes = $data['services'][$service] ?? null;
+            if (!is_array($prefixes) || !array_is_list($prefixes)) {
+                throw new \coding_exception('The AWS range list is not valid.');
+            }
+            if (count($prefixes) < self::MIN_PREFIXES) {
+                throw new \coding_exception('The AWS range list has too few prefixes of ' . $service . '.');
+            }
+            $networks[$service] = array_map([self::class, 'network'], $prefixes);
         }
-        return new self($networks, (string) $data['syncToken'], (string) $data['createDate']);
+        return new self($networks, $data['syncToken'], $data['createDate']);
     }
 
     /**
@@ -95,9 +102,10 @@ final class aws_ranges {
      */
     private static function network(mixed $prefix): array {
         // The pattern ends with \z: $ also matches before a final line feed.
+        // The length starts at 8: a shorter prefix would cover a large part of the internet.
         if (
             !is_string($prefix)
-            || preg_match('~^([0-9.]+)/([0-9]|[12][0-9]|3[0-2])\z~', $prefix, $m) !== 1
+            || preg_match('~^([0-9.]+)/([89]|[12][0-9]|3[0-2])\z~', $prefix, $m) !== 1
             || ($network = ip2long($m[1])) === false
         ) {
             throw new \coding_exception('The AWS range list contains an invalid prefix.');

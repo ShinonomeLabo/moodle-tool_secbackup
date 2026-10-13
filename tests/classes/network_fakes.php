@@ -38,11 +38,19 @@ final class network_fakes {
     /**
      * A small range list: CloudFront 13.225.0.0/16, S3 3.5.152.0/21.
      *
+     * A list needs five prefixes for each service, so four reserved ranges that no test uses are added to each.
+     *
      * @return aws_ranges
      */
     public static function ranges(): aws_ranges {
-        return aws_ranges::from_json('{"syncToken":"1","createDate":"2026-10-12-00-00-00",'
-            . '"services":{"CLOUDFRONT":["13.225.0.0/16"],"S3":["3.5.152.0/21"]}}');
+        return aws_ranges::from_json(json_encode([
+            'syncToken' => '1',
+            'createDate' => '2026-10-12-00-00-00',
+            'services' => [
+                'CLOUDFRONT' => ['13.225.0.0/16', '192.0.2.0/24', '198.51.100.0/24', '198.18.0.0/15', '100.64.0.0/10'],
+                'S3' => ['3.5.152.0/21', '192.0.0.0/24', '192.88.99.0/24', '192.175.48.0/24', '233.252.0.0/24'],
+            ],
+        ]));
     }
 
     /**
