@@ -203,6 +203,26 @@ final class enroller_test extends \advanced_testcase {
         }
     }
 
+    public function test_the_message_links_to_the_status_page_and_names_who_made_the_change(): void {
+        $messages = $this->redirectMessages();
+        self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $sent = $messages->get_messages();
+        $url = (new \moodle_url('/admin/tool/secbackup/index.php'))->out(false);
+        $this->assertSame($url, $sent[0]->contexturl);
+        $this->assertStringContainsString($url, $sent[0]->fullmessage);
+        $this->assertStringContainsString(fullname(get_admin()), $sent[0]->fullmessage);
+    }
+
+    public function test_a_change_made_without_a_user_is_attributed_to_the_system(): void {
+        $this->setUser(0);
+        $messages = $this->redirectMessages();
+        self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $this->assertStringContainsString(
+            get_string('notifier_system', 'tool_secbackup'),
+            $messages->get_messages()[0]->fullmessage
+        );
+    }
+
     public function test_event_and_messages_hold_no_secret(): void {
         $events = $this->redirectEvents();
         $messages = $this->redirectMessages();
@@ -256,6 +276,34 @@ final class enroller_test extends \advanced_testcase {
         $this->assertSame('', state::load()->site_id());
         $this->assertSame([], $events->get_events());
         $this->assertSame([], $messages->get_messages());
+    }
+
+    public function test_a_failed_save_does_not_leave_the_rolled_back_values_in_the_cache(): void {
+        global $CFG;
+        $this->preventResetByRollback();
+        $before = self::stored();
+        // While the key is being encrypted, the settings are read, so that the cache holds the values saved so far.
+        $CFG->secretdataroot = new class implements \Stringable {
+            /**
+             * Reads the settings of the plugin, then fails.
+             *
+             * @return string
+             */
+            public function __toString(): string {
+                get_config('tool_secbackup');
+                throw new \RuntimeException('Provoked by the test');
+            }
+        };
+        try {
+            self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('signingkey_savefailed', $e->errorcode);
+        }
+        unset($CFG->secretdataroot);
+        $this->assertSame($before, self::stored());
+        $this->assertSame('', state::load()->site_id());
+        $this->assertFalse(get_config('tool_secbackup', 'siteid'));
     }
 
     public function test_a_failed_save_leaves_a_registration_made_again_as_it_was(): void {
