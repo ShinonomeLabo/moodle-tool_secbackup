@@ -42,6 +42,9 @@ final class enrollment_code_test extends \basic_testcase {
             'lower case' => ['sec-bk-7qf2-mxa9-pdtw-4hjc-8nr5'],
             'spaces' => [' 7QF2 MXA9 PDTW 4HJC 8NR5 '],
             'full width' => [mb_convert_kana(self::CODE, 'AS', 'UTF-8')],
+            'trailing line feed' => [self::CODE . "\n"],
+            'tabs and line breaks inside' => ["7QF2\tMXA9\r\nPDTW 4HJC\n8NR5"],
+            'ideographic space' => ["7QF2\u{3000}MXA9PDTW4HJC8NR5"],
         ];
     }
 
@@ -54,6 +57,11 @@ final class enrollment_code_test extends \basic_testcase {
      */
     public function test_variants_give_the_same_code(string $input): void {
         $this->assertSame(self::CODE, enrollment_code::normalize($input));
+    }
+
+    public function test_the_secret_parameter_is_marked_sensitive(): void {
+        $parameter = (new \ReflectionMethod(enrollment_code::class, 'normalize'))->getParameters()[0];
+        $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class));
     }
 
     public function test_letters_that_look_like_digits(): void {
@@ -77,6 +85,10 @@ final class enrollment_code_test extends \basic_testcase {
             'too short' => ['SEC-BK-7QF2-MXA9'],
             'too long' => [self::CODE . '-AAAA'],
             'symbols' => ['7QF2!MXA9-PDTW-4HJC-8NR5'],
+            'nul byte' => ["7QF2MXA9PDTW4HJC8NR5\0"],
+            'control character' => ["7QF2MXA9PDTW\x074HJC8NR5"],
+            'invalid utf-8' => ["7QF2MXA9PDTW4HJC8NR5\xff"],
+            'only separators' => [" - \n"],
         ];
     }
 

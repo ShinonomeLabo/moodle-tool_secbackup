@@ -76,7 +76,7 @@ final class state {
      */
     private function number(string $name): ?int {
         $value = $this->text($name);
-        return preg_match('/^-?\d+$/', $value) === 1 ? (int) $value : null;
+        return preg_match('/^-?\d+\z/', $value) === 1 ? (int) $value : null;
     }
 
     /**
@@ -210,27 +210,44 @@ final class state {
      *
      * @param enroll_result $result The verified answer.
      * @param string $encryptionkey The site's encryption public key, as the platform shows it.
-     * @param signing_keypair $pair The enrolled key pair.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The enrolled key pair.
      * @param int $now This server's clock.
+     * @throws \Throwable Whatever fails while saving. Nothing is left saved, and the cache of the settings is not
+     *     left holding values that were rolled back.
      */
-    public static function save_enrollment(enroll_result $result, string $encryptionkey, signing_keypair $pair, int $now): void {
+    public static function save_enrollment(
+        enroll_result $result,
+        string $encryptionkey,
+        #[\SensitiveParameter] signing_keypair $pair,
+        int $now
+    ): void {
         global $DB;
         $transaction = $DB->start_delegated_transaction();
-        self::forget_values();
-        $values = [
-            'siteid' => $result->siteid,
-            'sitename' => $result->sitename,
-            'platformname' => $result->platformname,
-            'endpoint' => $result->apibase,
-            'encryptionkey' => $encryptionkey,
-            'enrolledat' => $now,
-            'clockskew' => $result->clockskew,
-        ];
-        foreach ($values as $name => $value) {
-            set_config($name, $value, 'tool_secbackup');
+        try {
+            self::forget_values();
+            $values = [
+                'siteid' => $result->siteid,
+                'sitename' => $result->sitename,
+                'platformname' => $result->platformname,
+                'endpoint' => $result->apibase,
+                'encryptionkey' => $encryptionkey,
+                'enrolledat' => $now,
+                'clockskew' => $result->clockskew,
+            ];
+            foreach ($values as $name => $value) {
+                set_config($name, $value, 'tool_secbackup');
+            }
+            signing_keys::save($pair);
+            $transaction->allow_commit();
+        } catch (\Throwable $e) {
+            try {
+                // Rethrows the exception.
+                $transaction->rollback($e);
+            } finally {
+                // The rollback does not touch the cache of the settings, which holds the values set above.
+                \cache_helper::invalidate_by_definition('core', 'config', [], 'tool_secbackup');
+            }
         }
-        signing_keys::save($pair);
-        $transaction->allow_commit();
     }
 
     /**

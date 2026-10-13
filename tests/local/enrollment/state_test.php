@@ -123,4 +123,25 @@ final class state_test extends \advanced_testcase {
         set_config('clockskew', 'abc', 'tool_secbackup');
         $this->assertNull(state::load()->clock_skew());
     }
+
+    public function test_a_number_with_a_trailing_line_feed_reads_as_unknown(): void {
+        set_config('clockskew', "5\n", 'tool_secbackup');
+        set_config('enrolledat', "1760000000\n", 'tool_secbackup');
+        set_config('lastpoll', "1760000000\n", 'tool_secbackup');
+        $state = state::load();
+        $this->assertNull($state->clock_skew());
+        $this->assertNull($state->enrolled_at());
+        $this->assertNull($state->last_poll());
+    }
+
+    public function test_numbers_are_read_whole(): void {
+        set_config('clockskew', '-12', 'tool_secbackup');
+        $this->assertSame(-12, state::load()->clock_skew());
+    }
+
+    public function test_the_key_pair_parameter_is_marked_sensitive(): void {
+        $parameter = (new \ReflectionMethod(state::class, 'save_enrollment'))->getParameters()[2];
+        $this->assertSame('pair', $parameter->getName());
+        $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class));
+    }
 }

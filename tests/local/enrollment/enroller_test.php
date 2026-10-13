@@ -18,7 +18,9 @@ namespace tool_secbackup\local\enrollment;
 
 use tool_secbackup\event\site_enrolled;
 use tool_secbackup\local\api\api_exception;
+use tool_secbackup\local\crypto\key_exception;
 use tool_secbackup\local\crypto\public_key_format;
+use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\trust\developer_settings;
@@ -183,6 +185,222 @@ final class enroller_test extends \advanced_testcase {
         } catch (\coding_exception $e) {
             $this->assertCount($requests, $service->state['requests'], 'Nothing may be sent.');
         }
+    }
+
+    public function test_names_from_the_service_reach_the_message_as_plain_text(): void {
+        $messages = $this->redirectMessages();
+        $service = self::service(['enrollpayload' => ['site_name' => '<b>A&B</b>', 'platform_name' => '<i>P&Q</i>']]);
+        self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
+
+        $this->assertSame('<b>A&B</b>', state::load()->site_name());
+        $sent = $messages->get_messages();
+        $this->assertNotEmpty($sent);
+        foreach ($sent as $message) {
+            $this->assertStringContainsString('<i>P&Q</i>', $message->subject);
+            $this->assertStringContainsString('<b>A&B</b>', $message->fullmessage);
+            $this->assertSame('', $message->fullmessagehtml);
+            $this->assertEquals(FORMAT_PLAIN, $message->fullmessageformat);
+        }
+    }
+
+    public function test_event_and_messages_hold_no_secret(): void {
+        $events = $this->redirectEvents();
+        $messages = $this->redirectMessages();
+        self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $logged = array_values(array_filter($events->get_events(), static fn($event): bool => $event instanceof site_enrolled));
+        $texts = [$logged[0]->get_description(), $logged[0]->get_url()->out(false), json_encode($logged[0]->other)];
+        foreach ($messages->get_messages() as $message) {
+            $texts[] = $message->subject . $message->fullmessage . $message->contexturl;
+        }
+        foreach ($texts as $text) {
+            $this->assertStringNotContainsString(fake_service::CODE, $text);
+            $this->assertStringNotContainsString(str_replace('-', '', fake_service::CODE), $text);
+            $this->assertStringNotContainsString(fake_service::ENCRYPTION_KEY, $text);
+            $this->assertStringNotContainsString('signingsecret', $text);
+        }
+    }
+
+    /**
+     * All stored settings of the plugin, read from the table so that no cache hides a difference.
+     *
+     * @return array
+     */
+    private static function stored(): array {
+        global $DB;
+        return $DB->get_records_menu('config_plugins', ['plugin' => 'tool_secbackup'], 'name', 'name, value');
+    }
+
+    /**
+     * Makes saving a signing key fail: Moodle has no key for its encryption and may not create one.
+     */
+    private function make_saving_the_key_fail(): void {
+        global $CFG;
+        $CFG->secretdataroot = make_request_directory();
+        $CFG->nokeygeneration = true;
+    }
+
+    public function test_a_failed_save_leaves_a_first_registration_as_it_was(): void {
+        $this->preventResetByRollback();
+        $events = $this->redirectEvents();
+        $messages = $this->redirectMessages();
+        $before = self::stored();
+        $this->make_saving_the_key_fail();
+        try {
+            self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('signingkey_savefailed', $e->errorcode);
+        }
+        $this->assertSame($before, self::stored());
+        $this->assertFalse(state::load()->is_enrolled());
+        $this->assertSame('', state::load()->site_id());
+        $this->assertSame([], $events->get_events());
+        $this->assertSame([], $messages->get_messages());
+    }
+
+    public function test_a_failed_save_leaves_a_registration_made_again_as_it_was(): void {
+        global $CFG, $DB;
+        $this->preventResetByRollback();
+        $service = self::service();
+        self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $before = self::stored();
+        $signingkey = signing_keys::load()->public_key();
+        $this->assertNotEmpty($before['signingsecret']);
+
+        $service->state['codeused'] = false;
+        $service->state['enrollpayload'] = ['site_name' => 'Renamed site'];
+        $events = $this->redirectEvents();
+        $messages = $this->redirectMessages();
+        $this->make_saving_the_key_fail();
+        try {
+            self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('signingkey_savefailed', $e->errorcode);
+        }
+        $this->assertSame($before, self::stored());
+        $this->assertSame(fake_service::SITE_NAME, state::load()->site_name());
+        $this->assertSame(
+            $DB->get_field('config_plugins', 'value', ['plugin' => 'tool_secbackup', 'name' => 'sitename']),
+            state::load()->site_name()
+        );
+        $this->assertSame([], $events->get_events());
+        $this->assertSame([], $messages->get_messages());
+        // The key that was saved before is still the one that is read, once Moodle finds its encryption key again.
+        unset($CFG->secretdataroot, $CFG->nokeygeneration);
+        $this->assertSame($signingkey, signing_keys::load()->public_key());
+    }
+
+    /**
+     * Failures of a registration.
+     *
+     * @return array
+     */
+    public static function failing_registration_provider(): array {
+        return [
+            'the service refuses the code' => ['refused'],
+            'the key cannot be saved' => ['save'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_registration_provider')]
+    /**
+     * Neither the registration code nor the key pair is left in the arguments of the trace of the exception.
+     *
+     * @dataProvider failing_registration_provider
+     * @param string $failure What fails.
+     */
+    public function test_a_failed_registration_leaves_no_secret_in_the_trace(string $failure): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the secrets stay in the'
+                . ' arguments of the trace there.');
+        }
+        $this->preventResetByRollback();
+        $code = $failure === 'refused' ? 'SEC-BK-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ' : fake_service::CODE;
+        if ($failure === 'save') {
+            $this->make_saving_the_key_fail();
+        }
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        $this->assertNotFalse($previous);
+        try {
+            // Control: a trace made like this one does show a text and a key pair that are passed along.
+            $control = self::exception_created_with($code, signing_keypair::generate());
+            $this->assertTrue(self::any_argument($control, static fn($argument): bool => $argument === $code));
+            $this->assertTrue(self::any_argument($control, static fn($argument): bool => $argument instanceof signing_keypair));
+
+            $thrown = null;
+            try {
+                self::enroller(self::service())->enroll(self::endpoint(), self::key(), $code);
+            } catch (\Throwable $e) {
+                $thrown = $e;
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+        $this->assertInstanceOf($failure === 'refused' ? api_exception::class : key_exception::class, $thrown);
+        $needles = [$code, str_replace('-', '', $code), substr($code, 7)];
+        $this->assertFalse(self::any_argument($thrown, static function ($argument) use ($needles): bool {
+            foreach ($needles as $needle) {
+                if (is_string($argument) && str_contains($argument, $needle)) {
+                    return true;
+                }
+            }
+            return false;
+        }), 'The registration code is in the trace.');
+        $this->assertFalse(
+            self::any_argument($thrown, static fn($argument): bool => $argument instanceof signing_keypair),
+            'The key pair is in the trace.'
+        );
+        $this->assertStringNotContainsString($code, $thrown->getMessage() . $thrown->getTraceAsString());
+    }
+
+    /**
+     * An exception created in a call with the arguments, so that its trace holds them when PHP keeps arguments.
+     *
+     * @param mixed ...$arguments Anything.
+     * @return \Exception
+     */
+    private static function exception_created_with(mixed ...$arguments): \Exception {
+        return new \Exception('Control exception for ' . count($arguments) . ' arguments');
+    }
+
+    /**
+     * Tells whether the test is true for an argument in the trace of an exception, or for an element of an array
+     * argument (followed five levels deep).
+     *
+     * @param \Throwable $exception The exception.
+     * @param callable $test Gets one value and returns a bool.
+     * @return bool
+     */
+    private static function any_argument(\Throwable $exception, callable $test): bool {
+        foreach ($exception->getTrace() as $frame) {
+            if (self::any_value($frame['args'] ?? [], $test, 0)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tells whether the test is true for a value or for an element of it.
+     *
+     * @param mixed $value The value.
+     * @param callable $test Gets one value and returns a bool.
+     * @param int $depth How deep the value is.
+     * @return bool
+     */
+    private static function any_value(mixed $value, callable $test, int $depth): bool {
+        if ($test($value)) {
+            return true;
+        }
+        if (is_array($value) && $depth < 5) {
+            foreach ($value as $element) {
+                if (self::any_value($element, $test, $depth + 1)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public function test_create_uses_the_site_settings(): void {
