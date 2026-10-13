@@ -36,6 +36,9 @@ final class client {
     /** @var int Clock difference, in seconds, from which the pages warn. The service refuses more than 300. */
     public const CLOCK_SKEW_WARNING = 120;
 
+    /** @var int Clock difference, in seconds, that the service accepts. */
+    private const CLOCK_TOLERANCE = 300;
+
     /** @var string[] Error codes of the service that have their own message. */
     private const KNOWN_ERRORS = ['invalid_request', 'signature_required', 'signature_invalid', 'timestamp_out_of_range',
         'nonce_reused', 'enrollment_code_invalid', 'site_not_enrolled', 'ip_not_allowed', 'encryption_key_mismatch',
@@ -224,14 +227,15 @@ final class client {
             return new api_exception('api_unexpected', '', $response->status, $response->retryafter, null, $response->status);
         }
         $servertime = self::unix_time($error['server_time'] ?? null);
-        if ($code === 'timestamp_out_of_range' && $servertime !== null) {
+        // Under the service's tolerance the clocks do not explain the refusal, so the message does not name minutes.
+        if ($code === 'timestamp_out_of_range' && $servertime !== null && abs($servertime - $now) >= self::CLOCK_TOLERANCE) {
             return new api_exception(
                 'api_timestamp_out_of_range_minutes',
                 $code,
                 $response->status,
                 null,
                 $servertime,
-                max(1, (int) round(abs($servertime - $now) / 60))
+                (int) round(abs($servertime - $now) / 60)
             );
         }
         $ip = is_string($error['ip'] ?? null) ? filter_var($error['ip'], FILTER_VALIDATE_IP) : false;
