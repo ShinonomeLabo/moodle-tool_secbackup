@@ -399,9 +399,20 @@ final class transport_test extends \advanced_testcase {
     public static function retry_after_provider(): array {
         return [
             'seconds' => ['120', 120],
+            'zero' => ['0', 0],
+            'leading zeros' => ['000120', 120],
+            'exactly a day' => ['86400', 86400],
             'capped at a day' => ['90000', 86400],
+            'one second over a day' => ['86401', 86400],
+            'six digits' => ['999999', 86400],
             'http date is ignored' => ['Wed, 21 Oct 2026 07:28:00 GMT', null],
             'too many digits' => ['1234567', null],
+            'text before the digits' => ['in 120', null],
+            'text after the digits' => ['120 seconds', null],
+            'a sign' => ['-1', null],
+            'a plus sign' => ['+30', null],
+            'a fraction' => ['1.5', null],
+            'nothing' => ['', null],
         ];
     }
 

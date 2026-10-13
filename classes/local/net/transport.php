@@ -229,6 +229,7 @@ final class transport {
      * @return int|null Seconds, at most one day; null for other forms.
      */
     private static function retry_after(string $value): ?int {
-        return preg_match('/^\d{1,6}$/', trim($value)) === 1 ? min((int) trim($value), 86400) : null;
+        // The pattern ends with \z: $ also matches before a final line feed.
+        return preg_match('/^\d{1,6}\z/', trim($value)) === 1 ? min((int) trim($value), 86400) : null;
     }
 }
