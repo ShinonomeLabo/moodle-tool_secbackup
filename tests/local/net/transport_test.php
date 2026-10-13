@@ -104,6 +104,32 @@ final class transport_test extends \advanced_testcase {
         $this->assertSame(30, $options['timeout']);
     }
 
+    public function test_the_request_names_the_plugin_and_nothing_of_the_site(): void {
+        global $CFG;
+        // The default user agent of Moodle's HTTP client is "MoodleBot/<version> (+<wwwroot>)": the service must not get it.
+        $this->assertNotSame('', $CFG->wwwroot);
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        self::send($mock);
+        $request = $mock->getLastRequest();
+        $this->assertSame(['tool_secbackup'], $request->getHeader('User-Agent'));
+        foreach ($request->getHeaders() as $name => $values) {
+            foreach ($values as $value) {
+                $this->assertStringNotContainsString($CFG->wwwroot, $value, $name);
+            }
+        }
+        $this->assertStringNotContainsString($CFG->wwwroot, (string) $request->getUri());
+    }
+
+    public function test_a_user_agent_in_the_headers_is_replaced(): void {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $headers = ['user-agent' => 'Browser/1.0 (+https://lms.example.ac.jp)', 'Accept' => 'application/json'];
+        $transport = new transport(developer_settings::from_value(null), network_fakes::passing_guard(), $mock);
+        $transport->send('GET', self::endpoint(), 'status', $headers, '');
+        $request = $mock->getLastRequest();
+        $this->assertSame(['tool_secbackup'], $request->getHeader('User-Agent'));
+        $this->assertSame(['application/json'], $request->getHeader('Accept'));
+    }
+
     public function test_with_a_proxy_nothing_is_pinned(): void {
         global $CFG;
         $CFG->proxyhost = 'proxy.example.ac.jp';

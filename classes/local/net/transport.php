@@ -36,6 +36,9 @@ final class transport {
     /** @var int Largest response accepted, in bytes. */
     public const MAX_RESPONSE = 1048576;
 
+    /** @var string User agent of the requests: the name of the plugin and nothing of the site. */
+    private const USER_AGENT = 'tool_secbackup';
+
     /** @var int[] curl error numbers of failed TLS handshakes and certificate checks. */
     private const TLS_ERRORS = [35, 51, 58, 60, 77, 83, 90, 91];
 
@@ -96,8 +99,14 @@ final class transport {
     public function send(string $method, endpoint $endpoint, string $relative, array $headers, string $body): response {
         $url = $endpoint->join($relative);
         $proxy = proxy_settings::for_url($url);
+        // Moodle's HTTP client would add its own user agent, "MoodleBot/<version> (+<wwwroot>)": it carries the URL of the site.
+        $others = array_filter(
+            $headers,
+            static fn($name): bool => strtolower((string) $name) !== 'user-agent',
+            ARRAY_FILTER_USE_KEY
+        );
         $options = [
-            'headers' => $headers,
+            'headers' => $others + ['User-Agent' => self::USER_AGENT],
             'body' => $body,
             'http_errors' => false,
             'allow_redirects' => false,
