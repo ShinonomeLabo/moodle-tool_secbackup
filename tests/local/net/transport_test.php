@@ -215,6 +215,66 @@ final class transport_test extends \advanced_testcase {
         $this->assertSame('http://fakesec/api/lms-backup/v1/status', (string) $mock->getLastRequest()->getUri());
     }
 
+    /**
+     * Calls that send() refuses before it does anything.
+     *
+     * @return array
+     */
+    public static function refused_call_provider(): array {
+        return [
+            'a lower case method' => ['get', '', 'A method is'],
+            'a method that is neither GET nor POST' => ['PUT', '{}', 'A method is'],
+            'a method with a line feed and more' => ["GET\r\nX-Injected: 1", '', 'A method is'],
+            'an empty method' => ['', '', 'A method is'],
+            'a body with GET' => ['GET', '{}', 'A GET request has no body'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refused_call_provider')]
+    /**
+     * The method is a line of the text that the caller signed, and curl sends it as it is. A GET request has no body: the
+     * caller signed the hash of a body that would not be the one that is sent.
+     *
+     * @dataProvider refused_call_provider
+     * @param string $method The method.
+     * @param string $body The body.
+     * @param string $message Start of the message that names the mistake.
+     */
+    public function test_a_method_or_a_body_that_is_not_allowed_is_a_coding_error(
+        string $method,
+        string $body,
+        string $message
+    ): void {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $transport = new transport(developer_settings::from_value(null), network_fakes::passing_guard(), $mock);
+        try {
+            $transport->send($method, self::endpoint(), 'status', ['Accept' => 'application/json'], $body);
+            $this->fail('No exception');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString($message, $e->getMessage());
+        }
+        $this->assertCount(1, $mock, 'Nothing was sent.');
+    }
+
+    public function test_a_post_without_a_body_is_sent(): void {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $transport = new transport(developer_settings::from_value(null), network_fakes::passing_guard(), $mock);
+        $transport->send('POST', self::endpoint(), 'status', ['Accept' => 'application/json'], '');
+        $request = $mock->getLastRequest();
+        $this->assertSame('POST', $request->getMethod());
+        $this->assertSame('', (string) $request->getBody());
+    }
+
+    public function test_a_get_request_carries_no_body(): void {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $transport = new transport(developer_settings::from_value(null), network_fakes::passing_guard(), $mock);
+        $transport->send('GET', self::endpoint(), 'status', ['Accept' => 'application/json'], '');
+        $request = $mock->getLastRequest();
+        $this->assertSame('GET', $request->getMethod());
+        $this->assertSame(0, $request->getBody()->getSize());
+        $this->assertFalse($request->hasHeader('Content-Length'));
+    }
+
     public function test_redirects_are_refused(): void {
         $this->expect_failure('transport_redirect', new MockHandler([
             new Response(302, ['Location' => 'https://elsewhere.example/'], ''),
@@ -399,8 +459,9 @@ final class transport_test extends \advanced_testcase {
     }
 
     /**
-     * Calls of send() that throw, from the name check, from the endpoint, from the mapping of a failure of Guzzle and from
-     * the checks of the response.
+     * Calls of send() that throw: from its own checks, from the name check, from the endpoint, from the mapping of a failure
+     * of Guzzle and from the checks of the response. Each row: what the mocked network answers, whether the name check fails,
+     * the name of the call, the method.
      *
      * @return array
      */
@@ -408,14 +469,17 @@ final class transport_test extends \advanced_testcase {
         $request = new Request('POST', 'https://app.example.test/');
         $toolarge = ['Content-Length' => (string) (transport::MAX_RESPONSE + 1)];
         return [
-            'a name check that fails' => [[], true, 'enroll'],
-            'a name of the call that the endpoint refuses' => [[], false, 'Not/Allowed'],
+            'a body with GET' => [[], false, 'enroll', 'GET'],
+            'a name check that fails' => [[], true, 'enroll', 'POST'],
+            'a name of the call that the endpoint refuses' => [[], false, 'Not/Allowed', 'POST'],
             'a certificate that cannot be verified' => [
-                [new RequestException('cURL error 60', $request, null, null, ['errno' => 60])], false, 'enroll',
+                [new RequestException('cURL error 60', $request, null, null, ['errno' => 60])], false, 'enroll', 'POST',
             ],
-            'a connection that fails' => [[new ConnectException('cURL error 7', $request, null, ['errno' => 7])], false, 'enroll'],
-            'a redirect' => [[new Response(302, ['Location' => 'https://elsewhere.example/'], '')], false, 'enroll'],
-            'a declared length over the limit' => [[new Response(200, $toolarge, 'x')], false, 'enroll'],
+            'a connection that fails' => [
+                [new ConnectException('cURL error 7', $request, null, ['errno' => 7])], false, 'enroll', 'POST',
+            ],
+            'a redirect' => [[new Response(302, ['Location' => 'https://elsewhere.example/'], '')], false, 'enroll', 'POST'],
+            'a declared length over the limit' => [[new Response(200, $toolarge, 'x')], false, 'enroll', 'POST'],
         ];
     }
 
@@ -428,11 +492,13 @@ final class transport_test extends \advanced_testcase {
      * @param array $queue What the mocked network answers.
      * @param bool $namecheckfails Whether the name check fails.
      * @param string $relative Name of the API call.
+     * @param string $method The method.
      */
     public function test_a_failure_does_not_leave_the_signature_or_the_body_in_the_trace(
         array $queue,
         bool $namecheckfails,
-        string $relative
+        string $relative,
+        string $method
     ): void {
         if (PHP_VERSION_ID < 80200) {
             $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the'
@@ -454,7 +520,7 @@ final class transport_test extends \advanced_testcase {
             $this->assertTrue(self::trace_leaks($control, $signature, $body), 'A trace shows the arguments when PHP keeps them.');
             try {
                 $transport = new transport(developer_settings::from_value(null), $guard, new MockHandler($queue));
-                $transport->send('POST', self::endpoint(), $relative, $headers, $body);
+                $transport->send($method, self::endpoint(), $relative, $headers, $body);
             } catch (\Exception $e) {
                 $this->assertFalse(self::trace_leaks($e, $signature, $body), 'The signature or the body is in the trace.');
                 return;

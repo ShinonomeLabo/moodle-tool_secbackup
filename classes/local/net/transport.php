@@ -101,6 +101,7 @@ final class transport {
      * @param #[|\SensitiveParameter|]|string[] $headers Headers by name.
      * @param #[|\SensitiveParameter|]|string $body Body.
      * @return response
+     * @throws \coding_exception When the method is not GET or POST, or a GET request has a body: that is a mistake of the caller.
      * @throws transport_exception When the checks fail or the connection fails.
      */
     public function send(
@@ -110,6 +111,14 @@ final class transport {
         #[\SensitiveParameter] array $headers,
         #[\SensitiveParameter] string $body
     ): response {
+        // The method is a line of the text that the caller signed, and curl sends it as it is. A GET request has no body: the
+        // caller signed the hash of a body that would not be the one that is sent.
+        if ($method !== 'GET' && $method !== 'POST') {
+            throw new \coding_exception('A method is GET or POST.');
+        }
+        if ($method === 'GET' && $body !== '') {
+            throw new \coding_exception('A GET request has no body.');
+        }
         $url = $endpoint->join($relative);
         $proxy = proxy_settings::for_url($url);
         // Moodle's HTTP client would add its own user agent, "MoodleBot/<version> (+<wwwroot>)": it carries the URL of the site.
@@ -122,7 +131,6 @@ final class transport {
         $toolarge = false;
         $options = [
             'headers' => $others + ['User-Agent' => self::USER_AGENT],
-            'body' => $body,
             'http_errors' => false,
             'allow_redirects' => false,
             // The limit counts the bytes of the wire, so the response must not be decompressed.
@@ -153,6 +161,9 @@ final class transport {
                 },
             ],
         ];
+        if ($method === 'POST') {
+            $options['body'] = $body;
+        }
         if (!$this->settings->skip_network_checks()) {
             // Only an HTTP proxy looks the name up. With a SOCKS5 proxy this server does it, so its answer is checked and pinned.
             $pinned = $this->guard->check($endpoint->host(), proxy_settings::resolves_names($url), aws_ranges::SERVICE_CLOUDFRONT);
