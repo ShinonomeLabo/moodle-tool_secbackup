@@ -25,6 +25,12 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['developersettings_invalid'] = 'config.php の開発用の設定 (TOOL_SECBACKUP_DEVELOPER) に誤りがあります。理由は、デバッグの表示を有効にすると確かめられます。';
+$string['dns_doh_failed'] = 'DNS over HTTPS のサービスが答えませんでした。';
+$string['dns_doh_unavailable'] = 'DNS over HTTPS のサービス (1.1.1.1 と 8.8.8.8) のどちらも答えなかったので、接続先の IP アドレスを確かめられませんでした。1.1.1.1 か 8.8.8.8 への HTTPS の接続を許すか、Moodle にプロキシを設定してください。';
+$string['dns_not_found'] = '接続先の URL のホスト名が見つかりません。接続先の URL を確かめてください。';
+$string['dns_os_failed'] = 'このサーバで、接続先の URL のホスト名を引けませんでした。サーバの DNS の設定を確かめてください。';
+$string['dns_os_mismatch'] = 'このサーバの DNS が、接続先のサービスのものではない IP アドレスを返しています。何も送っていません。このサーバの DNS を、ネットワークの管理者に確かめてもらってください。';
+$string['dns_outside_aws'] = '接続先の URL のホスト名が、接続先のサービスを指していません。何も送っていません。接続先の URL を確かめてください。';
 $string['endpoint_empty'] = 'プラットフォームの画面に出ている接続先の URL を入れてください。';
 $string['endpoint_host'] = '接続先の URL のホスト名は使えません。プラットフォームの画面に出ている、IP アドレスではないホスト名の URL を使ってください。';
 $string['endpoint_invalid'] = '接続先の URL の形になっていません。プラットフォームの画面から、https:// で始まる URL の全体をコピーしてください。';
