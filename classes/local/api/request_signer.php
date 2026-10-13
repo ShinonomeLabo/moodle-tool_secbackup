@@ -75,14 +75,15 @@ final class request_signer {
      * of an enrolment, out of the trace of an exception thrown here or in a call made from here.
      *
      * @param #[|\SensitiveParameter|]|signing_keypair $pair The site's key pair.
-     * @param string $method GET or POST.
+     * @param string $method Exactly GET or POST.
      * @param endpoint $endpoint Connection URL.
      * @param string $relative Name of the API call, such as "status".
      * @param #[|\SensitiveParameter|]|string $body JSON body, or an empty string.
      * @param string|null $siteid The site's ID, or null for the enrolment request.
-     * @param int $timestamp UNIX time.
+     * @param int $timestamp UNIX time, from 0 to 999999999999.
      * @param string $nonce Nonce from new_nonce().
      * @return string[] Header values by name.
+     * @throws \coding_exception When an argument is not in its shape: that is a mistake of the caller.
      */
     public static function headers(
         #[\SensitiveParameter] signing_keypair $pair,
@@ -100,6 +101,14 @@ final class request_signer {
         }
         if ($siteid !== null && preg_match('/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/', $siteid) !== 1) {
             throw new \coding_exception('A site ID is a lower-case UUID.');
+        }
+        // The method is a line of the signed text, so it has to be exactly one of two words.
+        if ($method !== 'GET' && $method !== 'POST') {
+            throw new \coding_exception('A method is GET or POST.');
+        }
+        // The service reads 1 to 12 digits.
+        if ($timestamp < 0 || $timestamp > 999999999999) {
+            throw new \coding_exception('A timestamp is UNIX time with 1 to 12 digits.');
         }
         $text = self::canonical($method, $endpoint->host(), $endpoint->path_of($relative), '', (string) $timestamp, $nonce, $body);
         $headers = [

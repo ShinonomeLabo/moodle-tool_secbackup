@@ -200,6 +200,49 @@ final class request_signer_test extends \basic_testcase {
         $this->assertSame('0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d', $headers['X-SecBackup-Site']);
     }
 
+    /**
+     * Methods and times in a wrong shape: one value is wrong in each row, the other is good.
+     *
+     * The method is a line of the signed text, so a line feed in it would let two different requests read the same.
+     *
+     * @return array
+     */
+    public static function malformed_method_or_time_provider(): array {
+        return [
+            'a method with a line feed and more' => ["GET\nX", 1760000000, 'A method is'],
+            'a method with a trailing line feed' => ["POST\n", 1760000000, 'A method is'],
+            'a lower-case method' => ['get', 1760000000, 'A method is'],
+            'a method that is neither GET nor POST' => ['PUT', 1760000000, 'A method is'],
+            'an empty method' => ['', 1760000000, 'A method is'],
+            'a negative time' => ['GET', -1, 'A timestamp is'],
+            'a time of 13 digits' => ['GET', 1000000000000, 'A timestamp is'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformed_method_or_time_provider')]
+    /**
+     * A method or a time in a wrong shape is a coding error, even when only a line feed is wrong.
+     *
+     * @dataProvider malformed_method_or_time_provider
+     * @param string $method The method.
+     * @param int $timestamp The time.
+     * @param string $message Start of the message that names the wrong value.
+     */
+    public function test_a_wrong_method_or_time_is_a_coding_error(string $method, int $timestamp, string $message): void {
+        $nonce = 'AAAAAAAAAAAAAAAAAAAAAA';
+        $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage($message);
+        request_signer::headers(self::pair(), $method, self::endpoint(), 'status', '', self::SITE, $timestamp, $nonce);
+    }
+
+    public function test_both_methods_and_the_bounds_of_the_time_are_accepted(): void {
+        $nonce = 'AAAAAAAAAAAAAAAAAAAAAA';
+        $first = request_signer::headers(self::pair(), 'POST', self::endpoint(), 'status', '', null, 0, $nonce);
+        $last = request_signer::headers(self::pair(), 'GET', self::endpoint(), 'status', '', null, 999999999999, $nonce);
+        $this->assertSame('0', $first['X-SecBackup-Timestamp']);
+        $this->assertSame('999999999999', $last['X-SecBackup-Timestamp']);
+    }
+
     public function test_the_key_pair_and_the_body_parameters_are_marked_sensitive(): void {
         $parameters = (new \ReflectionMethod(request_signer::class, 'headers'))->getParameters();
         $marked = [];
@@ -221,6 +264,8 @@ final class request_signer_test extends \basic_testcase {
             'a nonce in a wrong shape' => [['nonce' => 'short']],
             'a site ID in a wrong shape' => [['siteid' => 'not-a-uuid']],
             'a name of the call that the endpoint refuses' => [['relative' => 'Not/Allowed']],
+            'a method that is not allowed' => [['method' => 'PUT']],
+            'a time out of range' => [['timestamp' => -1]],
         ];
     }
 
@@ -236,7 +281,13 @@ final class request_signer_test extends \basic_testcase {
             $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the key pair and the body stay'
                 . ' in the arguments of the trace there.');
         }
-        $call = $override + ['relative' => 'enroll', 'siteid' => null, 'nonce' => 'MDEyMzQ1Njc4OWFiY2RlZg'];
+        $call = $override + [
+            'method' => 'POST',
+            'relative' => 'enroll',
+            'siteid' => null,
+            'timestamp' => 1760000123,
+            'nonce' => 'MDEyMzQ1Njc4OWFiY2RlZg',
+        ];
         $pair = self::pair();
 
         // A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the
@@ -250,12 +301,12 @@ final class request_signer_test extends \basic_testcase {
             try {
                 request_signer::headers(
                     $pair,
-                    'POST',
+                    $call['method'],
                     self::endpoint(),
                     $call['relative'],
                     self::BODY,
                     $call['siteid'],
-                    1760000123,
+                    $call['timestamp'],
                     $call['nonce']
                 );
             } catch (\coding_exception $e) {
