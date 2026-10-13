@@ -7,4 +7,11 @@
     <license>Public data published by Amazon Web Services</license>
     <repository>https://ip-ranges.amazonaws.com/ip-ranges.json</repository>
   </library>
+  <library>
+    <location>data/amazon-roots.pem</location>
+    <name>Amazon Trust Services root certificates (Amazon Root CA 1 to 4, Starfield Services Root Certificate Authority - G2)</name>
+    <version>2026-10-12</version>
+    <license>Public certificates published by Amazon Trust Services</license>
+    <repository>https://www.amazontrust.com/repository/</repository>
+  </library>
 </libraries>
