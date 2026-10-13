@@ -116,7 +116,8 @@ final class transport {
             'curl' => [],
         ];
         if (!$this->settings->skip_network_checks()) {
-            $pinned = $this->guard->check($endpoint->host(), $proxy !== '', aws_ranges::SERVICE_CLOUDFRONT);
+            // Only an HTTP proxy looks the name up. With a SOCKS5 proxy this server does it, so its answer is checked and pinned.
+            $pinned = $this->guard->check($endpoint->host(), proxy_settings::resolves_names($url), aws_ranges::SERVICE_CLOUDFRONT);
             $options['verify'] = self::roots_file();
             // A folder without "<hash>.0" files: curl must not add the system's CA directory to the bundled roots.
             $options['curl'][CURLOPT_CAPATH] = dirname(self::roots_file());

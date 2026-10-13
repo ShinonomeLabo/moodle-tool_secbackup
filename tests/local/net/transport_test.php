@@ -123,6 +123,34 @@ final class transport_test extends \advanced_testcase {
         $this->assertSame(transport::roots_file(), $options['verify']);
     }
 
+    /**
+     * Sets a SOCKS5 proxy in the site configuration.
+     */
+    private static function use_socks5_proxy(): void {
+        global $CFG;
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '1080';
+        $CFG->proxytype = 'SOCKS5';
+    }
+
+    public function test_with_a_socks5_proxy_the_checked_address_is_pinned(): void {
+        // This server looks the name up before it talks to a SOCKS5 proxy, so the answer of this server is checked and pinned.
+        self::use_socks5_proxy();
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        self::send($mock);
+        $options = $mock->getLastOptions();
+        $this->assertSame('socks5://proxy.example.ac.jp:1080', $options['proxy']);
+        $this->assertSame(['app.example.test:443:13.225.9.9'], $options['curl'][CURLOPT_RESOLVE]);
+        $this->assertSame(transport::roots_file(), $options['verify']);
+    }
+
+    public function test_with_a_socks5_proxy_an_answer_of_this_server_outside_aws_sends_nothing(): void {
+        self::use_socks5_proxy();
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $this->expect_failure('dns_os_mismatch', $mock, network_fakes::guard(['13.225.1.1'], null, ['203.0.113.7']));
+        $this->assertCount(1, $mock);
+    }
+
     public function test_name_check_failure_sends_nothing(): void {
         $mock = new MockHandler([new Response(200, [], '{}')]);
         $this->expect_failure('dns_os_mismatch', $mock, network_fakes::guard(['13.225.1.1'], null, ['203.0.113.7']));
