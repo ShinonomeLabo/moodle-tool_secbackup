@@ -33,9 +33,12 @@ use tool_secbackup\local\trust\developer_settings;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class state {
-    /** @var string[] Settings that hold the registration (the signing key is kept by signing_keys). */
-    private const NAMES = ['siteid', 'sitename', 'platformname', 'endpoint', 'encryptionkey', 'enrolledat', 'clockskew',
-        'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora'];
+    /**
+     * @var string[] Settings that hold the registration (the signing key is kept by signing_keys). The site ID is
+     *     last: it is what makes the site read as registered.
+     */
+    private const NAMES = ['sitename', 'platformname', 'endpoint', 'encryptionkey', 'enrolledat', 'clockskew',
+        'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'siteid'];
 
     /** @var \stdClass The plugin's settings. */
     private \stdClass $config;
@@ -212,8 +215,9 @@ final class state {
      * @param string $encryptionkey The site's encryption public key, as the platform shows it.
      * @param #[|\SensitiveParameter|]|signing_keypair $pair The enrolled key pair.
      * @param int $now This server's clock.
-     * @throws \Throwable Whatever fails while saving. Nothing is left saved, and the cache of the settings is not
-     *     left holding values that were rolled back.
+     * @throws \Throwable Whatever fails while saving. When this is not inside another open transaction, nothing is left
+     *     saved. Inside one, the outer transaction decides: it is marked for rollback, but the rows stay visible to
+     *     this request until it ends.
      */
     public static function save_enrollment(
         enroll_result $result,
@@ -240,7 +244,9 @@ final class state {
             signing_keys::save($pair);
             $transaction->allow_commit();
         } catch (\Throwable $e) {
-            // The rollback does not touch the cache of the settings, which holds the values set above.
+            // The function set_config() removed the cached settings. They are cached again with the values of the open
+            // transaction only if something read the settings before the failure, and the rollback does not touch the
+            // cache, so it is removed again here.
             \cache_helper::invalidate_by_definition('core', 'config', [], 'tool_secbackup');
             // Rethrows the exception.
             $transaction->rollback($e);
@@ -276,15 +282,18 @@ final class state {
     }
 
     /**
-     * Forgets the registration and the signing key.
+     * Forgets the signing key and the registration.
+     *
+     * The key goes first and the site ID last, so that a failure in between leaves a site that still reads as
+     * registered, and the removal can be run again; the key is never what is left behind.
      */
     public static function clear(): void {
-        self::forget_values();
         signing_keys::forget();
+        self::forget_values();
     }
 
     /**
-     * Removes the registration settings.
+     * Removes the registration settings, the site ID last.
      */
     private static function forget_values(): void {
         foreach (self::NAMES as $name) {

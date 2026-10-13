@@ -41,6 +41,14 @@ final class events_test extends \advanced_testcase {
         $this->assertSame('c', $event->crud);
     }
 
+    public function test_enrolled_says_whether_it_was_made_again(): void {
+        $first = site_enrolled::create(['context' => \context_system::instance(), 'other' => self::OTHER + ['again' => false]]);
+        $again = site_enrolled::create(['context' => \context_system::instance(), 'other' => self::OTHER + ['again' => true]]);
+        $this->assertStringContainsString("registered this site with the backup service", $first->get_description());
+        $this->assertStringNotContainsString('again', $first->get_description());
+        $this->assertStringContainsString("registered this site again with the backup service", $again->get_description());
+    }
+
     public function test_deregistered(): void {
         $event = site_deregistered::create(['context' => \context_system::instance(), 'other' => self::OTHER]);
         $this->assertSame(get_string('event_deregistered', 'tool_secbackup'), site_deregistered::get_name());

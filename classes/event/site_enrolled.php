@@ -53,7 +53,8 @@ class site_enrolled extends \core\event\base {
      * @return string
      */
     public function get_description() {
-        return "The user with id '{$this->userid}' registered this site with the backup service at " .
+        $again = $this->other['again'] ? ' again' : '';
+        return "The user with id '{$this->userid}' registered this site{$again} with the backup service at " .
             "'{$this->other['endpoint']}' (site ID '{$this->other['siteid']}').";
     }
 

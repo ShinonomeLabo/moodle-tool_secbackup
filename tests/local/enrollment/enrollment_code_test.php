@@ -83,6 +83,7 @@ final class enrollment_code_test extends \basic_testcase {
             'empty' => [''],
             'letter u' => ['UUUU-AAAA-BBBB-CCCC-DDDD'],
             'too short' => ['SEC-BK-7QF2-MXA9'],
+            'twenty five characters that do not start with the prefix' => ['ABCDE7QF2MXA9PDTW4HJC8NR5'],
             'too long' => [self::CODE . '-AAAA'],
             'symbols' => ['7QF2!MXA9-PDTW-4HJC-8NR5'],
             'nul byte' => ["7QF2MXA9PDTW4HJC8NR5\0"],

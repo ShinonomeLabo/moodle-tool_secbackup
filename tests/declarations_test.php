@@ -53,6 +53,8 @@ final class declarations_test extends \advanced_testcase {
         $this->assertSame(['connection'], array_keys($messageproviders));
         $this->assertSame('tool/secbackup:manage', $messageproviders['connection']['capability']);
         $this->assertSame(['popup', 'email'], array_keys($messageproviders['connection']['defaults']));
+        $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $messageproviders['connection']['defaults']['popup']);
+        $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $messageproviders['connection']['defaults']['email']);
     }
 
     public function test_capabilities(): void {
