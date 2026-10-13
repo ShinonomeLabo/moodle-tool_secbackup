@@ -266,9 +266,10 @@ final class fake_service {
         $timestamp = $headers['x-secbackup-timestamp'] ?? '';
         $signature = self::b64url_decode($headers['x-secbackup-signature'] ?? '');
         $nonce = $headers['x-secbackup-nonce'] ?? '';
+        // The patterns end with \z, not $, which also matches before a final line feed.
         if (
-            preg_match('/^\d{1,12}$/', $timestamp) !== 1
-            || preg_match('/^[A-Za-z0-9_-]{22}$/', $nonce) !== 1
+            preg_match('/^\d{1,12}\z/', $timestamp) !== 1
+            || preg_match('/^[A-Za-z0-9_-]{22}\z/', $nonce) !== 1
             || $signature === null
             || strlen($signature) !== 64
         ) {
@@ -340,7 +341,7 @@ final class fake_service {
      * @return string|null
      */
     private static function b64url_decode(string $text): ?string {
-        if (preg_match('/^[A-Za-z0-9_-]+$/', $text) !== 1) {
+        if (preg_match('/^[A-Za-z0-9_-]+\z/', $text) !== 1) {
             return null;
         }
         $decoded = base64_decode(strtr($text, '-_', '+/') . str_repeat('=', (4 - strlen($text) % 4) % 4), true);

@@ -184,6 +184,10 @@ final class client_test extends \advanced_testcase {
     public static function invalid_provider(): array {
         return [
             'site id is not a uuid' => [['site_id' => 'site-1'], 'site_id'],
+            'site id with a trailing line feed' => [['site_id' => fake_service::SITE_ID . "\n"], 'site_id'],
+            'site id with a leading line feed' => [['site_id' => "\n" . fake_service::SITE_ID], 'site_id'],
+            'site id in upper case' => [['site_id' => 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'], 'site_id'],
+            'site id one character too long' => [['site_id' => fake_service::SITE_ID . '0'], 'site_id'],
             'empty site name' => [['site_name' => '  '], 'site_name'],
             'line separator in site name' => [['site_name' => "a\u{2028}b"], 'site_name'],
             'control character in platform name' => [['platform_name' => "a\x07b"], 'platform_name'],
@@ -207,6 +211,12 @@ final class client_test extends \advanced_testcase {
         $e = $this->expect_api_error('enroll_response_invalid', fn() => self::client($service->handler())
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame($field, $e->debuginfo);
+    }
+
+    public function test_a_site_id_with_lower_case_letters_is_taken(): void {
+        $service = self::service(['enrollpayload' => ['site_id' => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee']]);
+        $result = self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
+        $this->assertSame('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', $result->siteid);
     }
 
     public function test_site_name_is_trimmed(): void {
@@ -311,6 +321,54 @@ final class client_test extends \advanced_testcase {
     }
 
     /**
+     * Error codes as the service may send them, with the code that the exception keeps.
+     *
+     * The code is kept only when the whole text is 1 to 64 lower-case letters or underscores.
+     *
+     * @return array
+     */
+    public static function server_code_provider(): array {
+        return [
+            'a code' => ['too_many_requests', 'too_many_requests'],
+            'the longest code' => [str_repeat('a', 64), str_repeat('a', 64)],
+            'one character too long' => [str_repeat('a', 65), ''],
+            'a trailing line feed' => ["too_many_requests\n", ''],
+            'a leading line feed' => ["\ntoo_many_requests", ''],
+            'upper case' => ['Too_Many_Requests', ''],
+            'a digit' => ['error1', ''],
+            'a space' => ['too many', ''],
+            'empty' => ['', ''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('server_code_provider')]
+    /**
+     * When the HTTP status alone decides the message (429 and 503), the exception keeps the error code of the service only
+     * in its plain form.
+     *
+     * @dataProvider server_code_provider
+     * @param string $code Code from the service.
+     * @param string $expected Code kept in the exception.
+     */
+    public function test_the_error_code_is_kept_only_in_its_plain_form(string $code, string $expected): void {
+        $body = json_encode(['error' => ['code' => $code]]);
+        foreach ([429 => 'api_rate_limited', 503 => 'api_unavailable'] as $status => $errorcode) {
+            $mock = new MockHandler([new Response($status, [], $body)]);
+            $e = $this->expect_api_error($errorcode, fn() => self::client($mock)
+                ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+            $this->assertSame($expected, $e->servercode, $status . ' ' . $code);
+        }
+    }
+
+    public function test_a_known_error_code_with_a_line_feed_is_not_known(): void {
+        $mock = new MockHandler([new Response(422, [], json_encode(['error' => ['code' => "invalid_request\n"]]))]);
+        $e = $this->expect_api_error('api_unexpected', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame('', $e->servercode);
+        $this->assertSame(422, $e->a);
+    }
+
+    /**
      * Error codes of the service that have their own message.
      *
      * @return array
@@ -379,6 +437,49 @@ final class client_test extends \advanced_testcase {
         $service->state['mode'] = 'bad_status';
         $this->expect_api_error('status_response_invalid', fn() => self::client($service->handler())
             ->status(self::endpoint(), $pair, fake_service::SITE_ID));
+    }
+
+    /**
+     * Status values: the value, and whether the client takes it.
+     *
+     * A status is 1 to 40 lower-case letters or underscores.
+     *
+     * @return array
+     */
+    public static function status_value_provider(): array {
+        return [
+            'a word' => ['active', true],
+            'words joined by an underscore' => ['awaiting_enrollment', true],
+            'the longest status' => [str_repeat('a', 40), true],
+            'one character too long' => [str_repeat('a', 41), false],
+            'empty' => ['', false],
+            'upper case' => ['Active', false],
+            'a digit' => ['active1', false],
+            'a space' => ['not active', false],
+            'a trailing line feed' => ["active\n", false],
+            'a leading line feed' => ["\nactive", false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('status_value_provider')]
+    /**
+     * The status text is shown on the pages, so only a plain word is taken.
+     *
+     * @dataProvider status_value_provider
+     * @param string $status The status the service gives.
+     * @param bool $accepted Whether the client takes it.
+     */
+    public function test_the_status_value_is_checked(string $status, bool $accepted): void {
+        $service = self::service();
+        $pair = signing_keypair::generate();
+        self::client($service->handler())->enroll(self::endpoint(), $pair, self::request());
+        $service->state['status'] = $status;
+        $client = self::client($service->handler());
+        if ($accepted) {
+            $this->assertSame($status, $client->status(self::endpoint(), $pair, fake_service::SITE_ID)->status);
+            return;
+        }
+        $this->expect_api_error('status_response_invalid', fn() => $client->status(self::endpoint(), $pair, fake_service::SITE_ID));
     }
 
     public function test_create_reads_the_site_settings(): void {

@@ -41,8 +41,8 @@ final class client {
         'nonce_reused', 'enrollment_code_invalid', 'site_not_enrolled', 'ip_not_allowed', 'encryption_key_mismatch',
         'wwwroot_mismatch', 'body_too_large'];
 
-    /** @var string Pattern of a site ID. */
-    private const UUID = '/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/';
+    /** @var string Pattern of a site ID. It ends with \z: $ also matches before a final line feed. */
+    private const UUID = '/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/';
 
     /** @var transport Transport. */
     private transport $transport;
@@ -171,11 +171,12 @@ final class client {
             throw self::error($response, $now);
         }
         $data = json_decode($response->body, true, 8);
+        // The status is shown on pages, so its pattern ends with \z: $ also matches before a final line feed.
         if (
             !is_array($data)
             || ($data['site_id'] ?? null) !== $siteid
             || !is_string($data['status'] ?? null)
-            || preg_match('/^[a-z_]{1,40}$/', $data['status']) !== 1
+            || preg_match('/^[a-z_]{1,40}\z/', $data['status']) !== 1
             || !is_int($data['server_time'] ?? null)
             || !is_array($data['instructions'] ?? null)
         ) {
@@ -194,7 +195,8 @@ final class client {
     private static function error(response $response, int $now): api_exception {
         $data = json_decode($response->body, true, 8);
         $error = is_array($data) && is_array($data['error'] ?? null) ? $data['error'] : [];
-        $code = is_string($error['code'] ?? null) && preg_match('/^[a-z_]{1,64}$/', $error['code']) === 1 ? $error['code'] : '';
+        // The pattern ends with \z: $ also matches before a final line feed, which the exception would keep.
+        $code = is_string($error['code'] ?? null) && preg_match('/^[a-z_]{1,64}\z/', $error['code']) === 1 ? $error['code'] : '';
         if ($response->status === 429 || $response->status === 503) {
             return new api_exception(
                 $response->status === 429 ? 'api_rate_limited' : 'api_unavailable',
