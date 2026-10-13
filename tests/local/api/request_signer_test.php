@@ -36,6 +36,9 @@ final class request_signer_test extends \basic_testcase {
     /** @var string A site ID. */
     private const SITE = '11111111-2222-4333-8444-555555555555';
 
+    /** @var string The body of an enrolment request: it holds a registration code. */
+    private const BODY = '{"enrollment_code":"SEC-BK-7QF2-MXA9-PDTW-4HJC-8NR5"}';
+
     /**
      * The test key pair.
      *
@@ -195,5 +198,103 @@ final class request_signer_test extends \basic_testcase {
         );
         $this->assertSame('Az09_-Az09_-Az09_-Az09', $headers['X-SecBackup-Nonce']);
         $this->assertSame('0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d', $headers['X-SecBackup-Site']);
+    }
+
+    public function test_the_key_pair_and_the_body_parameters_are_marked_sensitive(): void {
+        $parameters = (new \ReflectionMethod(request_signer::class, 'headers'))->getParameters();
+        $marked = [];
+        foreach ($parameters as $parameter) {
+            if ($parameter->getAttributes(\SensitiveParameter::class) !== []) {
+                $marked[] = $parameter->getName();
+            }
+        }
+        $this->assertSame(['pair', 'body'], $marked);
+    }
+
+    /**
+     * Calls that make headers() throw: from its own checks, and from the endpoint it asks for the path.
+     *
+     * @return array
+     */
+    public static function failing_call_provider(): array {
+        return [
+            'a nonce in a wrong shape' => [['nonce' => 'short']],
+            'a site ID in a wrong shape' => [['siteid' => 'not-a-uuid']],
+            'a name of the call that the endpoint refuses' => [['relative' => 'Not/Allowed']],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_call_provider')]
+    /**
+     * An exception thrown in headers() keeps neither the key pair nor the body in the arguments of its trace.
+     *
+     * @dataProvider failing_call_provider
+     * @param array $override Arguments of the call that replace the good ones.
+     */
+    public function test_a_failure_does_not_leave_the_key_pair_or_the_body_in_the_trace(array $override): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the key pair and the body stay'
+                . ' in the arguments of the trace there.');
+        }
+        $call = $override + ['relative' => 'enroll', 'siteid' => null, 'nonce' => 'MDEyMzQ1Njc4OWFiY2RlZg'];
+        $pair = self::pair();
+
+        // A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the
+        // calls: with it on, the check would find nothing whatever the code does.
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        $this->assertNotFalse($previous);
+        try {
+            $control = self::exception_created_with($pair, self::BODY);
+            $this->assertTrue(self::trace_has_argument($control, $pair), 'A trace shows the key pair when PHP keeps arguments.');
+            $this->assertTrue(self::trace_has_argument($control, self::BODY), 'A trace shows the body when PHP keeps arguments.');
+            try {
+                request_signer::headers(
+                    $pair,
+                    'POST',
+                    self::endpoint(),
+                    $call['relative'],
+                    self::BODY,
+                    $call['siteid'],
+                    1760000123,
+                    $call['nonce']
+                );
+            } catch (\coding_exception $e) {
+                $this->assertFalse(self::trace_has_argument($e, $pair), 'The key pair is in the arguments of the trace.');
+                $this->assertFalse(self::trace_has_argument($e, self::BODY), 'The body is in the arguments of the trace.');
+                return;
+            }
+            $this->fail('headers() has to throw a coding_exception');
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+    }
+
+    /**
+     * Returns an exception created in a call with the arguments, so that its trace holds them when PHP keeps arguments.
+     *
+     * @param signing_keypair $pair A key pair.
+     * @param string $body A body.
+     * @return \Exception
+     */
+    private static function exception_created_with(signing_keypair $pair, string $body): \Exception {
+        return new \Exception('Control exception for ' . $pair::class . ' and ' . strlen($body) . ' bytes');
+    }
+
+    /**
+     * Tells whether an argument in the trace of an exception is the value (the same object, or an equal string).
+     *
+     * @param \Throwable $exception The exception.
+     * @param mixed $value The key pair or the text.
+     * @return bool
+     */
+    private static function trace_has_argument(\Throwable $exception, mixed $value): bool {
+        foreach ($exception->getTrace() as $frame) {
+            foreach ($frame['args'] ?? [] as $argument) {
+                if ($argument === $value) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

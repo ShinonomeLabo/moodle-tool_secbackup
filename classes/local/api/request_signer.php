@@ -70,22 +70,26 @@ final class request_signer {
     /**
      * Headers of a signed request.
      *
-     * @param signing_keypair $pair The site's key pair.
+     * The types of $pair and $body are written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see
+     * signing_keypair::__construct()). The attributes keep the key pair and the body, which holds the registration code
+     * of an enrolment, out of the trace of an exception thrown here or in a call made from here.
+     *
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The site's key pair.
      * @param string $method GET or POST.
      * @param endpoint $endpoint Connection URL.
      * @param string $relative Name of the API call, such as "status".
-     * @param string $body JSON body, or an empty string.
+     * @param #[|\SensitiveParameter|]|string $body JSON body, or an empty string.
      * @param string|null $siteid The site's ID, or null for the enrolment request.
      * @param int $timestamp UNIX time.
      * @param string $nonce Nonce from new_nonce().
      * @return string[] Header values by name.
      */
     public static function headers(
-        signing_keypair $pair,
+        #[\SensitiveParameter] signing_keypair $pair,
         string $method,
         endpoint $endpoint,
         string $relative,
-        string $body,
+        #[\SensitiveParameter] string $body,
         ?string $siteid,
         int $timestamp,
         string $nonce
