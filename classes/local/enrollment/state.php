@@ -240,13 +240,10 @@ final class state {
             signing_keys::save($pair);
             $transaction->allow_commit();
         } catch (\Throwable $e) {
-            try {
-                // Rethrows the exception.
-                $transaction->rollback($e);
-            } finally {
-                // The rollback does not touch the cache of the settings, which holds the values set above.
-                \cache_helper::invalidate_by_definition('core', 'config', [], 'tool_secbackup');
-            }
+            // The rollback does not touch the cache of the settings, which holds the values set above.
+            \cache_helper::invalidate_by_definition('core', 'config', [], 'tool_secbackup');
+            // Rethrows the exception.
+            $transaction->rollback($e);
         }
     }
 
