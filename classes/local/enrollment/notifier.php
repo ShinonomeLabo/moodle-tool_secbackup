@@ -25,7 +25,14 @@ namespace tool_secbackup\local\enrollment;
  */
 final class notifier {
     /**
-     * Sends a message to every site administrator.
+     * Sends a message to every site administrator, in the language of each.
+     *
+     * A failure to tell one administrator is reported with debugging() and does not stop the others, and does not
+     * leave this method: what the message tells has happened already.
+     *
+     * The platform and site names come from the service and are shown as text: the HTML of the message is made from
+     * the escaped text, because Moodle would otherwise make the HTML part of an e-mail from the plain text without
+     * escaping it.
      *
      * @param string $kind enrolled, reenrolled or deregistered.
      * @param string $platformname Platform name.
@@ -34,30 +41,40 @@ final class notifier {
      */
     public static function send(string $kind, string $platformname, string $sitename, string $endpoint): void {
         global $USER;
-        $url = new \moodle_url('/admin/tool/secbackup/index.php');
-        $a = (object) [
-            'platform' => $platformname,
-            'site' => $sitename,
-            'endpoint' => $endpoint,
-            'user' => empty($USER->id) ? get_string('notifier_system', 'tool_secbackup') : fullname($USER),
-            'url' => $url->out(false),
-        ];
+        $url = (new \moodle_url('/admin/tool/secbackup/index.php'))->out(false);
+        $strings = get_string_manager();
         foreach (get_admins() as $admin) {
-            $message = new \core\message\message();
-            $message->component = 'tool_secbackup';
-            $message->name = 'connection';
-            $message->courseid = SITEID;
-            $message->userfrom = \core_user::get_noreply_user();
-            $message->userto = $admin;
-            $message->subject = get_string('message_' . $kind . '_subject', 'tool_secbackup', $a);
-            $message->fullmessage = get_string('message_' . $kind . '_body', 'tool_secbackup', $a);
-            $message->fullmessageformat = FORMAT_PLAIN;
-            $message->fullmessagehtml = '';
-            $message->smallmessage = $message->subject;
-            $message->notification = 1;
-            $message->contexturl = $a->url;
-            $message->contexturlname = get_string('pluginname', 'tool_secbackup');
-            message_send($message);
+            try {
+                $lang = $admin->lang;
+                $a = (object) [
+                    'platform' => $platformname,
+                    'site' => $sitename,
+                    'endpoint' => $endpoint,
+                    'user' => empty($USER->id) ? $strings->get_string('notifier_system', 'tool_secbackup', null, $lang) :
+                        fullname($USER),
+                    'url' => $url,
+                ];
+                $message = new \core\message\message();
+                $message->component = 'tool_secbackup';
+                $message->name = 'connection';
+                $message->courseid = SITEID;
+                $message->userfrom = \core_user::get_noreply_user();
+                $message->userto = $admin;
+                $message->subject = $strings->get_string('message_' . $kind . '_subject', 'tool_secbackup', $a, $lang);
+                $message->fullmessage = $strings->get_string('message_' . $kind . '_body', 'tool_secbackup', $a, $lang);
+                $message->fullmessageformat = FORMAT_PLAIN;
+                $message->fullmessagehtml = text_to_html(s($message->fullmessage));
+                $message->smallmessage = $message->subject;
+                $message->notification = 1;
+                $message->contexturl = $url;
+                $message->contexturlname = $strings->get_string('pluginname', 'tool_secbackup', null, $lang);
+                message_send($message);
+            } catch (\Throwable $e) {
+                debugging(
+                    'The message about the connection could not be sent to the user ' . $admin->id . ': ' . $e::class,
+                    DEBUG_DEVELOPER
+                );
+            }
         }
     }
 }
