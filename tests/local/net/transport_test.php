@@ -105,6 +105,30 @@ final class transport_test extends \advanced_testcase {
         $this->assertFalse($options['allow_redirects']);
         $this->assertSame('', $options['proxy']);
         $this->assertSame(30, $options['timeout']);
+        $this->assertSame(10, $options['connect_timeout']);
+    }
+
+    public function test_the_pinned_address_names_the_port_of_the_connection_url(): void {
+        $settings = developer_settings::from_value(['allowprivatehosts' => true]);
+        $endpoint = endpoint::parse('https://app.example.test:8443/api/lms-backup/v1', $settings);
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        (new transport($settings, network_fakes::passing_guard(), $mock))->send('GET', $endpoint, 'status', [], '');
+        $this->assertSame(['app.example.test:8443:13.225.9.9'], $mock->getLastOptions()['curl'][CURLOPT_RESOLVE]);
+        $this->assertSame('https://app.example.test:8443/api/lms-backup/v1/status', (string) $mock->getLastRequest()->getUri());
+    }
+
+    public function test_the_host_name_of_the_connection_url_is_the_one_that_is_checked(): void {
+        $asked = [];
+        $guard = new dns_guard(
+            network_fakes::ranges(),
+            [network_fakes::doh('cloudflare', ['13.225.1.1'])],
+            static function (string $host) use (&$asked): array {
+                $asked[] = $host;
+                return ['13.225.9.9'];
+            }
+        );
+        self::send(new MockHandler([new Response(200, [], '{}')]), $guard);
+        $this->assertSame([network_fakes::HOST], $asked);
     }
 
     public function test_the_request_names_the_plugin_and_nothing_of_the_site(): void {
@@ -125,7 +149,12 @@ final class transport_test extends \advanced_testcase {
 
     public function test_a_user_agent_in_the_headers_is_replaced(): void {
         $mock = new MockHandler([new Response(200, [], '{}')]);
-        $headers = ['user-agent' => 'Browser/1.0 (+https://lms.example.ac.jp)', 'Accept' => 'application/json'];
+        $headers = [
+            'user-agent' => 'Browser/1.0 (+https://lms.example.ac.jp)',
+            'User-Agent' => 'Other/2.0',
+            'USER-AGENT' => 'Third/3.0',
+            'Accept' => 'application/json',
+        ];
         $transport = new transport(developer_settings::from_value(null), network_fakes::passing_guard(), $mock);
         $transport->send('GET', self::endpoint(), 'status', $headers, '');
         $request = $mock->getLastRequest();
@@ -353,6 +382,94 @@ final class transport_test extends \advanced_testcase {
             new RequestException('cURL error 42', new Request('POST', 'https://app.example.test/'), null, null, ['errno' => 42]),
         ]));
         $this->assertSame('cURL error 42', $e->debuginfo);
+    }
+
+    /**
+     * Error numbers of curl, with the kind of failure each one makes.
+     *
+     * @return array
+     */
+    public static function curl_error_provider(): array {
+        $rows = [];
+        foreach ([35, 51, 58, 60, 77, 83, 90, 91] as $errno) {
+            $rows["error $errno is a certificate or TLS failure"] = [$errno, 'transport_tls'];
+        }
+        foreach ([5, 6, 7, 28, 52, 55, 56] as $errno) {
+            $rows["error $errno is a failed or timed out connection"] = [$errno, 'transport_connect'];
+        }
+        foreach ([1, 3, 18, 23, 47, 61] as $errno) {
+            $rows["error $errno is another failure"] = [$errno, 'transport_failed'];
+        }
+        return $rows;
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('curl_error_provider')]
+    /**
+     * An error number of curl decides the kind of failure, and is all the debug information that is kept.
+     *
+     * @dataProvider curl_error_provider
+     * @param int $errno The error number.
+     * @param string $code The error code of the exception.
+     */
+    public function test_a_curl_error_gives_the_kind_of_failure(int $errno, string $code): void {
+        $request = new Request('POST', 'https://app.example.test/');
+        $e = $this->expect_failure($code, new MockHandler([
+            new RequestException('cURL error ' . $errno . ': text (see https://app.example.test/?secret=1)', $request, null, null, [
+                'errno' => $errno,
+            ]),
+        ]));
+        $this->assertSame('cURL error ' . $errno, $e->debuginfo);
+    }
+
+    public function test_a_certificate_failure_that_guzzle_reports_as_a_connection_failure_is_still_a_certificate_failure(): void {
+        // Guzzle makes a ConnectException of the error 35, which is a failed TLS handshake.
+        $e = $this->expect_failure('transport_tls', new MockHandler([
+            new ConnectException('cURL error 35', new Request('POST', 'https://app.example.test/'), null, ['errno' => 35]),
+        ]));
+        $this->assertSame('cURL error 35', $e->debuginfo);
+    }
+
+    public function test_a_connection_failure_without_an_error_number_names_the_class(): void {
+        $e = $this->expect_failure('transport_connect', new MockHandler([
+            new ConnectException('Could not connect', new Request('POST', 'https://app.example.test/')),
+        ]));
+        $this->assertSame(ConnectException::class, $e->debuginfo);
+    }
+
+    /**
+     * Status codes around the redirects: the answer for the code, or null for a response that is returned.
+     *
+     * @return array
+     */
+    public static function redirect_status_provider(): array {
+        return [
+            '299 is returned' => [299, null],
+            '300 is a redirect' => [300, 'HTTP 300'],
+            '301 is a redirect' => [301, 'HTTP 301'],
+            '303 is a redirect' => [303, 'HTTP 303'],
+            '307 is a redirect' => [307, 'HTTP 307'],
+            '308 is a redirect' => [308, 'HTTP 308'],
+            '399 is a redirect' => [399, 'HTTP 399'],
+            '400 is returned' => [400, null],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('redirect_status_provider')]
+    /**
+     * Every 3xx status is refused, and the debug information names the status. Other statuses are returned as they are.
+     *
+     * @dataProvider redirect_status_provider
+     * @param int $status The HTTP status.
+     * @param string|null $debuginfo The debug information of the refusal, or null for a response that is returned.
+     */
+    public function test_every_redirect_status_is_refused(int $status, ?string $debuginfo): void {
+        $mock = new MockHandler([new Response($status, [], '{}')]);
+        if ($debuginfo === null) {
+            $this->assertSame($status, self::send($mock)->status);
+            return;
+        }
+        $e = $this->expect_failure('transport_redirect', $mock);
+        $this->assertSame($debuginfo, $e->debuginfo);
     }
 
     public function test_certificate_failure_is_reported_without_the_url(): void {

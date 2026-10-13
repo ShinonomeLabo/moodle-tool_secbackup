@@ -101,7 +101,8 @@ final class transport {
      * @param #[|\SensitiveParameter|]|string[] $headers Headers by name.
      * @param #[|\SensitiveParameter|]|string $body Body.
      * @return response
-     * @throws \coding_exception When the method is not GET or POST, or a GET request has a body: that is a mistake of the caller.
+     * @throws \coding_exception When the method is not GET or POST, a GET request has a body, or the name of the call is not
+     *         allowed: that is a mistake of the caller.
      * @throws transport_exception When the checks fail or the connection fails.
      */
     public function send(
