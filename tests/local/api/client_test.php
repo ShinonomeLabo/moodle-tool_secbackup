@@ -191,7 +191,15 @@ final class client_test extends \advanced_testcase {
             'site id in upper case' => [['site_id' => 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'], 'site_id'],
             'site id one character too long' => [['site_id' => fake_service::SITE_ID . '0'], 'site_id'],
             'empty site name' => [['site_name' => '  '], 'site_name'],
+            'long site name' => [['site_name' => str_repeat('a', 256)], 'site_name'],
+            'site name of 256 characters with accents' => [['site_name' => str_repeat("\u{E9}", 256)], 'site_name'],
+            'empty platform name' => [['platform_name' => "\t "], 'platform_name'],
+            'long platform name in japanese' => [['platform_name' => str_repeat("\u{3042}", 101)], 'platform_name'],
             'line separator in site name' => [['site_name' => "a\u{2028}b"], 'site_name'],
+            'paragraph separator in site name' => [['site_name' => "a\u{2029}b"], 'site_name'],
+            'format character in site name' => [['site_name' => "a\u{200B}b"], 'site_name'],
+            'format character in platform name' => [['platform_name' => "a\u{200B}b"], 'platform_name'],
+            'line feed in site name' => [['site_name' => "a\nb"], 'site_name'],
             'control character in platform name' => [['platform_name' => "a\x07b"], 'platform_name'],
             'long platform name' => [['platform_name' => str_repeat('a', 101)], 'platform_name'],
             'local time' => [['enrolled_at' => '2026-10-12 00:00:00'], 'enrolled_at'],
@@ -219,6 +227,51 @@ final class client_test extends \advanced_testcase {
         $service = self::service(['enrollpayload' => ['site_id' => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee']]);
         $result = self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
         $this->assertSame('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', $result->siteid);
+    }
+
+    public function test_names_of_the_longest_length_are_taken_by_characters_and_not_by_bytes(): void {
+        // The service cuts a platform name to 100 characters, and 100 Japanese characters are 300 bytes.
+        $names = ['site_name' => str_repeat("\u{3042}", 255), 'platform_name' => str_repeat("\u{3042}", 100)];
+        $service = self::service(['enrollpayload' => $names]);
+        $result = self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
+        $this->assertSame($names['site_name'], $result->sitename);
+        $this->assertSame($names['platform_name'], $result->platformname);
+    }
+
+    /**
+     * Ways to write the connection URL of the answer that mean the connection URL of the request.
+     *
+     * @return array
+     */
+    public static function same_url_provider(): array {
+        return [
+            'upper case host' => ['https://APP.EXAMPLE.TEST/api/lms-backup/v1'],
+            'a slash at the end' => ['https://app.example.test/api/lms-backup/v1/'],
+            'the standard port' => ['https://app.example.test:443/api/lms-backup/v1'],
+            'white space around' => ["  https://app.example.test/api/lms-backup/v1 \n"],
+            'upper case scheme' => ['HTTPS://app.example.test/api/lms-backup/v1'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('same_url_provider')]
+    /**
+     * The connection URL of the answer is compared in its normal form, and the result holds the normal form.
+     *
+     * @dataProvider same_url_provider
+     * @param string $apibase The connection URL as the answer writes it.
+     */
+    public function test_the_connection_url_of_the_answer_may_be_written_in_another_way(string $apibase): void {
+        $service = self::service(['enrollpayload' => ['api_base' => $apibase]]);
+        $result = self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
+        $this->assertSame(self::API, $result->apibase);
+    }
+
+    public function test_the_connection_url_of_the_request_may_be_written_in_another_way(): void {
+        $service = self::service();
+        $endpoint = endpoint::parse(" HTTPS://App.Example.TEST:443/api/lms-backup/v1/ ", developer_settings::from_value(null));
+        $result = self::client($service->handler())->enroll($endpoint, signing_keypair::generate(), self::request());
+        $this->assertSame(self::API, $result->apibase);
+        $this->assertSame(['POST /api/lms-backup/v1/enroll'], $service->state['requests']);
     }
 
     public function test_site_name_is_trimmed(): void {
@@ -298,6 +351,60 @@ final class client_test extends \advanced_testcase {
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
     }
 
+    /**
+     * The time that the service gives in a clock error, as it is written in the answer, with the time the client takes from
+     * it and the minutes the message shows (both null when the time is not taken).
+     *
+     * The answer is not signed, so a time is taken only when it is a whole number of 0 to 999999999999, the times that a
+     * request can carry. The client reads its own clock at NOW.
+     *
+     * @return array
+     */
+    public static function service_time_provider(): array {
+        $now = self::NOW;
+        return [
+            'twenty seconds ahead is one minute' => [(string) ($now + 20), $now + 20, 1],
+            'eighty-nine seconds ahead is one minute' => [(string) ($now + 89), $now + 89, 1],
+            'ninety seconds ahead is two minutes' => [(string) ($now + 90), $now + 90, 2],
+            'ten minutes behind' => [(string) ($now - 600), $now - 600, 10],
+            'the same time is one minute' => [(string) $now, $now, 1],
+            'the smallest time' => ['0', 0, 29333333],
+            'the largest time' => ['999999999999', 999999999999, 16637333333],
+            'a negative time' => ['-1', null, null],
+            'the smallest integer' => ['-9223372036854775808', null, null],
+            'a time of 13 digits' => ['1000000000000', null, null],
+            'the largest integer' => ['9223372036854775807', null, null],
+            'a number beyond the integers' => ['9223372036854775808', null, null],
+            'a time with a fraction' => ['1760000000.5', null, null],
+            'a time as text' => ['"1760000000"', null, null],
+            'a time that is true' => ['true', null, null],
+            'a time that is null' => ['null', null, null],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('service_time_provider')]
+    /**
+     * The message names the difference of the clocks in minutes only when the service gave a time that can be one.
+     *
+     * @dataProvider service_time_provider
+     * @param string $literal The time as written in the answer.
+     * @param int|null $servertime The time that the client takes, or null.
+     * @param int|null $minutes The minutes in the message, or null for the message without minutes.
+     */
+    public function test_the_service_time_is_used_only_when_it_can_be_a_time(
+        string $literal,
+        ?int $servertime,
+        ?int $minutes
+    ): void {
+        $body = '{"error":{"code":"timestamp_out_of_range","server_time":' . $literal . '}}';
+        $mock = new MockHandler([new Response(401, [], $body)]);
+        $errorcode = $minutes === null ? 'api_timestamp_out_of_range' : 'api_timestamp_out_of_range_minutes';
+        $e = $this->expect_api_error($errorcode, fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame($minutes, $e->a);
+        $this->assertSame($servertime, $e->servertime);
+    }
+
     public function test_busy_service_gives_the_retry_time(): void {
         $e = $this->expect_api_error('api_unavailable', fn() => self::client(self::service(['mode' => 'unavailable'])->handler())
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
@@ -305,6 +412,21 @@ final class client_test extends \advanced_testcase {
         $e = $this->expect_api_error('api_rate_limited', fn() => self::client(self::service(['mode' => 'rate_limited'])->handler())
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame(30, $e->retryafter);
+    }
+
+    public function test_the_retry_time_is_kept_for_the_other_answers_too(): void {
+        $mock = new MockHandler([new Response(500, ['Retry-After' => '45'], '<html>error</html>')]);
+        $e = $this->expect_api_error('api_unexpected', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(45, $e->retryafter);
+        $mock = new MockHandler([new Response(409, ['Retry-After' => '45'], '{"error":{"code":"wwwroot_mismatch"}}')]);
+        $e = $this->expect_api_error('api_wwwroot_mismatch', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(45, $e->retryafter);
+        $mock = new MockHandler([new Response(409, [], '{"error":{"code":"wwwroot_mismatch"}}')]);
+        $e = $this->expect_api_error('api_wwwroot_mismatch', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertNull($e->retryafter);
     }
 
     public function test_unexpected_answers_show_only_the_http_status(): void {
@@ -368,6 +490,46 @@ final class client_test extends \advanced_testcase {
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame('', $e->servercode);
         $this->assertSame(422, $e->a);
+    }
+
+    /**
+     * Bodies of an error answer that tell no error code.
+     *
+     * @return array
+     */
+    public static function unreadable_error_provider(): array {
+        return [
+            'nothing' => [''],
+            'a page' => ['<html>error</html>'],
+            'null' => ['null'],
+            'a list' => ['[]'],
+            'a number' => ['422'],
+            'an error that is text' => ['{"error":"Something is wrong"}'],
+            'an error that is a list' => ['{"error":[]}'],
+            'an error without a code' => ['{"error":{"message":"No code"}}'],
+            'a code that is a number' => ['{"error":{"code":401}}'],
+            'a code that is a list' => ['{"error":{"code":["invalid_request"]}}'],
+            'a code that is null' => ['{"error":{"code":null}}'],
+            'more levels than the client reads' => [
+                '{"error":{"code":"invalid_request","more":' . str_repeat('[', 9) . str_repeat(']', 9) . '}}',
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unreadable_error_provider')]
+    /**
+     * An error answer without a readable error code gives the message about an unexpected answer, with the HTTP status.
+     *
+     * @dataProvider unreadable_error_provider
+     * @param string $body The body of the answer.
+     */
+    public function test_an_error_answer_without_a_code_is_unexpected(string $body): void {
+        $mock = new MockHandler([new Response(422, [], $body)]);
+        $e = $this->expect_api_error('api_unexpected', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(422, $e->a);
+        $this->assertSame(422, $e->httpstatus);
+        $this->assertSame('', $e->servercode);
     }
 
     /**
@@ -442,6 +604,84 @@ final class client_test extends \advanced_testcase {
     }
 
     /**
+     * A status answer as the service gives it, with some fields replaced or left out.
+     *
+     * @param array $changes Fields to replace; a field set to null is left out.
+     * @return string The body.
+     */
+    private static function status_body(array $changes): string {
+        $fields = array_merge([
+            'site_id' => fake_service::SITE_ID,
+            'status' => 'active',
+            'server_time' => self::NOW,
+            'instructions' => [],
+        ], $changes);
+        return json_encode(array_filter($fields, static fn($value): bool => $value !== null));
+    }
+
+    /**
+     * Bodies of a status answer that cannot be used.
+     *
+     * @return array
+     */
+    public static function unreadable_status_provider(): array {
+        return [
+            'nothing' => [''],
+            'a page' => ['<html>ok</html>'],
+            'null' => ['null'],
+            'a list' => ['[]'],
+            'a number' => ['200'],
+            'no site id' => [self::status_body(['site_id' => null])],
+            'a site id that is not the site' => [self::status_body(['site_id' => '00000000-0000-4000-8000-000000000000'])],
+            'a site id that is a number' => [self::status_body(['site_id' => 1])],
+            'no status' => [self::status_body(['status' => null])],
+            'a status that is a number' => [self::status_body(['status' => 1])],
+            'no server time' => [self::status_body(['server_time' => null])],
+            'a server time as text' => [self::status_body(['server_time' => '1760000000'])],
+            'a server time with a fraction' => [self::status_body(['server_time' => 1760000000.5])],
+            'a negative server time' => [self::status_body(['server_time' => -1])],
+            'the smallest integer as the server time' => [self::status_body(['server_time' => PHP_INT_MIN])],
+            'a server time of 13 digits' => [self::status_body(['server_time' => 1000000000000])],
+            'the largest integer as the server time' => [self::status_body(['server_time' => PHP_INT_MAX])],
+            'no instructions' => [self::status_body(['instructions' => null])],
+            'instructions as text' => [self::status_body(['instructions' => 'none'])],
+            'more levels than the client reads' => [self::status_body(['instructions' => [[[[[[[[[]]]]]]]]]])],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unreadable_status_provider')]
+    /**
+     * A status answer that is not in the form of the service is refused as a whole.
+     *
+     * @dataProvider unreadable_status_provider
+     * @param string $body The body of the answer.
+     */
+    public function test_a_status_answer_that_cannot_be_used_is_refused(string $body): void {
+        $mock = new MockHandler([new Response(200, [], $body)]);
+        $e = $this->expect_api_error('status_response_invalid', fn() => self::client($mock)
+            ->status(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID));
+        $this->assertSame(200, $e->httpstatus);
+        $this->assertSame('', $e->servercode);
+    }
+
+    public function test_the_edges_of_the_server_time_and_the_instructions_are_counted(): void {
+        $pair = signing_keypair::generate();
+        $first = new MockHandler([new Response(200, [], self::status_body(['server_time' => 0]))]);
+        $result = self::client($first)->status(self::endpoint(), $pair, fake_service::SITE_ID);
+        $this->assertSame(0, $result->servertime);
+        $this->assertSame(-self::NOW, $result->clockskew);
+        $this->assertSame(0, $result->instructions);
+
+        $instructions = [['kind' => 'a'], ['kind' => 'b']];
+        $body = self::status_body(['server_time' => 999999999999, 'instructions' => $instructions]);
+        $last = new MockHandler([new Response(200, [], $body)]);
+        $result = self::client($last)->status(self::endpoint(), $pair, fake_service::SITE_ID);
+        $this->assertSame(999999999999, $result->servertime);
+        $this->assertSame(999999999999 - self::NOW, $result->clockskew);
+        $this->assertSame(2, $result->instructions);
+    }
+
+    /**
      * Status values: the value, and whether the client takes it.
      *
      * A status is 1 to 40 lower-case letters or underscores.
@@ -482,6 +722,87 @@ final class client_test extends \advanced_testcase {
             return;
         }
         $this->expect_api_error('status_response_invalid', fn() => $client->status(self::endpoint(), $pair, fake_service::SITE_ID));
+    }
+
+    public function test_the_message_with_the_address_shows_it(): void {
+        $service = self::service(['mode' => 'ip_not_allowed']);
+        $e = $this->expect_api_error('api_ip_not_allowed_address', fn() => self::client($service->handler())
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(get_string('api_ip_not_allowed_address', 'tool_secbackup', '198.51.100.7'), $e->message());
+        $this->assertStringContainsString('198.51.100.7', $e->message());
+    }
+
+    public function test_the_message_with_the_minutes_shows_them(): void {
+        $client = self::client(self::service()->handler(), self::NOW + 600);
+        $e = $this->expect_api_error('api_timestamp_out_of_range_minutes', fn() => $client
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(get_string('api_timestamp_out_of_range_minutes', 'tool_secbackup', 10), $e->message());
+        $this->assertStringContainsString('10', $e->message());
+    }
+
+    public function test_the_message_for_an_unexpected_answer_shows_the_http_status_and_nothing_of_the_answer(): void {
+        $mock = new MockHandler([new Response(502, [], '{"error":{"code":"x","message":"Call 000-0000 now"}}')]);
+        $e = $this->expect_api_error('api_unexpected', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame(get_string('api_unexpected', 'tool_secbackup', 502), $e->message());
+        $this->assertStringContainsString('502', $e->message());
+        $this->assertStringNotContainsString('000-0000', $e->message());
+        $this->assertStringNotContainsString('000-0000', $e->getMessage());
+    }
+
+    public function test_the_error_codes_are_language_strings(): void {
+        $codes = ['api_invalid_request', 'api_signature_required', 'api_signature_invalid', 'api_timestamp_out_of_range',
+            'api_nonce_reused', 'api_enrollment_code_invalid', 'api_site_not_enrolled', 'api_ip_not_allowed',
+            'api_encryption_key_mismatch', 'api_wwwroot_mismatch', 'api_body_too_large', 'api_ip_not_allowed_address',
+            'api_timestamp_out_of_range_minutes', 'api_rate_limited', 'api_unavailable', 'api_unexpected',
+            'enroll_response_invalid', 'enroll_response_mismatch', 'status_response_invalid'];
+        foreach ($codes as $code) {
+            $this->assertTrue(get_string_manager()->string_exists($code, 'tool_secbackup'), $code);
+        }
+    }
+
+    public function test_enroll_sends_one_signed_post_with_the_documented_headers_and_fields(): void {
+        $service = self::service();
+        self::client($service->handler())->enroll(self::endpoint(), signing_keypair::generate(), self::request());
+        $this->assertSame(['POST /api/lms-backup/v1/enroll'], $service->state['requests']);
+        $headers = $service->state['lastheaders'];
+        $this->assertSame((string) self::NOW, $headers['x-secbackup-timestamp']);
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{22}\z/', $headers['x-secbackup-nonce']);
+        $this->assertMatchesRegularExpression('/^[A-Za-z0-9_-]{86}\z/', $headers['x-secbackup-signature']);
+        $this->assertSame('application/json', $headers['accept']);
+        $this->assertSame('application/json', $headers['content-type']);
+        $this->assertSame('tool_secbackup', $headers['user-agent']);
+        $this->assertArrayNotHasKey('x-secbackup-site', $headers);
+        // The service refuses a request with a field it does not know.
+        $fields = array_keys(json_decode($service->state['lastbody'], true));
+        sort($fields);
+        $expected = ['encryption_key_fingerprint', 'enrollment_code', 'plugin_version', 'signing_public_key', 'site'];
+        $this->assertSame($expected, $fields);
+    }
+
+    public function test_status_sends_one_signed_get_with_the_site_and_no_body(): void {
+        $service = self::service();
+        $pair = signing_keypair::generate();
+        self::client($service->handler())->enroll(self::endpoint(), $pair, self::request());
+        self::client($service->handler())->status(self::endpoint(), $pair, fake_service::SITE_ID);
+        $this->assertSame(['POST /api/lms-backup/v1/enroll', 'GET /api/lms-backup/v1/status'], $service->state['requests']);
+        $headers = $service->state['lastheaders'];
+        $this->assertSame(fake_service::SITE_ID, $headers['x-secbackup-site']);
+        $this->assertSame((string) self::NOW, $headers['x-secbackup-timestamp']);
+        $this->assertSame('application/json', $headers['accept']);
+        $this->assertArrayNotHasKey('content-type', $headers);
+        $this->assertSame('', $service->state['lastbody']);
+    }
+
+    public function test_every_call_uses_a_new_nonce(): void {
+        $service = self::service();
+        $pair = signing_keypair::generate();
+        self::client($service->handler())->enroll(self::endpoint(), $pair, self::request());
+        $client = self::client($service->handler());
+        $client->status(self::endpoint(), $pair, fake_service::SITE_ID);
+        $client->status(self::endpoint(), $pair, fake_service::SITE_ID);
+        // The fake service refuses a nonce that it has seen, so three calls make three different ones.
+        $this->assertCount(3, array_unique($service->state['nonces']));
     }
 
     public function test_create_reads_the_site_settings(): void {

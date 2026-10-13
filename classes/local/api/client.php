@@ -41,6 +41,9 @@ final class client {
         'nonce_reused', 'enrollment_code_invalid', 'site_not_enrolled', 'ip_not_allowed', 'encryption_key_mismatch',
         'wwwroot_mismatch', 'body_too_large'];
 
+    /** @var int Largest time, in UNIX seconds, that is taken from an answer: 12 digits, as the service reads a timestamp. */
+    private const MAX_TIME = 999999999999;
+
     /** @var string Pattern of a site ID. It ends with \z: $ also matches before a final line feed. */
     private const UUID = '/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/';
 
@@ -189,7 +192,7 @@ final class client {
             || ($data['site_id'] ?? null) !== $siteid
             || !is_string($data['status'] ?? null)
             || preg_match('/^[a-z_]{1,40}\z/', $data['status']) !== 1
-            || !is_int($data['server_time'] ?? null)
+            || self::unix_time($data['server_time'] ?? null) === null
             || !is_array($data['instructions'] ?? null)
         ) {
             throw new api_exception('status_response_invalid', '', 200);
@@ -220,7 +223,7 @@ final class client {
         if (!in_array($code, self::KNOWN_ERRORS, true)) {
             return new api_exception('api_unexpected', '', $response->status, $response->retryafter, null, $response->status);
         }
-        $servertime = is_int($error['server_time'] ?? null) ? $error['server_time'] : null;
+        $servertime = self::unix_time($error['server_time'] ?? null);
         if ($code === 'timestamp_out_of_range' && $servertime !== null) {
             return new api_exception(
                 'api_timestamp_out_of_range_minutes',
@@ -236,6 +239,19 @@ final class client {
             return new api_exception('api_ip_not_allowed_address', $code, $response->status, null, null, $ip);
         }
         return new api_exception('api_' . $code, $code, $response->status, $response->retryafter, $servertime);
+    }
+
+    /**
+     * A time that the service gave, if it can be one.
+     *
+     * The answers that give a time are not signed, and the times are subtracted from this server's clock and shown, so a
+     * value that no clock gives (negative, or beyond the 12 digits of a timestamp) is not taken.
+     *
+     * @param mixed $value The value in the answer.
+     * @return int|null UNIX time, or null when the value is not a whole number from 0 to MAX_TIME.
+     */
+    private static function unix_time(mixed $value): ?int {
+        return is_int($value) && $value >= 0 && $value <= self::MAX_TIME ? $value : null;
     }
 
     /**

@@ -77,6 +77,28 @@ final class declarations_test extends \advanced_testcase {
         $this->assertSame($sorted, $keys, 'String ids must be in ASCII order.');
     }
 
+    /**
+     * The placeholders of a language string, such as {$a} and {$a->name}, in the order of the text.
+     *
+     * @param string $text The string.
+     * @return string[]
+     */
+    private static function placeholders(string $text): array {
+        preg_match_all('/\{\$a(?:->\w+)?\}/', $text, $matches);
+        return $matches[0];
+    }
+
+    public function test_japanese_strings_have_the_placeholders_of_the_english_ones(): void {
+        // A string that lacks the value in one language shows a message without it, and nothing fails.
+        $en = self::strings('en');
+        $withvalue = 0;
+        foreach (self::strings('ja') as $id => $text) {
+            $this->assertSame(self::placeholders($en[$id]), self::placeholders($text), $id);
+            $withvalue += self::placeholders($text) === [] ? 0 : 1;
+        }
+        $this->assertGreaterThanOrEqual(3, $withvalue, 'The strings with a value are the ones that are compared.');
+    }
+
     public function test_names_do_not_contain_the_moodle_trademark(): void {
         $this->assertStringNotContainsStringIgnoringCase('moodle', self::strings('en')['pluginname']);
         $this->assertStringNotContainsStringIgnoringCase('moodle', self::strings('ja')['pluginname']);
