@@ -112,23 +112,23 @@ final class request_signer_test extends \basic_testcase {
     }
 
     public function test_enroll_headers_have_no_site_and_a_content_type(): void {
-        $body = '{"enrollment_code":"SEC-BK-7QF2-MXA9-PDTW-4HJC-8NR5"}';
         $headers = request_signer::headers(
             self::pair(),
             'POST',
             self::endpoint(),
             'enroll',
-            $body,
+            self::BODY,
             null,
             1760000123,
             'MDEyMzQ1Njc4OWFiY2RlZg'
         );
-        $this->assertSame(
-            'ohVQ-6Q8vjSP97A5PiqIZOGJ1XgY4DT5Ttt-v2uYIewsonJ6Yx1GKkQ1yG9lTCBjqaLkgYoRirGpIFQRDcOaDw',
-            $headers['X-SecBackup-Signature']
-        );
-        $this->assertSame('application/json', $headers['Content-Type']);
-        $this->assertArrayNotHasKey('X-SecBackup-Site', $headers);
+        $this->assertSame([
+            'X-SecBackup-Timestamp' => '1760000123',
+            'X-SecBackup-Nonce' => 'MDEyMzQ1Njc4OWFiY2RlZg',
+            'X-SecBackup-Signature' => 'ohVQ-6Q8vjSP97A5PiqIZOGJ1XgY4DT5Ttt-v2uYIewsonJ6Yx1GKkQ1yG9lTCBjqaLkgYoRirGpIFQRDcOaDw',
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+        ], $headers);
     }
 
     public function test_new_nonces_are_22_url_safe_characters_and_differ(): void {
