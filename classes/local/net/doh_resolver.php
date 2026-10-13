@@ -17,11 +17,15 @@
 namespace tool_secbackup\local\net;
 
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\TransferException;
+use Psr\Http\Message\ResponseInterface;
 
 /**
  * Looks up IPv4 addresses with a public DNS over HTTPS service, reached by its IP address.
  *
- * The requests go through Moodle's HTTP client, so Moodle's proxy and HTTP security settings apply.
+ * The requests go through Moodle's HTTP client, so Moodle's proxy and HTTP security settings apply. Each request sets
+ * its own user agent: Moodle's default one carries the URL of the site, and the service would receive it with every
+ * check. The answer is not trusted: it has to be small, and it is read as it came, without being decompressed.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -33,6 +37,12 @@ final class doh_resolver {
         'cloudflare' => 'https://1.1.1.1/dns-query?type=A&name=',
         'google' => 'https://8.8.8.8/resolve?type=A&name=',
     ];
+
+    /** @var string User agent of the requests: the name of the plugin and nothing of the site. */
+    private const USER_AGENT = 'tool_secbackup';
+
+    /** @var int Largest answer accepted, in bytes. A real answer has a few hundred. */
+    private const MAX_ANSWER = 65536;
 
     /** @var string Resolver name. */
     private string $name;
@@ -78,29 +88,55 @@ final class doh_resolver {
      *
      * @param string $host Host name.
      * @return string[] Addresses; empty when the name does not exist.
-     * @throws transport_exception When the resolver does not answer (dns_doh_failed).
+     * @throws transport_exception When the resolver does not answer or its answer cannot be used (dns_doh_failed).
      */
     public function lookup(string $host): array {
         $url = self::PROVIDERS[$this->name] . rawurlencode($host);
         $client = new \core\http_client($this->handler === null ? [] : ['mock' => $this->handler]);
         try {
             $response = $client->request('GET', $url, [
-                'headers' => ['Accept' => 'application/dns-json'],
+                'headers' => ['Accept' => 'application/dns-json', 'User-Agent' => self::USER_AGENT],
                 'http_errors' => false,
                 'allow_redirects' => false,
+                // The limit on the size counts the bytes of the wire, so the answer must not be decompressed.
+                'decode_content' => false,
                 'timeout' => 10,
                 'connect_timeout' => 5,
                 'proxy' => proxy_settings::for_url($url),
+                // The mocked transport also calls this with the exception that it is about to throw: the argument has no type.
+                'on_headers' => static function ($received): void {
+                    if (
+                        $received instanceof ResponseInterface
+                        && (int) $received->getHeaderLine('Content-Length') > self::MAX_ANSWER
+                    ) {
+                        throw new TransferException('The answer is larger than the limit.');
+                    }
+                },
+                // Cuts the transfer as soon as more than the limit has arrived: a callback that returns 1 aborts it. (An
+                // exception thrown from the progress option of Guzzle comes out only when the whole transfer is over.)
+                'curl' => [
+                    CURLOPT_NOPROGRESS => false,
+                    CURLOPT_PROGRESSFUNCTION => static function ($handle, int $downloadtotal, int $downloaded): int {
+                        return $downloaded > self::MAX_ANSWER ? 1 : 0;
+                    },
+                ],
             ]);
         } catch (GuzzleException $e) {
             throw new transport_exception('dns_doh_failed', $this->name);
         }
-        $data = json_decode((string) $response->getBody(), true, 8);
-        if ($response->getStatusCode() !== 200 || !is_array($data) || !in_array($data['Status'] ?? null, [0, 3], true)) {
+        $text = $response->getBody()->read(self::MAX_ANSWER + 1);
+        $data = strlen($text) > self::MAX_ANSWER ? null : json_decode($text, true, 8);
+        $records = is_array($data) && array_key_exists('Answer', $data) ? $data['Answer'] : [];
+        if (
+            $response->getStatusCode() !== 200
+            || !is_array($data)
+            || !in_array($data['Status'] ?? null, [0, 3], true)
+            || !is_array($records)
+        ) {
             throw new transport_exception('dns_doh_failed', $this->name);
         }
         $addresses = [];
-        foreach ($data['Answer'] ?? [] as $record) {
+        foreach ($records as $record) {
             if (
                 is_array($record)
                 && ($record['type'] ?? null) === 1
