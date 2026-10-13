@@ -30,6 +30,7 @@ use tool_secbackup\tests\network_fakes;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\enrollment\enroller::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\enrollment\notifier::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\enrollment\state::class)]
 /**
  * Tests for the registration.
  *
@@ -38,6 +39,7 @@ use tool_secbackup\tests\network_fakes;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  * @covers     \tool_secbackup\local\enrollment\enroller
  * @covers     \tool_secbackup\local\enrollment\notifier
+ * @covers     \tool_secbackup\local\enrollment\state
  */
 final class enroller_test extends \advanced_testcase {
     /** @var string Connection URL. */
