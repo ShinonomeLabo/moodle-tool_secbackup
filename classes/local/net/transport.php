@@ -132,6 +132,8 @@ final class transport {
         $toolarge = false;
         $options = [
             'headers' => $others + ['User-Agent' => self::USER_AGENT],
+            // Empty for a GET request: the check above refuses a body there. It is the string that was signed, never an array.
+            'body' => $body,
             'http_errors' => false,
             'allow_redirects' => false,
             // The limit counts the bytes of the wire, so the response must not be decompressed.
@@ -162,9 +164,6 @@ final class transport {
                 },
             ],
         ];
-        if ($method === 'POST') {
-            $options['body'] = $body;
-        }
         if (!$this->settings->skip_network_checks()) {
             // Only an HTTP proxy looks the name up. With a SOCKS5 proxy this server does it, so its answer is checked and pinned.
             $pinned = $this->guard->check($endpoint->host(), proxy_settings::resolves_names($url), aws_ranges::SERVICE_CLOUDFRONT);
