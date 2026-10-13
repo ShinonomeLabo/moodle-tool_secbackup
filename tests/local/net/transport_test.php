@@ -23,6 +23,7 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\PumpStream;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\MessageInterface;
 use Psr\Http\Message\RequestInterface;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\trust\developer_settings;
@@ -382,5 +383,145 @@ final class transport_test extends \advanced_testcase {
         global $CFG;
         $CFG->tool_secbackup_developer = ['skipnetworkchecks' => true];
         $this->assertInstanceOf(transport::class, transport::create());
+    }
+
+    public function test_the_headers_the_body_and_the_failure_are_marked_sensitive(): void {
+        $marked = [];
+        foreach (['send', 'failure'] as $name) {
+            foreach ((new \ReflectionMethod(transport::class, $name))->getParameters() as $parameter) {
+                if ($parameter->getAttributes(\SensitiveParameter::class) !== []) {
+                    $marked[$name][] = $parameter->getName();
+                }
+            }
+        }
+        // The headers carry the signature, the body can hold a registration code, and the Guzzle failure holds the request.
+        $this->assertSame(['send' => ['headers', 'body'], 'failure' => ['e']], $marked);
+    }
+
+    /**
+     * Calls of send() that throw, from the name check, from the endpoint, from the mapping of a failure of Guzzle and from
+     * the checks of the response.
+     *
+     * @return array
+     */
+    public static function failing_send_provider(): array {
+        $request = new Request('POST', 'https://app.example.test/');
+        $toolarge = ['Content-Length' => (string) (transport::MAX_RESPONSE + 1)];
+        return [
+            'a name check that fails' => [[], true, 'enroll'],
+            'a name of the call that the endpoint refuses' => [[], false, 'Not/Allowed'],
+            'a certificate that cannot be verified' => [
+                [new RequestException('cURL error 60', $request, null, null, ['errno' => 60])], false, 'enroll',
+            ],
+            'a connection that fails' => [[new ConnectException('cURL error 7', $request, null, ['errno' => 7])], false, 'enroll'],
+            'a redirect' => [[new Response(302, ['Location' => 'https://elsewhere.example/'], '')], false, 'enroll'],
+            'a declared length over the limit' => [[new Response(200, $toolarge, 'x')], false, 'enroll'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_send_provider')]
+    /**
+     * An exception that send() throws keeps the signature and the body out of the arguments of its trace, and so does the
+     * Guzzle failure that it turns into one: the failure holds the request.
+     *
+     * @dataProvider failing_send_provider
+     * @param array $queue What the mocked network answers.
+     * @param bool $namecheckfails Whether the name check fails.
+     * @param string $relative Name of the API call.
+     */
+    public function test_a_failure_does_not_leave_the_signature_or_the_body_in_the_trace(
+        array $queue,
+        bool $namecheckfails,
+        string $relative
+    ): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the'
+                . ' arguments of the trace there.');
+        }
+        $signature = 'Zm9yIHRoZSB0cmFjZSB0ZXN0LCBub3QgYSByZWFsIHNpZ25hdHVyZQ';
+        $body = '{"enrollment_code":"SEC-BK-7QF2-MXA9-PDTW-4HJC-8NR5"}';
+        $headers = ['Accept' => 'application/json', 'X-SecBackup-Signature' => $signature];
+        $guard = $namecheckfails
+            ? network_fakes::guard(['13.225.1.1'], null, ['203.0.113.7'])
+            : network_fakes::passing_guard();
+
+        // A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the
+        // calls: with it on, the check would find nothing whatever the code does.
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        $this->assertNotFalse($previous);
+        try {
+            $control = self::exception_created_with($headers, $body);
+            $this->assertTrue(self::trace_leaks($control, $signature, $body), 'A trace shows the arguments when PHP keeps them.');
+            try {
+                $transport = new transport(developer_settings::from_value(null), $guard, new MockHandler($queue));
+                $transport->send('POST', self::endpoint(), $relative, $headers, $body);
+            } catch (\Exception $e) {
+                $this->assertFalse(self::trace_leaks($e, $signature, $body), 'The signature or the body is in the trace.');
+                return;
+            }
+            $this->fail('send() has to throw');
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+    }
+
+    /**
+     * Returns an exception created in a call with the arguments, so that its trace holds them when PHP keeps arguments.
+     *
+     * @param string[] $headers Headers.
+     * @param string $body A body.
+     * @return \Exception
+     */
+    private static function exception_created_with(array $headers, string $body): \Exception {
+        return new \Exception('Control exception for ' . count($headers) . ' headers and ' . strlen($body) . ' bytes');
+    }
+
+    /**
+     * Tells whether the arguments in the trace of an exception, as far as the call of send(), hold the signature or the body,
+     * also inside arrays and as part of longer text, or hold a Guzzle exception or message, which holds the request.
+     *
+     * @param \Throwable $exception The exception.
+     * @param string $signature The signature.
+     * @param string $body The body.
+     * @return bool
+     */
+    private static function trace_leaks(\Throwable $exception, string $signature, string $body): bool {
+        foreach ($exception->getTrace() as $frame) {
+            foreach ($frame['args'] ?? [] as $argument) {
+                if (self::holds($argument, $signature, $body)) {
+                    return true;
+                }
+            }
+            if (($frame['class'] ?? null) === transport::class && $frame['function'] === 'send') {
+                // The frames above this one are those of the caller, here the test.
+                break;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tells whether an argument is, or holds, the signature or the body, or is an exception or a message.
+     *
+     * @param mixed $argument An argument of a call in a trace.
+     * @param string $signature The signature.
+     * @param string $body The body.
+     * @return bool
+     */
+    private static function holds(mixed $argument, string $signature, string $body): bool {
+        if ($argument instanceof \Throwable || $argument instanceof MessageInterface) {
+            return true;
+        }
+        if (is_string($argument)) {
+            return str_contains($argument, $signature) || str_contains($argument, $body);
+        }
+        if (is_array($argument)) {
+            foreach ($argument as $item) {
+                if (self::holds($item, $signature, $body)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

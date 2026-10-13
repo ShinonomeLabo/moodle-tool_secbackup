@@ -90,15 +90,26 @@ final class transport {
     /**
      * Sends one request.
      *
+     * The types of $headers and $body are written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see
+     * signing_keypair::__construct()). The attributes keep the headers, which carry the signature of the request, and the
+     * body, which can hold the registration code of an enrolment, out of the trace of an exception thrown here or in a call
+     * made from here.
+     *
      * @param string $method GET or POST.
      * @param endpoint $endpoint Connection URL.
      * @param string $relative Name of the API call, such as "status".
-     * @param string[] $headers Headers by name.
-     * @param string $body Body.
+     * @param #[|\SensitiveParameter|]|string[] $headers Headers by name.
+     * @param #[|\SensitiveParameter|]|string $body Body.
      * @return response
      * @throws transport_exception When the checks fail or the connection fails.
      */
-    public function send(string $method, endpoint $endpoint, string $relative, array $headers, string $body): response {
+    public function send(
+        string $method,
+        endpoint $endpoint,
+        string $relative,
+        #[\SensitiveParameter] array $headers,
+        #[\SensitiveParameter] string $body
+    ): response {
         $url = $endpoint->join($relative);
         $proxy = proxy_settings::for_url($url);
         // Moodle's HTTP client would add its own user agent, "MoodleBot/<version> (+<wwwroot>)": it carries the URL of the site.
@@ -175,10 +186,14 @@ final class transport {
     /**
      * Turns a Guzzle failure into a transport exception without URLs or bodies.
      *
-     * @param GuzzleException $e The failure.
+     * The type of $e is written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see send()). The
+     * attribute keeps the failure, which holds the request with its signature and body, out of the trace of the exception
+     * made here.
+     *
+     * @param #[|\SensitiveParameter|]|GuzzleException $e The failure.
      * @return transport_exception
      */
-    private static function failure(GuzzleException $e): transport_exception {
+    private static function failure(#[\SensitiveParameter] GuzzleException $e): transport_exception {
         if ($e->getMessage() === get_string('curlsecurityurlblocked', 'admin')) {
             return new transport_exception('transport_blocked');
         }
