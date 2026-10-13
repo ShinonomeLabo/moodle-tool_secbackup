@@ -46,6 +46,19 @@ final class proxy_settings {
     }
 
     /**
+     * Whether the proxy for a URL looks the host name up itself.
+     *
+     * An HTTP proxy gets the host name in a CONNECT request and resolves it. With a SOCKS5 proxy this server resolves
+     * the name before it talks to the proxy (the scheme is socks5, not socks5h), so the answer of this server counts.
+     *
+     * @param string $url Request URL.
+     * @return bool False for a direct connection and for a SOCKS5 proxy.
+     */
+    public static function resolves_names(string $url): bool {
+        return self::for_url($url) !== '' && self::scheme() === 'http';
+    }
+
+    /**
      * A description of the proxy for the diagnostics page, without the credentials.
      *
      * @param string $url Request URL.

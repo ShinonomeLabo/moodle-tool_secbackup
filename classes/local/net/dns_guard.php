@@ -20,10 +20,12 @@ namespace tool_secbackup\local\net;
  * Checks, before anything is sent, that a host name leads to AWS.
  *
  * Every answer must be inside the AWS ranges: the answers of the DNS over HTTPS resolvers and,
- * without a proxy, the answer of the operating system. Equality is not required, because
- * CloudFront answers each resolver with addresses near it. Any CloudFront address routes the
- * connection to the right distribution by its name, so an address in the range cannot lead
- * somewhere else.
+ * unless an HTTP proxy looks the name up, the answer of the operating system. A SOCKS5 proxy does
+ * not look the name up (this server does, before it talks to the proxy), so there the answer of
+ * the operating system counts and is the address to pin. See proxy_settings::resolves_names().
+ * Equality is not required, because CloudFront answers each resolver with addresses near it. Any
+ * CloudFront address routes the connection to the right distribution by its name, so an address in
+ * the range cannot lead somewhere else.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -74,7 +76,7 @@ final class dns_guard {
      * Asks every source for the host's addresses.
      *
      * @param string $host Host name.
-     * @param bool $viaproxy Whether a proxy resolves the name.
+     * @param bool $viaproxy Whether an HTTP proxy resolves the name (proxy_settings::resolves_names()).
      * @return dns_report
      */
     public function inspect(string $host, bool $viaproxy): dns_report {
@@ -122,9 +124,9 @@ final class dns_guard {
      * Checks a host and returns the address to connect to.
      *
      * @param string $host Host name.
-     * @param bool $viaproxy Whether a proxy resolves the name.
+     * @param bool $viaproxy Whether an HTTP proxy resolves the name (proxy_settings::resolves_names()).
      * @param string $service AWS service the host must belong to.
-     * @return string|null The address to pin, or null when a proxy resolves the name.
+     * @return string|null The address to pin, or null when an HTTP proxy resolves the name.
      * @throws transport_exception When the check fails.
      */
     public function check(string $host, bool $viaproxy, string $service): ?string {

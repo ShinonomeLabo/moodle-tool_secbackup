@@ -27,7 +27,7 @@ final class dns_report {
     /** @var array IPv4 addresses from each DNS over HTTPS resolver by name; null when it did not answer. */
     public readonly array $doh;
 
-    /** @var string[]|null IPv4 addresses from the operating system; null when a proxy resolves the name. */
+    /** @var string[]|null IPv4 addresses from the operating system; null when an HTTP proxy resolves the name. */
     public readonly ?array $os;
 
     /**
@@ -44,7 +44,7 @@ final class dns_report {
     /**
      * The address to connect to: the operating system's first answer.
      *
-     * @return string|null Null when a proxy resolves the name or there is no answer.
+     * @return string|null Null when an HTTP proxy resolves the name or there is no answer.
      */
     public function pinned(): ?string {
         return $this->os[0] ?? null;

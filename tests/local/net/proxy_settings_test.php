@@ -81,6 +81,39 @@ final class proxy_settings_test extends \advanced_testcase {
         $this->assertSame('http://proxy.example.ac.jp', proxy_settings::for_url(self::URL));
     }
 
+    public function test_without_a_proxy_nobody_resolves_the_name_for_us(): void {
+        $this->assertFalse(proxy_settings::resolves_names(self::URL));
+    }
+
+    public function test_an_http_proxy_resolves_the_name(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '3128';
+        $this->assertTrue(proxy_settings::resolves_names(self::URL));
+    }
+
+    public function test_a_socks5_proxy_does_not_resolve_the_name(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->proxyhost = 'socks.example.ac.jp';
+        $CFG->proxyport = '1080';
+        $CFG->proxytype = 'SOCKS5';
+        // The proxy is in use, but curl looks the name up on this server before it talks to the proxy.
+        $this->assertNotSame('', proxy_settings::for_url(self::URL));
+        $this->assertFalse(proxy_settings::resolves_names(self::URL));
+    }
+
+    public function test_a_host_on_the_bypass_list_has_no_proxy_to_resolve_the_name(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '3128';
+        $CFG->proxybypass = '*.example.com';
+        $this->assertFalse(proxy_settings::resolves_names(self::URL));
+        $this->assertTrue(proxy_settings::resolves_names('https://8.8.8.8/resolve'));
+    }
+
     public function test_bypass_list_means_direct(): void {
         global $CFG;
         $this->resetAfterTest();
