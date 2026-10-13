@@ -20,9 +20,13 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use tool_secbackup\local\api\client;
 use tool_secbackup\local\net\aws_ranges;
 use tool_secbackup\local\net\dns_guard;
 use tool_secbackup\local\net\doh_resolver;
+use tool_secbackup\local\net\transport;
+use tool_secbackup\local\trust\developer_settings;
+use tool_secbackup\local\trust\sec_trust;
 
 /**
  * Fake name sources and AWS ranges for tests, so that no test needs the network.
@@ -109,5 +113,23 @@ final class network_fakes {
     public static function no_security_list(): void {
         set_config('curlsecurityblockedhosts', '');
         set_config('curlsecurityallowedport', '');
+    }
+
+    /**
+     * A client that sends through a Guzzle handler, trusts the test key of envelope_builder and reads a fixed clock.
+     *
+     * @param callable $handler Guzzle handler, such as fake_service::handler().
+     * @param int $now This server's clock (UNIX time).
+     * @return client
+     */
+    public static function client(callable $handler, int $now): client {
+        $settings = developer_settings::from_value(null);
+        $transport = new transport($settings, self::passing_guard(), $handler);
+        return new client(
+            $transport,
+            new sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]),
+            $settings,
+            static fn(): int => $now
+        );
     }
 }
