@@ -98,10 +98,13 @@ final class enrollment_request {
     /**
      * The JSON body.
      *
-     * @param signing_keypair $pair The key pair being enrolled.
+     * The type of $pair is written the way the PHPDoc checker reads the signature (see __construct()). The attribute keeps
+     * the key pair out of the trace of an exception.
+     *
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The key pair being enrolled.
      * @return string
      */
-    public function body(signing_keypair $pair): string {
+    public function body(#[\SensitiveParameter] signing_keypair $pair): string {
         return json_encode([
             'enrollment_code' => $this->code,
             'signing_public_key' => base64_encode($pair->public_key()),

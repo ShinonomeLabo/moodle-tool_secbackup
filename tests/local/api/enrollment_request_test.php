@@ -116,4 +116,17 @@ final class enrollment_request_test extends \advanced_testcase {
         $dump = (string) ob_get_clean();
         $this->assertStringNotContainsString('AAAA', $dump);
     }
+
+    public function test_the_code_and_the_key_pair_parameters_are_marked_sensitive(): void {
+        $marked = [];
+        foreach (['__construct', 'for_this_site', 'body'] as $name) {
+            foreach ((new \ReflectionMethod(enrollment_request::class, $name))->getParameters() as $parameter) {
+                if ($parameter->getAttributes(\SensitiveParameter::class) !== []) {
+                    $marked[$name][] = $parameter->getName();
+                }
+            }
+        }
+        // The registration code is still valid when a request is built, and the key pair holds the secret key.
+        $this->assertSame(['__construct' => ['code'], 'for_this_site' => ['code'], 'body' => ['pair']], $marked);
+    }
 }

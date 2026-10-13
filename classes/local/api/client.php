@@ -83,13 +83,21 @@ final class client {
     /**
      * Enrols this site.
      *
+     * The types of $pair and $request are written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see
+     * signing_keypair::__construct()). The attributes keep the key pair, and the request with the registration code, which
+     * is still valid, out of the trace of an exception thrown here or in a call made from here.
+     *
      * @param endpoint $endpoint Connection URL.
-     * @param signing_keypair $pair The new key pair (not saved yet).
-     * @param enrollment_request $request Request body.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The new key pair (not saved yet).
+     * @param #[|\SensitiveParameter|]|enrollment_request $request Request body.
      * @return enroll_result The verified answer.
      * @throws api_exception|\tool_secbackup\local\trust\envelope_exception|\tool_secbackup\local\net\transport_exception
      */
-    public function enroll(endpoint $endpoint, signing_keypair $pair, enrollment_request $request): enroll_result {
+    public function enroll(
+        endpoint $endpoint,
+        #[\SensitiveParameter] signing_keypair $pair,
+        #[\SensitiveParameter] enrollment_request $request
+    ): enroll_result {
         $now = ($this->clock)();
         $nonce = request_signer::new_nonce();
         $body = $request->body($pair);
@@ -119,18 +127,20 @@ final class client {
     /**
      * Checks that a signed enrolment answer belongs to this request (and not to another one replayed here).
      *
+     * The types of $pair and $request are written as in enroll().
+     *
      * @param array $payload The answer.
      * @param endpoint $endpoint Connection URL.
-     * @param signing_keypair $pair The key pair being enrolled.
-     * @param enrollment_request $request The request.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The key pair being enrolled.
+     * @param #[|\SensitiveParameter|]|enrollment_request $request The request.
      * @param string $nonce The nonce sent.
      * @throws api_exception enroll_response_mismatch, naming the field in the debug information.
      */
     private function check_binding(
         array $payload,
         endpoint $endpoint,
-        signing_keypair $pair,
-        enrollment_request $request,
+        #[\SensitiveParameter] signing_keypair $pair,
+        #[\SensitiveParameter] enrollment_request $request,
         string $nonce
     ): void {
         try {
@@ -157,13 +167,15 @@ final class client {
     /**
      * Asks the service for this site's status.
      *
+     * The type of $pair is written as in enroll(): the attribute keeps the key pair out of the trace of an exception.
+     *
      * @param endpoint $endpoint Connection URL.
-     * @param signing_keypair $pair The site's key pair.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The site's key pair.
      * @param string $siteid The site's ID.
      * @return status_result
      * @throws api_exception|\tool_secbackup\local\net\transport_exception
      */
-    public function status(endpoint $endpoint, signing_keypair $pair, string $siteid): status_result {
+    public function status(endpoint $endpoint, #[\SensitiveParameter] signing_keypair $pair, string $siteid): status_result {
         $now = ($this->clock)();
         $headers = request_signer::headers($pair, 'GET', $endpoint, 'status', '', $siteid, $now, request_signer::new_nonce());
         $response = $this->transport->send('GET', $endpoint, 'status', $headers, '');

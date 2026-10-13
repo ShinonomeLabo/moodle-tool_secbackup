@@ -16,7 +16,9 @@
 
 namespace tool_secbackup\local\api;
 
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
@@ -484,5 +486,230 @@ final class client_test extends \advanced_testcase {
 
     public function test_create_reads_the_site_settings(): void {
         $this->assertInstanceOf(client::class, client::create());
+    }
+
+    public function test_the_key_pair_and_the_request_are_marked_sensitive(): void {
+        $marked = [];
+        foreach (['enroll', 'status', 'check_binding'] as $name) {
+            foreach ((new \ReflectionMethod(client::class, $name))->getParameters() as $parameter) {
+                if ($parameter->getAttributes(\SensitiveParameter::class) !== []) {
+                    $marked[$name][] = $parameter->getName();
+                }
+            }
+        }
+        // The key pair holds the secret key, and the request holds a registration code that is still valid.
+        $this->assertSame(['enroll' => ['pair', 'request'], 'status' => ['pair'], 'check_binding' => ['pair', 'request']], $marked);
+    }
+
+    /**
+     * Calls of enroll() and status() that fail in every way the client reports. Each row is a function that makes the call
+     * with a key pair and a request.
+     *
+     * @return array
+     */
+    public static function failing_call_provider(): array {
+        return [
+            'an error answer' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::service(['mode' => 'ip_not_allowed']);
+                self::client($service->handler())->enroll(self::endpoint(), $pair, $request);
+            }],
+            'a code that was used before' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::service(['codeused' => true]);
+                self::client($service->handler())->enroll(self::endpoint(), $pair, $request);
+            }],
+            'an answer for another request' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::service(['enrollpayload' => ['request_nonce' => 'AAAAAAAAAAAAAAAAAAAAAA']]);
+                self::client($service->handler())->enroll(self::endpoint(), $pair, $request);
+            }],
+            'a malformed answer' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::service(['enrollpayload' => ['site_id' => 'site-1']]);
+                self::client($service->handler())->enroll(self::endpoint(), $pair, $request);
+            }],
+            'an answer signed by another key' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::service(['mode' => 'untrusted_key']);
+                self::client($service->handler())->enroll(self::endpoint(), $pair, $request);
+            }],
+            'an enrolment connection that fails' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                self::client(self::disconnected('POST'))->enroll(self::endpoint(), $pair, $request);
+            }],
+            'a status call that is refused' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::enrolled_service($pair, $request);
+                $service->state['mode'] = 'site_removed';
+                self::client($service->handler())->status(self::endpoint(), $pair, fake_service::SITE_ID);
+            }],
+            'a status answer that is not readable' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                $service = self::enrolled_service($pair, $request);
+                $service->state['mode'] = 'bad_status';
+                self::client($service->handler())->status(self::endpoint(), $pair, fake_service::SITE_ID);
+            }],
+            'a status connection that fails' => [static function (signing_keypair $pair, enrollment_request $request): void {
+                self::client(self::disconnected('GET'))->status(self::endpoint(), $pair, fake_service::SITE_ID);
+            }],
+        ];
+    }
+
+    /**
+     * A fake service where the site has been enrolled.
+     *
+     * @param signing_keypair $pair The key pair of the site.
+     * @param enrollment_request $request The enrolment request.
+     * @return fake_service
+     */
+    private static function enrolled_service(signing_keypair $pair, enrollment_request $request): fake_service {
+        $service = self::service();
+        self::client($service->handler())->enroll(self::endpoint(), $pair, $request);
+        return $service;
+    }
+
+    /**
+     * A network where the connection fails.
+     *
+     * @param string $method Method of the request that fails.
+     * @return MockHandler
+     */
+    private static function disconnected(string $method): MockHandler {
+        $request = new Request($method, 'https://app.example.test/');
+        return new MockHandler([new ConnectException('cURL error 7', $request, null, ['errno' => 7])]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_call_provider')]
+    /**
+     * An exception from enroll() or status() has no previous exception, which would keep the trace of the call that made
+     * it, and its message holds neither the registration code nor the secret key.
+     *
+     * @dataProvider failing_call_provider
+     * @param callable $call Makes a call that fails, with a key pair and a request.
+     */
+    public function test_a_failure_has_no_previous_exception_and_no_secret_in_its_message(callable $call): void {
+        $pair = signing_keypair::generate();
+        $e = $this->exception_from($call, $pair, self::request());
+        $this->assertNull($e->getPrevious());
+        $this->assertStringNotContainsString(fake_service::CODE, $e->getMessage());
+        $this->assertStringNotContainsString(base64_encode($pair->export_secret()), $e->getMessage());
+        $this->assertStringNotContainsString(base64_encode($pair->public_key()), $e->getMessage());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_call_provider')]
+    /**
+     * An exception from enroll() or status() keeps neither the key pair nor the request in the arguments of its trace.
+     *
+     * @dataProvider failing_call_provider
+     * @param callable $call Makes a call that fails, with a key pair and a request.
+     */
+    public function test_a_failure_does_not_leave_the_key_pair_or_the_request_in_the_trace(callable $call): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the key pair and the request stay'
+                . ' in the arguments of the trace there.');
+        }
+        $pair = signing_keypair::generate();
+        $request = self::request();
+
+        // A trace holds the arguments of the calls only while zend.exception_ignore_args is off, so it is off during the
+        // calls: with it on, the check would find nothing whatever the code does.
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        $this->assertNotFalse($previous);
+        try {
+            $control = self::exception_created_with($pair, $request);
+            $this->assertTrue(self::trace_holds($control, $pair, $request), 'A trace shows the arguments when PHP keeps them.');
+            $e = $this->exception_from($call, $pair, $request);
+            $this->assertFalse(self::trace_holds($e, $pair, $request), 'The key pair or the request is in the trace.');
+            $frame = self::frame_of_the_call($e);
+            $this->assertNotNull($frame, 'The trace has the frame of enroll() or status().');
+            $this->assertInstanceOf(\SensitiveParameterValue::class, $frame['args'][1]);
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+    }
+
+    /**
+     * Makes a call that is expected to fail, and returns what it throws.
+     *
+     * @param callable $call Makes the call with a key pair and a request.
+     * @param signing_keypair $pair The key pair.
+     * @param enrollment_request $request The request.
+     * @return \Throwable
+     */
+    private function exception_from(callable $call, signing_keypair $pair, enrollment_request $request): \Throwable {
+        try {
+            $call($pair, $request);
+        } catch (\Throwable $e) {
+            return $e;
+        }
+        $this->fail('The call has to fail');
+    }
+
+    /**
+     * Returns an exception created in a call with the arguments, so that its trace holds them when PHP keeps arguments.
+     *
+     * @param signing_keypair $pair A key pair.
+     * @param enrollment_request $request A request.
+     * @return \Exception
+     */
+    private static function exception_created_with(signing_keypair $pair, enrollment_request $request): \Exception {
+        return new \Exception('Control exception for ' . $pair::class . ' and ' . $request::class);
+    }
+
+    /**
+     * The frame of the call of enroll() or status() in the trace of an exception.
+     *
+     * @param \Throwable $exception The exception.
+     * @return array|null The frame, or null when the trace has none.
+     */
+    private static function frame_of_the_call(\Throwable $exception): ?array {
+        foreach ($exception->getTrace() as $frame) {
+            if (($frame['class'] ?? null) === client::class && in_array($frame['function'], ['enroll', 'status'], true)) {
+                return $frame;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Tells whether the arguments in the trace of an exception, as far as the call of enroll() or status(), hold the key
+     * pair or the request, also inside arrays and as part of longer text.
+     *
+     * @param \Throwable $exception The exception.
+     * @param signing_keypair $pair The key pair.
+     * @param enrollment_request $request The request.
+     * @return bool
+     */
+    private static function trace_holds(\Throwable $exception, signing_keypair $pair, enrollment_request $request): bool {
+        foreach ($exception->getTrace() as $frame) {
+            foreach ($frame['args'] ?? [] as $argument) {
+                if (self::holds($argument, $pair, $request)) {
+                    return true;
+                }
+            }
+            if (($frame['class'] ?? null) === client::class && in_array($frame['function'], ['enroll', 'status'], true)) {
+                // The frames above this one are those of the caller, here the test, which has both objects.
+                break;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tells whether an argument is, or holds, the key pair or the request or the registration code.
+     *
+     * @param mixed $argument An argument of a call in a trace.
+     * @param signing_keypair $pair The key pair.
+     * @param enrollment_request $request The request.
+     * @return bool
+     */
+    private static function holds(mixed $argument, signing_keypair $pair, enrollment_request $request): bool {
+        if ($argument === $pair || $argument === $request) {
+            return true;
+        }
+        if (is_string($argument)) {
+            return str_contains($argument, fake_service::CODE);
+        }
+        if (is_array($argument)) {
+            foreach ($argument as $item) {
+                if (self::holds($item, $pair, $request)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }
