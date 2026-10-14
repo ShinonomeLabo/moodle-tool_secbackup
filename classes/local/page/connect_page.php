@@ -141,6 +141,11 @@ final class connect_page {
             return null;
         } catch (plugin_exception $e) {
             $this->errors = [$e->message()];
+            if ($e->errorcode === 'enroll_response_invalid') {
+                // Something accepted the code and gave an answer that cannot be read: the service, or something else
+                // at a wrong connection URL. Compared by the error code, as below.
+                $this->errors[] = get_string('enroll_reissue_advice', 'tool_secbackup');
+            }
             if ($e->errorcode === 'signingkey_savefailed') {
                 // The service accepted the code before the key could be saved here, so the code is used up. The
                 // message alone ends with "try again", which would mean pressing Register with a code that cannot work.

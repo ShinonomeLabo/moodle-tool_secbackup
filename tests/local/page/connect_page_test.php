@@ -674,6 +674,27 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertFalse(state::load()->is_enrolled());
     }
 
+    public function test_an_answer_that_cannot_be_read_advises_a_new_code(): void {
+        // The service accepted the code and the answer was signed, but its content is not a registration.
+        self::submit_registration();
+        $page = self::page(self::service(['enrollpayload' => ['site_id' => 'not an id']]));
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(get_string('enroll_response_invalid', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(s(get_string('enroll_reissue_advice', 'tool_secbackup')), $html);
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    public function test_an_answer_that_does_not_belong_to_the_request_is_not_advised_twice(): void {
+        // Its own message already tells the administrator to issue a new code.
+        self::submit_registration();
+        $page = self::page(self::service(['enrollpayload' => ['api_base' => 'https://other.example.test/api/lms-backup/v1']]));
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string('enroll_response_mismatch', 'tool_secbackup')), $html);
+        $this->assertStringNotContainsString(s(get_string('enroll_reissue_advice', 'tool_secbackup')), $html);
+    }
+
     public function test_create_without_an_enroller(): void {
         $page = new connect_page();
         $this->assertNull($page->handle());
