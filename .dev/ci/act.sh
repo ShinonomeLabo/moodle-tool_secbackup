@@ -3,12 +3,15 @@
 # Usage: .dev/ci/act.sh rules                                   (needs SECBACKUP_PATTERNS in the environment: a made-up list)
 #        .dev/ci/act.sh test moodle:5.3 php:8.4 database:pgsql  (one combination of the matrix)
 # Output: .dev/ci/out/act/<job>.log. See .dev/ci/README.md for what act cannot do.
+# The clone is made next to the repository (SECBK_ACT_DIR overrides), not under .dev/: the coverage collector leaves out
+# every file whose path contains /.dev/, and the plugin of the test job would be under the clone.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 job="${1:?job: rules or test}"
 shift
-work="$repo/.dev/ci/out/act"
-mkdir -p "$work"
+work="${SECBK_ACT_DIR:-$(dirname "$repo")/secbackup-act}"
+logs="$repo/.dev/ci/out/act"
+mkdir -p "$work" "$logs"
 checkout=3d3c42e5aac5ba805825da76410c181273ba90b1 # the commit of actions/checkout that ci.yml names
 image=secbk-act-ubuntu:24.04
 
@@ -39,4 +42,4 @@ case "$job" in
         ;;
     *) echo "unknown job: $job" >&2; exit 2 ;;
 esac
-act "${args[@]}" ${secrets[@]+"${secrets[@]}"} 2>&1 | tee "$work/$job.log"
+act "${args[@]}" ${secrets[@]+"${secrets[@]}"} 2>&1 | tee "$logs/$job.log"
