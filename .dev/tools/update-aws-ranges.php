@@ -2,6 +2,14 @@
 // Rebuilds data/aws-ranges.json from the AWS IP address ranges and updates its version in thirdpartylibs.xml.
 // Development only; not part of the plugin package. Usage: php .dev/tools/update-aws-ranges.php
 
+// Only the command line runs it: a site installed with git clone has this directory under its web root.
+if (PHP_SAPI !== 'cli') {
+    if (defined('STDERR')) {
+        fwrite(STDERR, "This script runs on the command line only.\n");
+    }
+    exit(1);
+}
+
 $root = dirname(__DIR__, 2);
 $source = 'https://ip-ranges.amazonaws.com/ip-ranges.json';
 $json = file_get_contents($source);

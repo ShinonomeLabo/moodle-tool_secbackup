@@ -430,5 +430,37 @@ expect_check ok "check-history stopped by SIGTERM while it reads a message remov
 no_temporary_file_left() { ! compgen -G "$work/secbackup-message.*" > /dev/null; }
 expect_check ok "the hooks leave no temporary file behind" no_temporary_file_left
 
+# The rule that keeps the PHP files of .dev/ from running in a request to the web server: it is tried on a planted
+# directory, with a file that has no guard (fails) and with each guard that is accepted (passes).
+dev_guards_pass_for() {
+    local dir="$work/devguards-$1"
+    mkdir -p "$dir/sub" || return 1
+    printf '%s\n' '<?php' '// A comment.' '/**' ' * A block comment.' ' */' '' "$2" 'echo 1;' > "$dir/sub/script.php"
+    "$here/../check-dev-guards.sh" "$dir" > /dev/null 2>&1
+}
+expect_check ng "the dev guard rule refuses a file without a guard" dev_guards_pass_for none 'echo 1;'
+expect_check ng "the dev guard rule refuses a guard that is not the first statement" dev_guards_pass_for late 'require "x.php";'
+expect_check ok "the dev guard rule accepts the command line guard" dev_guards_pass_for cli "if (PHP_SAPI !== 'cli') {"
+expect_check ok "the dev guard rule accepts the built-in server guard" dev_guards_pass_for server "if (PHP_SAPI !== 'cli-server') {"
+expect_check ok "the dev guard rule accepts CLI_SCRIPT" dev_guards_pass_for moodle "define('CLI_SCRIPT', true);"
+dev_guards_skip_the_named_exceptions() {
+    local dir="$work/devguards-exceptions"
+    mkdir -p "$dir/coverage/tests/fixtures/source" "$dir/tools" || return 1
+    printf '%s\n' '<?php' 'echo 1;' > "$dir/coverage/collector.php"
+    printf '%s\n' '<?php' 'echo 1;' > "$dir/coverage/tests/fixtures/source/a.php"
+    printf '%s\n' '<?php' "define('CLI_SCRIPT', true);" > "$dir/tools/tool.php"
+    "$here/../check-dev-guards.sh" "$dir" > /dev/null 2>&1
+}
+expect_check ok "the dev guard rule skips the collector and the fixtures only" dev_guards_skip_the_named_exceptions
+dev_guards_refuse_another_file_in_the_exception_folder() {
+    local dir="$work/devguards-other"
+    mkdir -p "$dir/coverage" || return 1
+    printf '%s\n' '<?php' 'echo 1;' > "$dir/coverage/other.php"
+    "$here/../check-dev-guards.sh" "$dir" > /dev/null 2>&1
+}
+expect_check ng "the dev guard rule checks the other files next to the collector" dev_guards_refuse_another_file_in_the_exception_folder
+the_dev_directory_of_this_repository_has_its_guards() { "$here/../check-dev-guards.sh" > /dev/null 2>&1; }
+expect_check ok "every PHP file of .dev has its guard" the_dev_directory_of_this_repository_has_its_guards
+
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

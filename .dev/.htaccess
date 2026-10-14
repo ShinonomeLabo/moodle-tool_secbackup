@@ -1,0 +1,3 @@
+# Development files. A site that was installed with git clone has this directory under its web root:
+# an Apache that reads .htaccess files serves nothing of it. Release archives do not contain the directory.
+Require all denied

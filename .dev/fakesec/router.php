@@ -3,6 +3,12 @@
 // Development only; not part of the plugin package. Start it with .dev/fakesec/start.sh.
 // It loads the same fake service as the PHPUnit tests, which does not use the plugin's classes.
 
+// Only PHP's built-in server runs it: a site installed with git clone has this directory under its web root.
+if (PHP_SAPI !== 'cli-server') {
+    http_response_code(404);
+    return;
+}
+
 require __DIR__ . '/../../tests/classes/envelope_builder.php';
 require __DIR__ . '/../../tests/classes/fake_service.php';
 

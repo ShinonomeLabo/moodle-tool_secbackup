@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs the static checks of moodle-plugin-ci that do not need a fresh install:
-# phplint, phpcs, phpdoc, validate and savepoints. Fails on any error or warning.
+# phplint, phpcs, phpdoc, validate and savepoints, and the rule that the PHP files of .dev/ have a guard against the web
+# (it runs on the host). Fails on any error or warning.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=env.sh
@@ -9,6 +10,7 @@ ci=/opt/moodle-plugin-ci/bin/moodle-plugin-ci
 plugin="/var/www/html/$SECBK_PLUGIN_PATH"
 run() { "$here/run.sh" "$secbk_ver" "$secbk_db" "$@"; }
 
+"$here/../hooks/check-dev-guards.sh"
 run php "$ci" phplint "$plugin"
 run php "$ci" phpcs --max-warnings 0 "$plugin"
 run php "$ci" phpdoc --max-warnings 0 --moodle /var/www/html "$plugin"
