@@ -554,6 +554,53 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString('&amp;amp;', $html);
     }
 
+    /**
+     * The text of the connection URL that the second step shows to the administrator.
+     *
+     * @param string $html The page.
+     * @return string The HTML of the element, without surrounding white space.
+     */
+    private function shown_endpoint(string $html): string {
+        $this->assertSame(1, preg_match('~data-name="endpointshown">\s*(.*?)\s*</div>~s', $html, $matches));
+        return $matches[1];
+    }
+
+    public function test_the_second_step_shows_the_typed_url_in_its_normal_form(): void {
+        connection_form::mock_submit([
+            'stage' => 'connection',
+            'endpoint' => '  HTTPS://App.Example.TEST:443/api/lms-backup/v1/  ',
+            'publickey' => fake_service::ENCRYPTION_KEY,
+        ]);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertSame(self::API, $this->shown_endpoint($html));
+        $this->assertStringContainsString('name="code"', $html);
+    }
+
+    public function test_the_second_step_of_a_registered_site_shows_the_saved_url(): void {
+        self::register(self::service());
+        // The request names another URL and is turned back by the form, so that the step is shown again.
+        self::submit_registration(['endpoint' => 'https://other.example.test/api/lms-backup/v1', 'confirmfingerprint' => 0]);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        // The hidden field may echo the submitted value, and the registration ignores it; the administrator reads this.
+        $this->assertSame(self::API, $this->shown_endpoint($html));
+    }
+
+    public function test_the_second_step_shows_a_saved_url_that_holds_markup_escaped_once(): void {
+        self::register(self::service());
+        set_config('endpoint', 'https://app.example.test/<i>&</i>', 'tool_secbackup');
+        connection_form::mock_submit(['stage' => 'connection', 'publickey' => fake_service::ENCRYPTION_KEY]);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertSame('https://app.example.test/&lt;i&gt;&amp;&lt;/i&gt;', $this->shown_endpoint($html));
+        $this->assertStringNotContainsString('<i>&</i>', $html);
+        $this->assertStringNotContainsString('&amp;lt;', $html);
+    }
+
     public function test_create_without_an_enroller(): void {
         $page = new connect_page();
         $this->assertNull($page->handle());

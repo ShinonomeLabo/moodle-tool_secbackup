@@ -20,7 +20,8 @@ Feature: Register this site with the backup service
       | Connection URL          | http://localhost:8099/api/lms-backup/v1/              |
       | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
     And I press "Next"
-    Then I should see "A260 B405 0FD2 8D2B 313C 9A94"
+    Then I should see "http://localhost:8099/api/lms-backup/v1"
+    And I should see "A260 B405 0FD2 8D2B 313C 9A94"
     And I set the following fields to these values:
       | Fingerprint check | 1                               |
       | Registration code | SEC-BK-AAAA-BBBB-CCCC-DDDD-EEEE |
@@ -35,6 +36,7 @@ Feature: Register this site with the backup service
       | Connection URL          | http://localhost:8099/api/lms-backup/v1              |
       | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
     And I press "Next"
+    And I should see "http://localhost:8099/api/lms-backup/v1"
     And I set the following fields to these values:
       | Fingerprint check | 1                               |
       | Registration code | SEC-BK-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ |
@@ -50,6 +52,7 @@ Feature: Register this site with the backup service
       | Connection URL          | http://localhost:8099/api/lms-backup/v1              |
       | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
     And I press "Next"
+    And I should see "http://localhost:8099/api/lms-backup/v1"
     And I set the following fields to these values:
       | Fingerprint check | 1                               |
       | Registration code | SEC-BK-AAAA-BBBB-CCCC-DDDD-EEEE |
@@ -74,6 +77,7 @@ Feature: Register this site with the backup service
     And "Connection URL" "field" should not exist
     And I set the field "Public key of this site" to "secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
     And I press "Next"
+    And I should see "http://localhost:8099/api/lms-backup/v1"
     And I set the following fields to these values:
       | Fingerprint check | 1                               |
       | Registration code | SEC-BK-AAAA-BBBB-CCCC-DDDD-EEEE |
