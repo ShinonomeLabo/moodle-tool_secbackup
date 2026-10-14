@@ -62,6 +62,7 @@ final class declarations_test extends \advanced_testcase {
         include(self::dir() . '/db/tasks.php');
         $this->assertSame([['classname' => 'tool_secbackup\task\poll_status', 'blocking' => 0, 'minute' => '*/5',
             'hour' => '*', 'day' => '*', 'month' => '*', 'dayofweek' => '*']], $tasks);
+        $this->assertTrue(class_exists($tasks[0]['classname']), 'The scheduled task class must exist.');
     }
 
     public function test_capabilities(): void {
