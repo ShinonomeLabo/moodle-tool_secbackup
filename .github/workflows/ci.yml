@@ -28,6 +28,7 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
@@ -126,6 +127,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: plugin
+          persist-credentials: false
 
       - name: Set up PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
@@ -166,8 +168,9 @@ jobs:
       - name: Install the site itself
         run: |
           if [ -f moodle/admin/cli/install_database.php ]; then cli=moodle/admin/cli; else cli=moodle/public/admin/cli; fi
+          # A password made for this run only; it is not printed.
           php "$cli/install_database.php" --agree-license --fullname="Plugin CI" --shortname=plugin-ci \
-            --summary="tool_secbackup" --adminpass='Secbk-ci-1!' --adminemail=admin@example.com
+            --summary="tool_secbackup" --adminpass="$(openssl rand -hex 16)" --adminemail=admin@example.com
 
       - name: Turn the coverage collector on and install the plugin again with it
         run: |
@@ -223,16 +226,28 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
 
+      # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL). Any other code, 255
+      # above all, is a PHP fatal error, and it fails the step even when the lines were covered by another combination.
       - name: Command line scripts
         if: ${{ !cancelled() }}
         run: |
           if [ -d moodle/public ]; then cli=moodle/public/admin/tool/secbackup/cli/diagnose.php; else cli=moodle/admin/tool/secbackup/cli/diagnose.php; fi
-          for args in --help --no-such-option \
-              --endpoint=http://localhost:8099/api/lms-backup/v1 \
-              --endpoint=ftp://example.org/api; do
-            SECBK_COVERAGE_CLI=1 php "$cli" "$args" || true
-          done
-          SECBK_COVERAGE_CLI=1 php "$cli" || true
+          failed=0
+          check() {
+            local expected="$1" code=0
+            shift
+            SECBK_COVERAGE_CLI=1 php "$cli" "$@" || code=$?
+            if [ "$code" != "$expected" ]; then
+              echo "diagnose.php $* ended with exit code $code, expected $expected" >&2
+              failed=1
+            fi
+          }
+          check 0 --help
+          check 1 --no-such-option
+          check 0 --endpoint=http://localhost:8099/api/lms-backup/v1
+          check 1 --endpoint=ftp://example.org/api
+          check 0
+          exit "$failed"
 
       - name: Keep the coverage of this combination
         if: ${{ !cancelled() }}
@@ -246,7 +261,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: coverage-${{ matrix.moodle }}-${{ matrix.php }}-${{ matrix.database }}
+          name: coverage-run-${{ matrix.moodle }}-${{ matrix.php }}-${{ matrix.database }}
           path: ${{ runner.temp }}/coverage
           retention-days: 7
 
@@ -270,11 +285,13 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download the coverage of every combination
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: coverage-*
+          pattern: coverage-run-*
           path: ${{ runner.temp }}/coverage
 
       # The merge always writes the numbers it counted, also when it finds lines that no run executed. The step after
