@@ -54,6 +54,12 @@ final class connect_page_test extends \advanced_testcase {
     /** @var int The clocks. */
     private const NOW = 1760000000;
 
+    /** @var string A name that holds markup. */
+    private const ODD = '<b>A&B</b>';
+
+    /** @var string That name, escaped once. */
+    private const ODD_ESCAPED = '&lt;b&gt;A&amp;B&lt;/b&gt;';
+
     protected function setUp(): void {
         global $PAGE;
         parent::setUp();
@@ -271,6 +277,59 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertSame('/admin/tool/secbackup/index.php', $redirection->url->out_as_local_url(false));
         $this->assertSame(get_string('deregister_done', 'tool_secbackup', fake_service::PLATFORM_NAME), $redirection->message);
         $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    /**
+     * Checks that a text came out escaped once: the escaped text is there, the raw text and the twice escaped text are not.
+     *
+     * @param string $text The page or the message.
+     */
+    private function assert_odd_name_escaped_once(string $text): void {
+        $this->assertStringContainsString(self::ODD_ESCAPED, $text);
+        $this->assertStringNotContainsString(self::ODD, $text);
+        $this->assertStringNotContainsString('&amp;lt;', $text);
+        $this->assertStringNotContainsString('&amp;amp;', $text);
+    }
+
+    public function test_the_message_after_a_registration_escapes_the_platform_name_once(): void {
+        self::submit_registration();
+        $redirection = self::page(self::service(['platformname' => self::ODD]))->handle();
+        $this->assertSame(get_string('enroll_done', 'tool_secbackup', self::ODD_ESCAPED), $redirection->message);
+        $this->assert_odd_name_escaped_once($redirection->message);
+    }
+
+    public function test_the_removal_form_escapes_the_names_once(): void {
+        self::register(self::service(['sitename' => self::ODD, 'platformname' => self::ODD]));
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assert_odd_name_escaped_once($html);
+        $this->assertStringContainsString(get_string('deregister_explain', 'tool_secbackup', self::ODD_ESCAPED), $html);
+        $this->assertStringContainsString(get_string('deregister_typename', 'tool_secbackup', self::ODD_ESCAPED), $html);
+    }
+
+    public function test_the_message_after_a_removal_escapes_the_platform_name_once(): void {
+        self::register(self::service(['sitename' => self::ODD, 'platformname' => self::ODD]));
+        deregister_form::mock_submit(['stage' => 'deregister', 'confirmname' => self::ODD]);
+        $redirection = self::page(self::service())->handle();
+        $this->assertFalse(state::load()->is_enrolled());
+        $this->assertSame(get_string('deregister_done', 'tool_secbackup', self::ODD_ESCAPED), $redirection->message);
+        $this->assert_odd_name_escaped_once($redirection->message);
+    }
+
+    public function test_problems_found_by_the_first_step_are_escaped_once(): void {
+        // The texts of these two problems hold quotation marks, which an escaped text shows as entities.
+        connection_form::mock_submit([
+            'stage' => 'connection',
+            'endpoint' => 'https://app.example.test/api?x=1',
+            'publickey' => 'abc',
+        ]);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString('&quot;?&quot; or &quot;#&quot;', $html);
+        $this->assertStringContainsString('&quot;secbk1:&quot;', $html);
+        $this->assertStringNotContainsString('&amp;quot;', $html);
     }
 
     public function test_create_without_an_enroller(): void {

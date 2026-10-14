@@ -144,6 +144,59 @@ final class status_page_test extends \advanced_testcase {
         );
     }
 
+    /**
+     * Checks that a text came out escaped once: the escaped text is there, the raw text and the twice escaped text are not.
+     *
+     * @param string $html The page.
+     * @param string $raw The text as it was stored.
+     * @param string $escaped The text escaped once.
+     */
+    private function assert_escaped_once(string $html, string $raw, string $escaped): void {
+        $this->assertStringContainsString($escaped, $html);
+        $this->assertStringNotContainsString($raw, $html);
+        $this->assertStringNotContainsString(str_replace('&', '&amp;', $escaped), $html);
+    }
+
+    public function test_error_message_escapes_its_plain_text_once(): void {
+        global $PAGE;
+        $html = $PAGE->get_renderer('tool_secbackup')->error_message('<b>A&B</b>');
+        $this->assert_escaped_once($html, '<b>A&B</b>', '&lt;b&gt;A&amp;B&lt;/b&gt;');
+    }
+
+    public function test_names_and_status_from_the_service_are_escaped_once(): void {
+        self::register();
+        set_config('sitename', '<b>A&B</b>', 'tool_secbackup');
+        set_config('platformname', '<i>C&D</i>', 'tool_secbackup');
+        state::record_poll(1760000300, new status_result('<u>E&F</u>', 1760000300, 0, 0));
+        $html = (new status_page())->render();
+        $this->assert_escaped_once($html, '<b>A&B</b>', '&lt;b&gt;A&amp;B&lt;/b&gt;');
+        $this->assert_escaped_once($html, '<i>C&D</i>', '&lt;i&gt;C&amp;D&lt;/i&gt;');
+        $this->assert_escaped_once($html, '<u>E&F</u>', '&lt;u&gt;E&amp;F&lt;/u&gt;');
+    }
+
+    public function test_the_value_of_an_error_is_escaped_once(): void {
+        self::register();
+        state::record_poll(1760000300, null, 'api_ip_not_allowed_address', '<img src=x>');
+        $html = (new status_page())->render();
+        $this->assertStringContainsString('&lt;img src=x&gt;', $html);
+        $this->assertStringNotContainsString('<img src=x>', $html);
+        $this->assertStringNotContainsString('&amp;lt;img', $html);
+    }
+
+    public function test_an_unknown_error_code_is_escaped_once(): void {
+        self::register();
+        state::record_poll(1760000300, null, '<u>x</u>');
+        $this->assert_escaped_once((new status_page())->render(), '<u>x</u>', '&lt;u&gt;x&lt;/u&gt;');
+    }
+
+    public function test_a_stored_time_that_is_not_a_number_is_not_shown_as_1970(): void {
+        self::register();
+        set_config('enrolledat', 'soon', 'tool_secbackup');
+        $html = (new status_page())->render();
+        $this->assertStringNotContainsString(userdate(0), $html);
+        $this->assertSame(2, substr_count($html, get_string('status_unknown', 'tool_secbackup')));
+    }
+
     public function test_needs_both_capabilities(): void {
         $user = $this->getDataGenerator()->create_user();
         $role = create_role('Backup manager', 'backupmanager', '');

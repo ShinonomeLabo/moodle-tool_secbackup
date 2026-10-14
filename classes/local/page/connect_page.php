@@ -53,7 +53,7 @@ final class connect_page {
     /** @var deregister_form|null The removal form, for a registered site. */
     private ?deregister_form $deregisterform = null;
 
-    /** @var string[] Error messages for the top of the page, already escaped. */
+    /** @var string[] Error messages for the top of the page, as plain text. */
     private array $errors = [];
 
     /**

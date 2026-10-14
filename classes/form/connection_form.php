@@ -81,13 +81,13 @@ class connection_form extends \moodleform {
             try {
                 endpoint::parse((string) ($data['endpoint'] ?? ''), developer_settings::current());
             } catch (plugin_exception $e) {
-                $errors['endpoint'] = $e->message();
+                $errors['endpoint'] = s($e->message());
             }
         }
         try {
             public_key_format::parse((string) ($data['publickey'] ?? ''));
         } catch (plugin_exception $e) {
-            $errors['publickey'] = $e->message();
+            $errors['publickey'] = s($e->message());
         }
         return $errors;
     }

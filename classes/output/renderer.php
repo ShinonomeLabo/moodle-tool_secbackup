@@ -57,11 +57,13 @@ class renderer extends \plugin_renderer_base {
     /**
      * An error message.
      *
-     * @param string $message The message, already escaped.
+     * The notification prints its message as HTML, so the plain text is escaped here, once.
+     *
+     * @param string $message The message, as plain text.
      * @return string
      */
     public function error_message(string $message): string {
-        return $this->output->notification($message, notification::NOTIFY_ERROR, false);
+        return $this->output->notification(s($message), notification::NOTIFY_ERROR, false);
     }
 
     /**
@@ -81,6 +83,7 @@ class renderer extends \plugin_renderer_base {
         $table = new \html_table();
         $table->attributes['class'] = 'generaltable';
         $lastpoll = $state->last_poll();
+        $enrolledat = $state->enrolled_at();
         $table->data = [
             [get_string('status_platform', 'tool_secbackup'), s($state->platform_name())],
             [get_string('status_site', 'tool_secbackup'), s($state->site_name())],
@@ -90,7 +93,10 @@ class renderer extends \plugin_renderer_base {
                 get_string('field_fingerprint', 'tool_secbackup'),
                 html_writer::tag('code', s(fingerprint::format($state->encryption_fingerprint()))),
             ],
-            [get_string('status_enrolled_at', 'tool_secbackup'), userdate((int) $state->enrolled_at())],
+            [
+                get_string('status_enrolled_at', 'tool_secbackup'),
+                $enrolledat === null ? get_string('status_unknown', 'tool_secbackup') : userdate($enrolledat),
+            ],
             [
                 get_string('status_last_poll', 'tool_secbackup'),
                 $lastpoll === null ? get_string('status_never', 'tool_secbackup') : userdate($lastpoll),
@@ -146,9 +152,9 @@ class renderer extends \plugin_renderer_base {
             return '';
         }
         if (!get_string_manager()->string_exists($error, 'tool_secbackup')) {
-            return $this->error_message(get_string('status_last_error_code', 'tool_secbackup', s($error)));
+            return $this->error_message(get_string('status_last_error_code', 'tool_secbackup', $error));
         }
-        $a = $state->last_poll_error_a() === '' ? null : s($state->last_poll_error_a());
+        $a = $state->last_poll_error_a() === '' ? null : $state->last_poll_error_a();
         return $this->error_message(
             get_string('status_last_error', 'tool_secbackup') . ' ' . get_string($error, 'tool_secbackup', $a)
         );
