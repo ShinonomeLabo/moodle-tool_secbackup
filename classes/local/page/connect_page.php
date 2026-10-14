@@ -75,6 +75,12 @@ final class connect_page {
     public function handle(): ?redirection {
         $state = state::load();
         $stage = optional_param('stage', '', PARAM_ALPHA);
+        if ($stage === 'register') {
+            // The second step is reached only by submitting the form this page showed, which carries the session key.
+            // Formslib checks the key only for a request that carries the form's own marker, so it is checked here,
+            // before anything of the request is read: the step shows a connection URL and a public key from the request.
+            require_sesskey();
+        }
         if ($state->is_enrolled()) {
             $this->deregisterform = new deregister_form(
                 $this->url,

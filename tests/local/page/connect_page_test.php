@@ -332,6 +332,64 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString('&amp;quot;', $html);
     }
 
+    /**
+     * Checks that the page refuses the request it is about to handle, and that nothing happened.
+     *
+     * @param fake_service $service The fake service the page would have used.
+     * @param bool $missing Whether the request has no session key at all. Moodle then reports the missing parameter,
+     *     and not an invalid key.
+     */
+    private function assert_refused_for_the_session_key(fake_service $service, bool $missing = false): void {
+        $page = self::page($service);
+        try {
+            $page->handle();
+            $this->fail('The request must be refused.');
+        } catch (\moodle_exception $e) {
+            $this->assertSame($missing ? 'missingparam' : 'invalidsesskey', $e->errorcode);
+            $this->assertSame($missing ? 'sesskey' : null, $e->a);
+        }
+        // Counted outside the fake service's handler: nothing was sent to it.
+        $this->assertSame([], $service->state['requests']);
+    }
+
+    public function test_the_second_step_without_a_session_key_is_refused_before_anything_is_read(): void {
+        $_POST = ['stage' => 'register', 'endpoint' => self::API, 'publickey' => fake_service::ENCRYPTION_KEY];
+        $this->assert_refused_for_the_session_key(self::service(), true);
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    public function test_the_second_step_with_a_wrong_session_key_is_refused(): void {
+        $_POST = [
+            'stage' => 'register',
+            'endpoint' => self::API,
+            'publickey' => fake_service::ENCRYPTION_KEY,
+            'sesskey' => 'wrong',
+        ];
+        $this->assert_refused_for_the_session_key(self::service());
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    public function test_the_second_step_from_a_link_is_refused(): void {
+        $_GET = ['stage' => 'register', 'endpoint' => self::API, 'publickey' => fake_service::ENCRYPTION_KEY];
+        $this->assert_refused_for_the_session_key(self::service(), true);
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    public function test_the_second_step_of_a_registered_site_without_a_session_key_is_refused(): void {
+        self::register(self::service());
+        $_POST = ['stage' => 'register', 'publickey' => fake_service::ENCRYPTION_KEY];
+        $this->assert_refused_for_the_session_key(self::service(), true);
+        $this->assertTrue(state::load()->is_enrolled());
+    }
+
+    public function test_the_removal_with_a_wrong_session_key_is_refused(): void {
+        self::register(self::service());
+        deregister_form::mock_submit(['stage' => 'deregister', 'confirmname' => fake_service::SITE_NAME]);
+        $_POST['sesskey'] = 'wrong';
+        $this->assert_refused_for_the_session_key(self::service());
+        $this->assertTrue(state::load()->is_enrolled());
+    }
+
     public function test_create_without_an_enroller(): void {
         $page = new connect_page();
         $this->assertNull($page->handle());
