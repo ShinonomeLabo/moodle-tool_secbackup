@@ -148,6 +148,7 @@ $string['status_service_status'] = 'Status at the service';
 $string['status_site'] = 'Site name on the platform';
 $string['status_siteid'] = 'Site ID';
 $string['status_unknown'] = 'Not known yet';
+$string['status_unreadable'] = 'Cannot be read.';
 $string['trademark'] = 'The word Moodle and associated Moodle logos are trademarks or registered trademarks of Moodle Pty Ltd or its related affiliates. Shinonome LMS Backup is not affiliated with, endorsed by or sponsored by Moodle Pty Ltd or its related affiliates.';
 $string['transport_blocked'] = 'Moodle\'s HTTP security settings block the connection to the service. Ask the site administrator to allow the host name of the connection URL and port 443.';
 $string['transport_connect'] = 'Could not connect to the service, or the connection timed out. Check the network and the proxy settings of this server.';

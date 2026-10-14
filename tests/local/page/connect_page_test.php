@@ -663,6 +663,17 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertSame(notification::NOTIFY_SUCCESS, $redirection->type);
     }
 
+    public function test_a_registered_site_with_an_unreadable_key_can_still_be_removed(): void {
+        self::register(self::service());
+        set_config('encryptionkey', 'not a key', 'tool_secbackup');
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assertStringContainsString('name="confirmname"', $page->render());
+        deregister_form::mock_submit(['stage' => 'deregister', 'confirmname' => fake_service::SITE_NAME]);
+        $this->assertNotNull(self::page(self::service())->handle());
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
     public function test_create_without_an_enroller(): void {
         $page = new connect_page();
         $this->assertNull($page->handle());

@@ -21,6 +21,7 @@ use html_writer;
 use tool_secbackup\local\api\client;
 use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\enrollment\state;
+use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
 
 /**
@@ -89,13 +90,10 @@ class renderer extends \plugin_renderer_base {
             [get_string('status_site', 'tool_secbackup'), s($state->site_name())],
             [get_string('field_endpoint', 'tool_secbackup'), s($state->endpoint_url())],
             [get_string('status_siteid', 'tool_secbackup'), s($state->site_id())],
-            [
-                get_string('field_fingerprint', 'tool_secbackup'),
-                html_writer::tag('code', s(fingerprint::format($state->encryption_fingerprint()))),
-            ],
+            [get_string('field_fingerprint', 'tool_secbackup'), $this->fingerprint($state)],
             [
                 get_string('status_enrolled_at', 'tool_secbackup'),
-                $enrolledat === null ? get_string('status_unknown', 'tool_secbackup') : userdate($enrolledat),
+                $enrolledat === null ? get_string('status_unreadable', 'tool_secbackup') : userdate($enrolledat),
             ],
             [
                 get_string('status_last_poll', 'tool_secbackup'),
@@ -105,6 +103,20 @@ class renderer extends \plugin_renderer_base {
         ];
         return html_writer::table($table) . $this->clock_warning($state->clock_skew()) . $this->poll_error($state)
             . $this->links();
+    }
+
+    /**
+     * The fingerprint of the stored public key, or a note that the stored key cannot be read.
+     *
+     * @param state $state The registration.
+     * @return string
+     */
+    private function fingerprint(state $state): string {
+        try {
+            return html_writer::tag('code', s(fingerprint::format($state->encryption_fingerprint())));
+        } catch (plugin_exception $e) {
+            return get_string('status_unreadable', 'tool_secbackup');
+        }
     }
 
     /**

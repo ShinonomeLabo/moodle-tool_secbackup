@@ -148,6 +148,7 @@ $string['status_service_status'] = 'サービスでの状態';
 $string['status_site'] = 'プラットフォームでのサイト名';
 $string['status_siteid'] = 'サイト ID';
 $string['status_unknown'] = 'まだ分かりません';
+$string['status_unreadable'] = '読み取れません。';
 $string['trademark'] = 'Moodle という語と関連する Moodle のロゴは、Moodle Pty Ltd またはその関連会社の商標または登録商標です。The word Moodle and associated Moodle logos are trademarks or registered trademarks of Moodle Pty Ltd or its related affiliates. あんしんLMSバックアップは、Moodle Pty Ltd とその関連会社のいずれとも関係がなく、その承認や推奨を受けたものではありません。';
 $string['transport_blocked'] = 'Moodle の HTTP のセキュリティ設定が、接続先への通信を止めています。接続先の URL のホスト名と 443 番のポートを許すよう、サイトの管理者に設定してもらってください。';
 $string['transport_connect'] = '接続先のサービスにつながらないか、時間内に応答がありませんでした。このサーバのネットワークとプロキシの設定を確かめてください。';

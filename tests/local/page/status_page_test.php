@@ -216,10 +216,26 @@ final class status_page_test extends \advanced_testcase {
 
     public function test_a_stored_time_that_is_not_a_number_is_not_shown_as_1970(): void {
         self::register();
-        set_config('enrolledat', 'soon', 'tool_secbackup');
+        set_config('enrolledat', 'abc', 'tool_secbackup');
         $html = (new status_page())->render();
         $this->assertStringNotContainsString(userdate(0), $html);
-        $this->assertSame(2, substr_count($html, get_string('status_unknown', 'tool_secbackup')));
+        // The time will not become known, so it is not "not known yet"; that is for the status before the first request.
+        $this->assertSame(1, substr_count($html, get_string('status_unreadable', 'tool_secbackup')));
+        $this->assertSame(1, substr_count($html, get_string('status_unknown', 'tool_secbackup')));
+    }
+
+    public function test_a_stored_key_that_cannot_be_read_does_not_break_the_page(): void {
+        self::register();
+        set_config('encryptionkey', 'not a key', 'tool_secbackup');
+        $html = (new status_page())->render();
+        $this->assertSame(1, substr_count($html, get_string('status_unreadable', 'tool_secbackup')));
+        $this->assertStringNotContainsString('secbk1:', $html);
+        // Every other row is as before, and the page goes on to its end.
+        $this->assertStringContainsString('Example Platform', $html);
+        $this->assertStringContainsString('Example &lt;b&gt;site&lt;/b&gt;', $html);
+        $this->assertStringContainsString('https://app.example.test/api/lms-backup/v1', $html);
+        $this->assertStringContainsString(userdate(1760000000), $html);
+        $this->assertStringContainsString('/admin/tool/secbackup/connect.php', $html);
     }
 
     public function test_a_registered_site_without_its_signing_key_is_still_shown(): void {
