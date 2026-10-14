@@ -161,6 +161,14 @@ jobs:
           cat "$RUNNER_TEMP/fakesec.log"
           exit 1
 
+      # moodle-plugin-ci install prepares the PHPUnit and Behat sites only. The command line scripts and the reinstall below
+      # need the site itself, so it is installed here (the Behat and PHPUnit sites have their own table prefixes).
+      - name: Install the site itself
+        run: |
+          if [ -f moodle/admin/cli/install_database.php ]; then cli=moodle/admin/cli; else cli=moodle/public/admin/cli; fi
+          php "$cli/install_database.php" --agree-license --fullname="Plugin CI" --shortname=plugin-ci \
+            --summary="tool_secbackup" --adminpass='Secbk-ci-1!' --adminemail=admin@example.com
+
       - name: Turn the coverage collector on and install the plugin again with it
         run: |
           mkdir -p plugin/.dev/coverage/out/raw
@@ -169,8 +177,9 @@ jobs:
           printf 'auto_prepend_file=%s\npcov.directory=%s\n' \
             "$GITHUB_WORKSPACE/plugin/.dev/coverage/collector.php" "$GITHUB_WORKSPACE/moodle" \
             | sudo tee "$scan/zz-secbk-coverage.ini"
-          SECBK_COVERAGE_CLI=1 php moodle/admin/cli/uninstall_plugins.php --plugins=tool_secbackup --run
-          SECBK_COVERAGE_CLI=1 php moodle/admin/cli/upgrade.php --non-interactive
+          if [ -f moodle/admin/cli/upgrade.php ]; then cli=moodle/admin/cli; else cli=moodle/public/admin/cli; fi
+          SECBK_COVERAGE_CLI=1 php "$cli/uninstall_plugins.php" --plugins=tool_secbackup --run
+          SECBK_COVERAGE_CLI=1 php "$cli/upgrade.php" --non-interactive
 
       - name: PHP Lint
         if: ${{ !cancelled() }}
