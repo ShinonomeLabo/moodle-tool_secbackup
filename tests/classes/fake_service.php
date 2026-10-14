@@ -78,6 +78,7 @@ final class fake_service {
      * - mode: '' or one of unavailable, rate_limited, ip_not_allowed, unexpected, untrusted_key, bad_signature,
      *   site_removed, bad_status.
      * - enrollpayload: fields that replace those of the enrolment answer.
+     * - sitename and platformname: the names the enrolment answer gives.
      *
      * @return array
      */
@@ -89,6 +90,8 @@ final class fake_service {
             'signingkey' => null,
             'nonces' => [],
             'enrollpayload' => [],
+            'sitename' => self::SITE_NAME,
+            'platformname' => self::PLATFORM_NAME,
             'status' => 'active',
             'requests' => [],
             'lastbody' => null,
@@ -210,8 +213,8 @@ final class fake_service {
         $payload = array_merge([
             'type' => 'enrollment',
             'site_id' => self::SITE_ID,
-            'site_name' => self::SITE_NAME,
-            'platform_name' => self::PLATFORM_NAME,
+            'site_name' => $this->state['sitename'] ?? self::SITE_NAME,
+            'platform_name' => $this->state['platformname'] ?? self::PLATFORM_NAME,
             'encryption_key_fingerprint' => $encryptionfp,
             'signing_key_fingerprint' => self::fingerprint($key),
             'request_nonce' => $headers['x-secbackup-nonce'],

@@ -111,8 +111,10 @@ final class sec_trust_test extends \advanced_testcase {
     }
 
     public function test_current_adds_the_developer_keys(): void {
+        global $CFG;
         $this->resetAfterTest();
-        (new envelope_builder())->trust();
+        // Inside PHPUnit the plugin reads the developer settings from $CFG->tool_secbackup_developer.
+        $CFG->tool_secbackup_developer = ['trustedkeys' => [(new envelope_builder())->public_key_base64()]];
         $this->assertSame([envelope_builder::KID], sec_trust::current()->key_ids());
         $this->assertSame('enrollment', sec_trust::current()->open(self::FIXED)['type']);
     }

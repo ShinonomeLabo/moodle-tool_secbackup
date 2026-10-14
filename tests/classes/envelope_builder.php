@@ -109,17 +109,4 @@ final class envelope_builder {
     public function body(array $payload): string {
         return json_encode($this->parts($payload), JSON_UNESCAPED_SLASHES);
     }
-
-    /**
-     * Makes the test site trust this key through the developer settings.
-     *
-     * Inside PHPUnit the plugin reads the developer settings from $CFG->tool_secbackup_developer, so that a test can vary
-     * them (Moodle resets $CFG after each test). Outside PHPUnit they come from the constant of config.php.
-     *
-     * @param array $extra Other developer settings.
-     */
-    public function trust(array $extra = []): void {
-        global $CFG;
-        $CFG->tool_secbackup_developer = array_merge(['trustedkeys' => [$this->public_key_base64()]], $extra);
-    }
 }

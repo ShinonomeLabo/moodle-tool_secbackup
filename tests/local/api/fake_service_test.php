@@ -196,10 +196,28 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame([422, 'invalid_request'], self::enroll_with($change(self::body())));
     }
 
-    public function test_it_uses_nothing_of_the_plugin_or_of_moodle(): void {
-        // The development server loads this file without Moodle, and a test that uses the plugin's own classes to check the
-        // plugin would pass even when both are wrong in the same way.
-        $tokens = token_get_all((string) file_get_contents((new \ReflectionClass(fake_service::class))->getFileName()));
+    /**
+     * The files that must stand on their own.
+     *
+     * @return array
+     */
+    public static function standalone_class_provider(): array {
+        return [
+            'the fake service' => [fake_service::class],
+            'the response signer' => [envelope_builder::class],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('standalone_class_provider')]
+    /**
+     * The development server loads these files without Moodle, and a test that uses the plugin's own classes to check the
+     * plugin would pass even when both are wrong in the same way.
+     *
+     * @dataProvider standalone_class_provider
+     * @param string $class The class whose file is read.
+     */
+    public function test_it_uses_nothing_of_the_plugin_or_of_moodle(string $class): void {
+        $tokens = token_get_all((string) file_get_contents((new \ReflectionClass($class))->getFileName()));
         $moodle = array_flip(get_defined_functions()['user']);
         $found = [];
         foreach ($tokens as $index => $token) {
@@ -216,6 +234,13 @@ final class fake_service_test extends \basic_testcase {
             }
         }
         $this->assertSame([], $found);
+    }
+
+    public function test_a_fresh_service_gives_the_names_the_tests_expect(): void {
+        // The answer to an enrolment carries these two names, so that a test can register a site with other ones.
+        $state = fake_service::initial_state();
+        $this->assertSame(fake_service::SITE_NAME, $state['sitename']);
+        $this->assertSame(fake_service::PLATFORM_NAME, $state['platformname']);
     }
 
     /**
