@@ -174,6 +174,12 @@ final class deregistration_test extends \advanced_testcase {
             'other name' => ['Example', 'Example site', false],
             'empty' => ['', '', false],
             'invalid utf-8' => ["\xff", "\xff", false],
+            'two spaces in the stored name' => ['Example site', 'Example  site', true],
+            'two spaces typed' => ['Example  site', 'Example site', true],
+            'a tab and a line break' => ["Example\t\nsite", 'Example site', true],
+            'a no-break space' => ["Example\xC2\xA0site", 'Example site', true],
+            'an ideographic space' => ["Example\xE3\x80\x80site", 'Example site', true],
+            'no space where the name has one' => ['Examplesite', 'Example site', false],
         ];
     }
 

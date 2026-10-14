@@ -40,13 +40,15 @@ final class deregistration {
     }
 
     /**
-     * NFKC without surrounding spaces; empty for invalid UTF-8.
+     * NFKC without surrounding spaces and with every run of white space turned into one space; empty for invalid UTF-8.
+     * A browser shows a run of spaces as one, and copying it gives one, so the name on the screen has to match.
      *
      * @param string $text Text.
      * @return string
      */
     private static function normalize(string $text): string {
-        return trim((string) \Normalizer::normalize($text, \Normalizer::FORM_KC));
+        $normalized = (string) \Normalizer::normalize($text, \Normalizer::FORM_KC);
+        return trim((string) preg_replace('/[\s\p{Z}]+/u', ' ', $normalized));
     }
 
     /**
