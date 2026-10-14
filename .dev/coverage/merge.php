@@ -21,8 +21,9 @@
 // shipped file whose source cannot be found. The lines that the tables of the runs take away are listed in the output,
 // for every file, so that the 100% can be checked; so is every shipped file that has no statement in the Clover reports.
 //
-// --summary=<file> writes the counted lines as {"covered": N, "total": M}, also when the merge fails on a missed line (the
-// numbers are the ones of the output line "Total"). It is not written when an input cannot be used (exit code 2).
+// --summary=<file> writes the counted lines as {"covered": N, "total": M} (the numbers of the output line "Total"), also when
+// the merge fails on a missed line. It is not written when the measurement is not valid: an input that cannot be used (exit
+// code 2), or any other problem (a shipped file in no report, codeCoverageIgnore, an unlisted file, nothing to count).
 //
 // Usage: php merge.php --shipped=<file list> [--report=<output file>] [--summary=<json file>] [--root=<plugin source>]
 //                      <report files...>
@@ -217,6 +218,8 @@ if ($shipped === []) {
 }
 
 $problems = [];
+// Set by every problem except missed lines: then the counts are not a valid measurement and no summary is written.
+$invalid = false;
 $notes = [];
 $total = 0;
 $hit = 0;
@@ -227,10 +230,12 @@ foreach ($shipped as $file) {
     }
     foreach ($source as $index => $text) {
         if (stripos($text, 'codeCoverageIgnore') !== false) {
+            $invalid = true;
             $problems[] = sprintf('%s:%d: codeCoverageIgnore removes lines from the coverage report', $file, $index + 1);
         }
     }
     if (!array_key_exists($file, $statements)) {
+        $invalid = true;
         $problems[] = "$file: not in any coverage report";
         continue;
     }
@@ -253,6 +258,7 @@ foreach ($shipped as $file) {
         }
     }
     if ($dropped !== [] && count($dropped) === count($statements[$file])) {
+        $invalid = true;
         $problems[] = "$file: nothing to count, all statements are not executable per pcov: " . secbk_ranges($dropped);
     } else if ($dropped !== []) {
         $notes[] = "$file: not executable per pcov: " . secbk_ranges($dropped);
@@ -269,9 +275,11 @@ $outside = array_filter(
 );
 sort($outside);
 foreach ($outside as $file) {
+    $invalid = true;
     $problems[] = "in a coverage report but not in the release list: $file";
 }
 if ($total === 0) {
+    $invalid = true;
     $problems[] = 'no statement was counted in any shipped file';
 }
 
@@ -282,7 +290,7 @@ echo $text;
 if ($reportfile !== null) {
     file_put_contents($reportfile, $text);
 }
-if ($summaryfile !== null) {
+if ($summaryfile !== null && !$invalid) {
     $summary = json_encode(['covered' => $hit, 'total' => $total]) . "\n";
     if (file_put_contents($summaryfile, $summary) !== strlen($summary)) {
         secbk_fail("cannot write $summaryfile");

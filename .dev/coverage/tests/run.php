@@ -97,6 +97,21 @@ secbk_expect(
     (string) @file_get_contents($summary)
 );
 @unlink($summary);
+// Only missed lines leave a valid measurement. Any other problem writes no summary, so that the badge keeps the last one.
+foreach (
+    [
+        'a shipped file in no report' => "--shipped=$fixtures/shipped-missing.txt $fixtures/phpunit.xml $fixtures/phpunit-405.xml $fixtures/behat-1.json",
+        'codeCoverageIgnore in a shipped file' => "--shipped=$fixtures/shipped-ignore.txt $fixtures/phpunit-ignore.xml",
+        'a file that is not on the release list' => "--shipped=$fixtures/shipped-a.txt $fixtures/phpunit-extra.xml",
+        'a file with nothing to count' => "--shipped=$fixtures/shipped-lib.txt $fixtures/phpunit-lib.xml $fixtures/run-lib-disjoint.json",
+        'no statement at all' => "--shipped=$fixtures/shipped-a.txt $fixtures/phpunit-nostmt.xml",
+    ] as $label => $arguments
+) {
+    @unlink($summary);
+    [$code, $out] = secbk_run_merge("--summary=$summary $arguments");
+    secbk_expect("$label exits 1 and writes no summary", $code === 1 && !is_file($summary), $out . (string) @file_get_contents($summary));
+}
+@unlink($summary);
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-ok.txt --summary=$summary $fixtures/does-not-exist.json");
 secbk_expect('an input that cannot be used writes no summary', $code === 2 && !is_file($summary), $out);
 [$code, $out] = secbk_run_merge(
