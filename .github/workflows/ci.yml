@@ -177,7 +177,9 @@ jobs:
           mkdir -p plugin/.dev/coverage/out/raw
           touch plugin/.dev/coverage/out/raw/ENABLED
           scan="$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')"
-          printf 'auto_prepend_file=%s\npcov.directory=%s\n' \
+          # OPcache is off, as in .dev/coverage/run.sh: with it on, pcov counts lines that PHPUnit never counts (for example the
+          # defined('MOODLE_INTERNAL') line of settings.php), and the denominator of the web runs differs from the CLI runs.
+          printf 'auto_prepend_file=%s\npcov.directory=%s\nopcache.enable=0\nopcache.enable_cli=0\n' \
             "$GITHUB_WORKSPACE/plugin/.dev/coverage/collector.php" "$GITHUB_WORKSPACE/moodle" \
             | sudo tee "$scan/zz-secbk-coverage.ini"
           if [ -f moodle/admin/cli/upgrade.php ]; then cli=moodle/admin/cli; else cli=moodle/public/admin/cli; fi
