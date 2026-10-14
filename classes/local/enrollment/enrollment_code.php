@@ -31,12 +31,17 @@ final class enrollment_code {
      * The code in its normal form, SEC-BK-XXXX-XXXX-XXXX-XXXX-XXXX.
      *
      * Full-width letters, digits and spaces become half-width; O becomes 0, I and L become 1;
-     * spaces and hyphens are removed. The SECBK prefix is removed only when 25 characters remain.
+     * spaces and hyphens are removed. Invalid UTF-8 and control characters other than white space give null.
+     * The SECBK prefix is removed only when 25 characters remain.
      *
      * @param #[|\SensitiveParameter|]|string $input Typed text.
      * @return string|null Null when the text cannot be a code.
      */
     public static function normalize(#[\SensitiveParameter] string $input): ?string {
+        // Before any conversion: PHP 8.1 mb_convert_kana drops a trailing NUL, and mbstring can be set to drop bad bytes.
+        if (!mb_check_encoding($input, 'UTF-8') || preg_match('/[\x00-\x08\x0E-\x1F\x7F]/', $input) === 1) {
+            return null;
+        }
         $value = strtoupper((string) preg_replace('/[\s\-]+/u', '', mb_convert_kana($input, 'as', 'UTF-8')));
         $value = strtr($value, ['O' => '0', 'I' => '1', 'L' => '1']);
         if ($value === '' || strspn($value, self::ALPHABET) !== strlen($value)) {

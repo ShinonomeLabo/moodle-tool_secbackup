@@ -87,7 +87,11 @@ final class enrollment_code_test extends \basic_testcase {
             'too long' => [self::CODE . '-AAAA'],
             'symbols' => ['7QF2!MXA9-PDTW-4HJC-8NR5'],
             'nul byte' => ["7QF2MXA9PDTW4HJC8NR5\0"],
+            'nul byte at the start' => ["\0" . '7QF2MXA9PDTW4HJC8NR5'],
+            'nul byte in the middle' => ["7QF2MXA9PD\0TW4HJC8NR5"],
             'control character' => ["7QF2MXA9PDTW\x074HJC8NR5"],
+            'control character 0x01' => ["7QF2MXA9PDTW4HJC8NR5\x01"],
+            'delete character' => ["7QF2MXA9PDTW4HJC8NR5\x7f"],
             'invalid utf-8' => ["7QF2MXA9PDTW4HJC8NR5\xff"],
             'only separators' => [" - \n"],
         ];
@@ -102,5 +106,26 @@ final class enrollment_code_test extends \basic_testcase {
      */
     public function test_invalid_inputs(string $input): void {
         $this->assertNull(enrollment_code::normalize($input));
+    }
+
+    /**
+     * An invalid byte is refused also when mbstring is told to drop what it cannot convert.
+     */
+    public function test_invalid_utf8_is_refused_when_mbstring_drops_bad_bytes(): void {
+        $before = ini_get('mbstring.substitute_character');
+        ini_set('mbstring.substitute_character', 'none');
+        try {
+            $this->assertNull(enrollment_code::normalize("7QF2MXA9PDTW4HJC8NR5\xff"));
+            $this->assertNull(enrollment_code::normalize("7QF2MXA9PD\xffTW4HJC8NR5"));
+        } finally {
+            ini_set('mbstring.substitute_character', $before === false ? '' : $before);
+        }
+    }
+
+    /**
+     * Tab, line feed and carriage return are still read as separators.
+     */
+    public function test_white_space_controls_are_still_separators(): void {
+        $this->assertSame(self::CODE, enrollment_code::normalize("7QF2\tMXA9\r\nPDTW\x0b4HJC\x0c8NR5"));
     }
 }
