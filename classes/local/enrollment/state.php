@@ -97,6 +97,20 @@ final class state {
     }
 
     /**
+     * Whether the database holds a site ID for the plugin, whatever the cached settings say.
+     *
+     * The settings are cached, and a request that read them just before a registration was committed can cache the
+     * values from before it. This asks the table itself.
+     *
+     * @return bool
+     */
+    public static function site_id_is_stored(): bool {
+        global $DB;
+        $value = $DB->get_field('config_plugins', 'value', ['plugin' => 'tool_secbackup', 'name' => 'siteid']);
+        return (string) $value !== '';
+    }
+
+    /**
      * Site ID at the service.
      *
      * @return string

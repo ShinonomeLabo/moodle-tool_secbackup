@@ -53,6 +53,11 @@ final class poller {
      */
     public function run(): string {
         $state = state::load();
+        if (!$state->is_enrolled() && state::site_id_is_stored()) {
+            // The cached settings are from before a registration. Drop them and read the registration again.
+            \cache_helper::invalidate_by_definition('core', 'config', [], 'tool_secbackup');
+            $state = state::load();
+        }
         if (!$state->is_enrolled()) {
             return 'notregistered';
         }
