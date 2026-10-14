@@ -1,0 +1,24 @@
+name: Local checkout for act
+description: >-
+  Stands in for actions/checkout when .dev/ci/act.sh runs the workflow with act. The real action would fetch the commit
+  from GitHub. This one copies the files that git tracks into the folder named by path, like the real action does.
+inputs:
+  path:
+    default: ''
+  ref:
+    default: ''
+  repository:
+    default: ''
+  fetch-depth:
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TARGET: ${{ inputs.path }}
+      run: |
+        if [ -n "$TARGET" ]; then
+          mkdir -p "$TARGET"
+          git -C "$GITHUB_WORKSPACE" ls-files -z | tar -C "$GITHUB_WORKSPACE" --null -T - -cf - | tar -x -C "$GITHUB_WORKSPACE/$TARGET"
+        fi
