@@ -23,6 +23,7 @@ use tool_secbackup\tests\fake_service;
 use tool_secbackup\tests\network_fakes;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\enrollment\poller::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\enrollment\state::class)]
 /**
  * Tests for the status request.
  *
@@ -30,6 +31,7 @@ use tool_secbackup\tests\network_fakes;
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  * @covers     \tool_secbackup\local\enrollment\poller
+ * @covers     \tool_secbackup\local\enrollment\state
  */
 final class poller_test extends \advanced_testcase {
     /** @var string Connection URL. */
