@@ -34,6 +34,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          persist-credentials: false
 
       # A run whose test jobs failed has no summary, because the coverage job did not run. Then the last badge stays.
       - name: Look for the coverage summary of the run
@@ -42,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          count="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+          count="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?name=coverage-summary" \
             --jq '[.artifacts[] | select(.name == "coverage-summary" and (.expired | not))] | length')"
           if [ "$count" = 1 ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
