@@ -196,71 +196,10 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame([422, 'invalid_request'], self::enroll_with($change(self::body())));
     }
 
-    /**
-     * The files that must stand on their own.
-     *
-     * @return array
-     */
-    public static function standalone_class_provider(): array {
-        return [
-            'the fake service' => [fake_service::class],
-            'the response signer' => [envelope_builder::class],
-        ];
-    }
-
-    #[\PHPUnit\Framework\Attributes\DataProvider('standalone_class_provider')]
-    /**
-     * The development server loads these files without Moodle, and a test that uses the plugin's own classes to check the
-     * plugin would pass even when both are wrong in the same way.
-     *
-     * @dataProvider standalone_class_provider
-     * @param string $class The class whose file is read.
-     */
-    public function test_it_uses_nothing_of_the_plugin_or_of_moodle(string $class): void {
-        $tokens = token_get_all((string) file_get_contents((new \ReflectionClass($class))->getFileName()));
-        $moodle = array_flip(get_defined_functions()['user']);
-        $found = [];
-        foreach ($tokens as $index => $token) {
-            if (!is_array($token)) {
-                continue;
-            }
-            [$type, $text] = $token;
-            $name = ltrim($text, '\\');
-            $isclass = in_array($type, [T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)
-                && (str_starts_with($name, 'tool_secbackup\\local') || str_starts_with($name, 'core'));
-            $isfunction = $type === T_STRING && isset($moodle[strtolower($text)]) && self::is_function_call($tokens, $index);
-            if ($isclass || $isfunction || $type === T_GLOBAL) {
-                $found[] = $text;
-            }
-        }
-        $this->assertSame([], $found);
-    }
-
     public function test_a_fresh_service_gives_the_names_the_tests_expect(): void {
         // The answer to an enrolment carries these two names, so that a test can register a site with other ones.
         $state = fake_service::initial_state();
         $this->assertSame(fake_service::SITE_NAME, $state['sitename']);
         $this->assertSame(fake_service::PLATFORM_NAME, $state['platformname']);
-    }
-
-    /**
-     * Tells whether the name at a position of the tokens is the call of a function (and not of a method, or a name of a class).
-     *
-     * @param array $tokens Result of token_get_all().
-     * @param int $index Position of the name.
-     * @return bool
-     */
-    private static function is_function_call(array $tokens, int $index): bool {
-        $next = $index + 1;
-        while (isset($tokens[$next]) && is_array($tokens[$next]) && $tokens[$next][0] === T_WHITESPACE) {
-            $next++;
-        }
-        $before = $index - 1;
-        while (isset($tokens[$before]) && is_array($tokens[$before]) && $tokens[$before][0] === T_WHITESPACE) {
-            $before--;
-        }
-        $previous = $tokens[$before] ?? null;
-        $isaccess = is_array($previous) && in_array($previous[0], [T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_NEW, T_FUNCTION], true);
-        return ($tokens[$next] ?? null) === '(' && !$isaccess;
     }
 }

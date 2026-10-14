@@ -632,7 +632,11 @@ final class connect_page_test extends \advanced_testcase {
     }
 
     public function test_the_top_of_the_second_step(): void {
-        connection_form::mock_submit(['stage' => 'connection', 'endpoint' => self::API, 'publickey' => fake_service::ENCRYPTION_KEY]);
+        connection_form::mock_submit([
+            'stage' => 'connection',
+            'endpoint' => self::API,
+            'publickey' => fake_service::ENCRYPTION_KEY,
+        ]);
         $page = self::page(self::service());
         $this->assertNull($page->handle());
         $html = $page->render();
