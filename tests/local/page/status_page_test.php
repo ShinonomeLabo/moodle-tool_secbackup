@@ -19,6 +19,7 @@ namespace tool_secbackup\local\page;
 use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
 use tool_secbackup\local\crypto\signing_keypair;
+use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\enrollment\state;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\page\status_page::class)]
@@ -195,6 +196,13 @@ final class status_page_test extends \advanced_testcase {
         $html = (new status_page())->render();
         $this->assertStringNotContainsString(userdate(0), $html);
         $this->assertSame(2, substr_count($html, get_string('status_unknown', 'tool_secbackup')));
+    }
+
+    public function test_a_registered_site_without_its_signing_key_is_still_shown(): void {
+        // A removal that stopped half-way leaves a registered site without its key.
+        self::register();
+        signing_keys::forget();
+        $this->assertStringContainsString('Example &lt;b&gt;site&lt;/b&gt;', (new status_page())->render());
     }
 
     public function test_needs_both_capabilities(): void {

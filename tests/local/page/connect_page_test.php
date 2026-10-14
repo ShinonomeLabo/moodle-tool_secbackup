@@ -21,6 +21,7 @@ use tool_secbackup\form\connection_form;
 use tool_secbackup\form\deregister_form;
 use tool_secbackup\form\register_form;
 use tool_secbackup\local\crypto\public_key_format;
+use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\enroller;
 use tool_secbackup\local\enrollment\state;
@@ -449,6 +450,18 @@ final class connect_page_test extends \advanced_testcase {
             s(get_string('enroll_code_used_advice', 'tool_secbackup')),
             $page->render()
         );
+    }
+
+    public function test_a_registered_site_without_its_signing_key_can_still_be_removed(): void {
+        // A removal that stopped half-way leaves a registered site without its key.
+        self::register(self::service());
+        signing_keys::forget();
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assertStringContainsString('name="confirmname"', $page->render());
+        deregister_form::mock_submit(['stage' => 'deregister', 'confirmname' => fake_service::SITE_NAME]);
+        $this->assertNotNull(self::page(self::service())->handle());
+        $this->assertFalse(state::load()->is_enrolled());
     }
 
     public function test_create_without_an_enroller(): void {
