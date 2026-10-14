@@ -330,6 +330,9 @@ final class runner {
     /**
      * The mount that holds a path, from the text of /proc/self/mountinfo.
      *
+     * The longest mount point wins. Of two mounts on the same mount point the later one wins: it covers the earlier
+     * one, as a network file system does that is mounted on top of its automounter.
+     *
      * @param string $path Absolute path.
      * @param string $mountinfo Content of /proc/self/mountinfo.
      * @return array|null ['type' => file system type, 'source' => mount source, 'mount' => mount point]
@@ -345,7 +348,7 @@ final class runner {
             }
             $mountpoint = self::unescape($left[4]);
             $inside = $mountpoint === '/' || $path === $mountpoint || str_starts_with($path, $mountpoint . '/');
-            if ($inside && ($best === null || strlen($mountpoint) > strlen($best['mount']))) {
+            if ($inside && ($best === null || strlen($mountpoint) >= strlen($best['mount']))) {
                 $best = ['type' => $right[0], 'source' => self::unescape($right[1]), 'mount' => $mountpoint];
             }
         }

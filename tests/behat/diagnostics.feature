@@ -33,7 +33,7 @@ Feature: Check the connection to the backup service
     And I press "Register"
     Then I should see "Could not connect to the service"
     And I should see "To check the network of this server, open Connection diagnostics."
-    And ".alert-info .close" "css_element" should not exist
-    And ".alert-info .btn-close" "css_element" should not exist
+    And "//div[contains(@class, 'alert-info')][contains(., 'To check the network of this server')]" "xpath_element" should exist
+    And "//div[contains(@class, 'alert-info')][contains(., 'To check the network of this server')]//button" "xpath_element" should not exist
     And I click on "Connection diagnostics" "link" in the ".alert-info" "css_element"
     And I should see "Direct connection, without a proxy."

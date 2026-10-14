@@ -188,6 +188,31 @@ final class diagnostics_page_test extends \advanced_testcase {
         $this->assert_escaped_once($page->render(), $message, s($message));
     }
 
+    public function test_the_field_is_marked_as_required(): void {
+        $page = new diagnostics_page(self::runner(new MockHandler([])));
+        $page->handle();
+        $this->assertStringContainsString('title="' . get_string('required') . '"', $page->render());
+    }
+
+    public function test_an_empty_typed_url_is_refused(): void {
+        diagnostics_form::mock_submit(['endpoint' => '']);
+        $page = new diagnostics_page(self::runner(new MockHandler([])));
+        $page->handle();
+        $this->assertStringContainsString(get_string('diag_no_endpoint', 'tool_secbackup'), $page->render());
+    }
+
+    public function test_the_developer_settings_decide_which_typed_url_is_accepted(): void {
+        global $CFG;
+        $CFG->tool_secbackup_developer = ['allowhttp' => true, 'allowprivatehosts' => true];
+        diagnostics_form::mock_submit(['endpoint' => 'http://localhost:8099/api/lms-backup/v1']);
+        $mock = new MockHandler([new Response(401, [], '{"error":{"code":"signature_required"}}')]);
+        $page = new diagnostics_page(self::runner($mock));
+        $page->handle();
+        $html = $page->render();
+        $this->assertStringNotContainsString(get_string('endpoint_scheme', 'tool_secbackup'), $html);
+        $this->assertSame('http://localhost:8099/api/lms-backup/v1/status', (string) $mock->getLastRequest()->getUri());
+    }
+
     public function test_saved_url_that_no_longer_reads(): void {
         self::register('http://localhost:8099/api/lms-backup/v1');
         $page = new diagnostics_page(self::runner(new MockHandler([])));

@@ -261,6 +261,23 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(check_result::PASS, $named['dns']->result);
     }
 
+    public function test_a_host_that_bypasses_the_proxy_is_reached_directly(): void {
+        global $CFG;
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '3128';
+        $CFG->proxybypass = network_fakes::HOST;
+        $runner = self::runner([self::unsigned_answer()], make_request_directory());
+        $this->assertSame(
+            get_string('diag_proxy_direct', 'tool_secbackup'),
+            self::by_name($runner->run(self::endpoint()))['proxy']->detail
+        );
+        $this->assertSame(
+            get_string('diag_proxy_used', 'tool_secbackup', 'HTTP proxy.example.ac.jp:3128'),
+            self::by_name(self::runner([], make_request_directory())->run(null))['proxy']->detail,
+            'Without a connection URL the proxy is described for a host that is not on the list.'
+        );
+    }
+
     public function test_a_socks5_proxy_leaves_the_name_to_this_server(): void {
         global $CFG;
         $CFG->proxyhost = 'proxy.example.ac.jp';
@@ -398,6 +415,23 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('', $named['connection']->advice);
     }
 
+    public function test_selinux_that_cannot_be_read_does_not_explain_a_failed_connection(): void {
+        $root = system_roots::nfs('1');
+        unlink($root . '/sys/fs/selinux/enforce');
+        $named = self::by_name(self::runner([self::failure(7)], $root)->run(self::endpoint()));
+        $this->assertSame(check_result::FAIL, $named['connection']->result);
+        $this->assertSame('', $named['connection']->advice);
+    }
+
+    public function test_selinux_that_cannot_be_read_does_not_explain_no_dns_over_https(): void {
+        $root = system_roots::nfs('1');
+        unlink($root . '/sys/fs/selinux/enforce');
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $named = self::by_name(self::runner([], $root, [], $guard)->run(self::endpoint()));
+        $this->assertSame(get_string('dns_doh_unavailable', 'tool_secbackup'), $named['dns']->advice);
+        $this->assertSame('', $named['connection']->advice);
+    }
+
     public function test_selinux_permissive_and_nfs(): void {
         global $CFG;
         $named = self::by_name(self::runner([self::unsigned_answer()], system_roots::nfs('0'))->run(self::endpoint()));
@@ -460,6 +494,8 @@ final class runner_test extends \advanced_testcase {
         return [
             'a context' => ["system_u:system_r:httpd_t:s0\0", 'httpd_t'],
             'a context with a line feed' => ["system_u:system_r:php_fpm_t:s0\n", 'php_fpm_t'],
+            'a context that ends with its type' => ["system_u:system_r:httpd_t\0", 'httpd_t'],
+            'a context that ends with its type and a line feed' => ["system_u:system_r:httpd_t\n", 'httpd_t'],
             'a context without a type' => ["unconfined\0", null],
             'an empty context' => ['', null],
         ];
@@ -561,6 +597,48 @@ final class runner_test extends \advanced_testcase {
         $named = self::by_name(self::runner([], make_request_directory())->run(null));
         $this->assertSame($expected, $named['clock']->result);
         $this->assertSame(get_string('diag_clock_seconds', 'tool_secbackup', abs($difference)), $named['clock']->detail);
+    }
+
+    /**
+     * The clock difference and the minutes the advice names: the minutes are rounded.
+     *
+     * @return array
+     */
+    public static function clock_minutes_provider(): array {
+        return [
+            'two minutes' => [120, 2],
+            'two and a half minutes are rounded up' => [150, 3],
+            'two and a half minutes, this server ahead' => [-150, 3],
+            'just under three minutes' => [179, 3],
+            'ten minutes' => [600, 10],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('clock_minutes_provider')]
+    /**
+     * The advice of the clock check names the minutes, rounded.
+     *
+     * @dataProvider clock_minutes_provider
+     * @param int $difference The service's clock minus this server's clock, in seconds.
+     * @param int $minutes The minutes the advice names.
+     */
+    public function test_clock_advice_names_the_rounded_minutes(int $difference, int $minutes): void {
+        $result = new enroll_result(
+            '11111111-2222-4333-8444-555555555555',
+            'Example site',
+            'Example Platform',
+            'https://app.example.test/api/lms-backup/v1',
+            1760000000,
+            $difference
+        );
+        state::save_enrollment(
+            $result,
+            'secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+            signing_keypair::generate(),
+            1760000000
+        );
+        $named = self::by_name(self::runner([], make_request_directory())->run(null));
+        $this->assertSame(get_string('clock_skew_warning', 'tool_secbackup', $minutes), $named['clock']->advice);
     }
 
     public function test_moodledata_on_a_local_file_system_is_information(): void {
@@ -712,6 +790,15 @@ final class runner_test extends \advanced_testcase {
             'an escaped backslash' => [
                 $root . "30 22 0:40 / /srv/moodledata rw - nfs a\\134b rw\n",
                 ['type' => 'nfs', 'source' => 'a\\b', 'mount' => '/srv/moodledata'],
+            ],
+            'an escape with a digit that is not octal stays' => [
+                $root . "30 22 0:40 / /srv/moodledata rw - nfs a\\089b rw\n",
+                ['type' => 'nfs', 'source' => 'a\\089b', 'mount' => '/srv/moodledata'],
+            ],
+            'a mount on a mount point that is already mounted covers it' => [
+                $root . "30 22 0:40 / /srv/moodledata rw - autofs /etc/auto.data rw\n" .
+                "31 30 0:41 / /srv/moodledata rw - nfs4 server:/x rw\n",
+                ['type' => 'nfs4', 'source' => 'server:/x', 'mount' => '/srv/moodledata'],
             ],
             'an escape that is not three octal digits stays' => [
                 $root . "30 22 0:40 / /srv/moodledata rw - nfs a\\04b rw\n",
