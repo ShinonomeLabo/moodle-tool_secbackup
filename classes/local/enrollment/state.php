@@ -34,13 +34,16 @@ use tool_secbackup\local\trust\developer_settings;
  */
 final class state {
     /**
-     * @var string[] Settings that hold the registration (the signing key is kept by signing_keys). The site name and
-     *     the site ID are last, in that order: the site ID is what makes the site read as registered, and the removal
-     *     form asks for the site name. While they are there, a removal that failed half-way can be confirmed and run
-     *     again.
+     * @var string[] Settings that hold the registration (the signing key is kept by signing_keys), in the order in which
+     *     they are removed. They are removed one by one, outside a transaction, so a failure can stop the removal half-way.
+     *     The list ends with the connection URL, the site ID and the site name, in that order. The site ID is what makes
+     *     the site read as registered, and the removal form asks for the site name: while the site ID is there, the name
+     *     is there too, so that the removal can be confirmed and run again. A registered site keeps its connection URL
+     *     as long as possible. Once the site ID is gone, the site reads as not registered, and a later registration
+     *     removes every stored value first.
      */
-    private const NAMES = ['platformname', 'endpoint', 'encryptionkey', 'enrolledat', 'clockskew',
-        'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'sitename', 'siteid'];
+    private const NAMES = ['platformname', 'encryptionkey', 'enrolledat', 'clockskew',
+        'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'endpoint', 'siteid', 'sitename'];
 
     /** @var \stdClass The plugin's settings. */
     private \stdClass $config;
@@ -286,8 +289,9 @@ final class state {
     /**
      * Forgets the signing key and the registration.
      *
-     * The key goes first and the site ID last, so that a failure in between leaves a site that still reads as
-     * registered, and the removal can be run again; the key is never what is left behind.
+     * The key goes first, then the settings in the order of the list of names, so that a failure in between leaves a
+     * site that still reads as registered and still has its name, and the removal can be run again; the key is never
+     * what is left behind.
      */
     public static function clear(): void {
         signing_keys::forget();
@@ -295,7 +299,7 @@ final class state {
     }
 
     /**
-     * Removes the registration settings, the site name and then the site ID last.
+     * Removes the registration settings, in the order of the list: the site name goes after the site ID.
      */
     private static function forget_values(): void {
         foreach (self::NAMES as $name) {
