@@ -390,6 +390,67 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertTrue(state::load()->is_enrolled());
     }
 
+    /**
+     * The stored settings of the plugin.
+     *
+     * @return array
+     */
+    private static function stored(): array {
+        global $DB;
+        return $DB->get_records_menu('config_plugins', ['plugin' => 'tool_secbackup'], 'name', 'name, value');
+    }
+
+    /**
+     * Makes saving a signing key fail: Moodle has no key for its encryption and may not create one.
+     */
+    private function make_saving_the_key_fail(): void {
+        global $CFG;
+        $CFG->secretdataroot = make_request_directory();
+        $CFG->nokeygeneration = true;
+    }
+
+    public function test_a_failed_save_after_the_service_accepted_says_the_code_is_used_up(): void {
+        // Moodle holds events back while a transaction is open, and PHPUnit wraps each test in one.
+        $this->preventResetByRollback();
+        self::submit_registration();
+        $before = self::stored();
+        $this->make_saving_the_key_fail();
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string('signingkey_savefailed', 'tool_secbackup')), $html);
+        $this->assertStringContainsString(s(get_string('enroll_code_used_advice', 'tool_secbackup')), $html);
+        $this->assertSame($before, self::stored());
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    public function test_a_failed_save_of_a_registration_made_again_says_the_code_is_used_up(): void {
+        $this->preventResetByRollback();
+        $service = self::service();
+        self::register($service);
+        $service->state['codeused'] = false;
+        $before = self::stored();
+        self::submit_registration();
+        $this->make_saving_the_key_fail();
+        $page = self::page($service);
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string('signingkey_savefailed', 'tool_secbackup')), $html);
+        $this->assertStringContainsString(s(get_string('enroll_code_used_advice', 'tool_secbackup')), $html);
+        $this->assertSame($before, self::stored());
+        $this->assertTrue(state::load()->is_enrolled());
+    }
+
+    public function test_other_failures_do_not_say_the_code_is_used_up(): void {
+        self::submit_registration(['code' => 'SEC-BK-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ']);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assertStringNotContainsString(
+            s(get_string('enroll_code_used_advice', 'tool_secbackup')),
+            $page->render()
+        );
+    }
+
     public function test_create_without_an_enroller(): void {
         $page = new connect_page();
         $this->assertNull($page->handle());

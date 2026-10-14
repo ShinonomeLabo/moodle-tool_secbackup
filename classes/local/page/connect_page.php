@@ -141,6 +141,13 @@ final class connect_page {
             return null;
         } catch (plugin_exception $e) {
             $this->errors = [$e->message()];
+            if ($e->errorcode === 'signingkey_savefailed') {
+                // The service accepted the code before the key could be saved here, so the code is used up. The
+                // message alone ends with "try again", which would mean pressing Register with a code that cannot work.
+                // The error code is compared, not the class: a public key that cannot be read raises the same class
+                // before anything is sent.
+                $this->errors[] = get_string('enroll_code_used_advice', 'tool_secbackup');
+            }
             return null;
         }
         if (abs($result->clockskew) >= client::CLOCK_SKEW_WARNING) {

@@ -67,6 +67,7 @@ $string['endpoint_port'] = '接続先の URL に、標準の番号 (443) 以外�
 $string['endpoint_query'] = '接続先の URL に「?」や「#」は入れられません。プラットフォームの画面から、もう一度コピーしてください。';
 $string['endpoint_scheme'] = '接続先の URL は https:// で始めてください。';
 $string['endpoint_userinfo'] = '接続先の URL に、ユーザー名やパスワードは入れられません。';
+$string['enroll_code_used_advice'] = 'サービスは、この失敗の前に登録コードを受け付けています。同じ登録コードはもう使えません。原因を直してから、プラットフォームの画面で登録コードを発行し直し、もう一度登録してください。それまで、このサイトはサービスを使えません。';
 $string['enroll_done'] = 'このサイトを {$a} に登録しました。';
 $string['enroll_reissue_advice'] = '登録コードを誤った接続先に送った可能性があります。念のため、プラットフォームの画面で登録コードを発行し直してください。';
 $string['enroll_response_invalid'] = 'サービスからの登録の応答を読めませんでした。何も保存していません。';

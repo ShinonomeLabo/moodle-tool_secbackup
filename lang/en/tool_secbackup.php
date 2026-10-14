@@ -67,6 +67,7 @@ $string['endpoint_port'] = 'The connection URL must not contain a port number ot
 $string['endpoint_query'] = 'The connection URL must not contain "?" or "#". Copy the URL again from the platform screen.';
 $string['endpoint_scheme'] = 'The connection URL must start with https://.';
 $string['endpoint_userinfo'] = 'The connection URL must not contain a user name or a password.';
+$string['enroll_code_used_advice'] = 'The service accepted the registration code before this failure, so the code cannot be used again. Fix the problem, then issue a new registration code on the platform screen and register again. Until then, this site cannot use the service.';
 $string['enroll_done'] = 'This site was registered with {$a}.';
 $string['enroll_reissue_advice'] = 'The registration code may have been sent to a wrong connection URL. To be safe, issue a new registration code on the platform screen.';
 $string['enroll_response_invalid'] = 'The registration answer of the service could not be read. Nothing was saved.';
