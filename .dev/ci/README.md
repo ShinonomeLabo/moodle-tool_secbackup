@@ -42,6 +42,16 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 | PHPUnit tests, Behat features, command line scripts, coverage of this combination | `.dev/coverage/run.sh <ver> <db>` (PHPUnit with `--fail-on-warning`, Behat with the fake service of `.dev/fakesec`) |
 | Line coverage of all combinations | `php .dev/coverage/merge.php --shipped=... .dev/coverage/out/*/*` |
 
+### Steps whose local counterpart differs
+
+| Workflow step | What `run.sh` does instead, and why |
+|---|---|
+| Grunt (`moodle-plugin-ci grunt`) | The Gherkin lint of `tests/behat/*.feature`, which is the only Grunt task that applies to this plugin, with the configuration `.gherkin-lintrc` of the environment's Moodle checkout and the version of gherkin-lint that the Moodle branch pins in `npm-shrinkwrap.json`. `moodle-plugin-ci grunt` cannot run in the development environments: the web server image has no Node.js, and the command copies the plugin folder away and mirrors it back, which here is this repository with its `.git`. No check may write to the repository. gherkin-lint is installed once with npm into `.dev/ci/out/tools/gherkin-lint` (nothing global). The step fails when the plugin gains `amd/src`, `yui/src`, CSS, SCSS or LESS files, because CI would then run Grunt tasks that this step does not. |
+| Install Moodle with the plugin, Turn the coverage collector on | Done once by `.dev/env` scripts, and by `.dev/coverage/run.sh` for the collector. |
+| Upload the coverage, Upload Behat Faildump | No counterpart: the results stay in `.dev/coverage/out/<ver>-<db>/` and `.dev/ci/out/<ver>-<db>/`. |
+| `coverage` job (merge of all combinations, summary, 100% gate) | Not part of `run.sh`: one environment is one combination. `.dev/coverage/run.sh` merges the combination alone, and the merge of several is `php .dev/coverage/merge.php`. |
+| `Badges` workflow | Cannot run outside GitHub (`workflow_run`, Pages). `badge.php` and its tests run locally. |
+
 ## The commit rules and the history
 
 The commit rules need every commit of the history to have a Japanese message and the maintainers' identity, and `rules` checks
