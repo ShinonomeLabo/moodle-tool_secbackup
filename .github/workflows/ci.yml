@@ -29,6 +29,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
       - name: Write the pattern list from the secret
         env:
           SECBACKUP_PATTERNS: ${{ secrets.SECBACKUP_PATTERNS }}
