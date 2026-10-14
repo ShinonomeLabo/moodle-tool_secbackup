@@ -4,7 +4,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=env.sh
-source "$here/env.sh" "${1:?usage: devconfig.sh <405|501|502|503>}" pgsql
+source "$here/env.sh" "${1:?usage: devconfig.sh <405|500|501|502|503>}" pgsql
 config="$SECBK_MOODLE/config.php"
 if grep -q 'tool_secbackup development settings' "$config"; then
     echo "already set: $config"

@@ -19,7 +19,7 @@ An exported `SECBK_ENV_ROOT` wins over `local.env`, which wins over the default.
     .dev/env/down.sh 503 pgsql             # stop the containers; the installed data is kept
     .dev/env/down.sh 503 pgsql --volumes   # remove the containers and all their data
 
-Web ports: 4.5 = 18045, 5.1 = 18051, 5.2 = 18052, 5.3 = 18053 (admin / test).
+Web ports: 4.5 = 18045, 5.0 = 18050, 5.1 = 18051, 5.2 = 18052, 5.3 = 18053 (admin / test).
 
 ## Dummy data
 

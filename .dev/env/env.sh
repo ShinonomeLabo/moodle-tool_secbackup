@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Sets the variables for one dedicated development environment.
-# Usage: source .dev/env/env.sh <ver> <db>   (ver: 405|501|502|503, db: pgsql|mariadb|mysqli)
-secbk_ver="${1:?usage: env.sh <405|501|502|503> <pgsql|mariadb|mysqli>}"
-secbk_db="${2:?usage: env.sh <405|501|502|503> <pgsql|mariadb|mysqli>}"
+# Usage: source .dev/env/env.sh <ver> <db>   (ver: 405|500|501|502|503, db: pgsql|mariadb|mysqli)
+secbk_ver="${1:?usage: env.sh <405|500|501|502|503> <pgsql|mariadb|mysqli>}"
+secbk_db="${2:?usage: env.sh <405|500|501|502|503> <pgsql|mariadb|mysqli>}"
 
 case "$secbk_ver" in
     405) secbk_branch=MOODLE_405_STABLE; secbk_php=8.3; SECBK_PLUGIN_PATH=admin/tool/secbackup ;;
+    500) secbk_branch=MOODLE_500_STABLE; secbk_php=8.4; SECBK_PLUGIN_PATH=admin/tool/secbackup ;;
     501) secbk_branch=MOODLE_501_STABLE; secbk_php=8.4; SECBK_PLUGIN_PATH=public/admin/tool/secbackup ;;
     502) secbk_branch=MOODLE_502_STABLE; secbk_php=8.4; SECBK_PLUGIN_PATH=public/admin/tool/secbackup ;;
     503) secbk_branch=MOODLE_503_STABLE; secbk_php=8.4; SECBK_PLUGIN_PATH=public/admin/tool/secbackup ;;
@@ -22,10 +23,11 @@ case "$secbk_ver-$secbk_db" in
     405-pgsql) secbk_db_version=13 ;;
     405-mariadb) secbk_db_version=10.6.7 ;;
     405-mysqli) secbk_db_version=8.0 ;;
+    500-pgsql) secbk_db_version=14 ;;
     501-pgsql) secbk_db_version=15 ;;
     502-pgsql) secbk_db_version=16 ;;
     503-pgsql) secbk_db_version=17 ;;
-    501-mariadb | 502-mariadb) secbk_db_version=10.11 ;;
+    500-mariadb | 501-mariadb | 502-mariadb) secbk_db_version=10.11 ;;
     503-mariadb) secbk_db_version=11.4 ;;
     *-mysqli) secbk_db_version=8.4 ;;
 esac

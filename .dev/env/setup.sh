@@ -5,7 +5,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # The database does not matter for the checkout; pgsql is a placeholder.
 # shellcheck source=env.sh
-source "$here/env.sh" "${1:?usage: setup.sh <405|501|502|503>}" pgsql
+source "$here/env.sh" "${1:?usage: setup.sh <405|500|501|502|503>}" pgsql
 
 mkdir -p "$SECBK_ENV_ROOT"
 if [ ! -d "$SECBK_MOODLE/.git" ]; then
