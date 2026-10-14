@@ -94,8 +94,46 @@ A tag can be moved by whoever controls the repository of an action, so a tag is 
 
 There is no Dependabot configuration: its pull requests could not pass the commit rules.
 
+## act
+
+`.dev/ci/act.sh` runs a job of the workflow with act in a clone of the committed state (the clone is made next to the
+repository, in `secbackup-act`, because the coverage collector ignores every path that contains `/.dev/`). It needs act and
+Docker, and builds the image `secbk-act-ubuntu:24.04` on first use: catthehacker's `ubuntu:act-24.04` plus what GitHub's own
+runner image has and the workflow uses (locale-gen, the PostgreSQL and MySQL clients, nvm). The images are amd64, so on Apple
+Silicon they run emulated and slowly.
+
+    SECBACKUP_PATTERNS="$(printf '%s\n' some made-up words)" .dev/ci/act.sh rules
+    .dev/ci/act.sh test moodle:5.3 php:8.4 database:pgsql
+
+Never give act the real list of refused words. SECBK_ACT_EVENT=<file> runs a `pull_request` event from a JSON file.
+
+What ran, and what did not:
+
+| Job | Result under act |
+|---|---|
+| `rules` (push and pull_request events) | Runs completely: the tests of the hooks, every commit, the title and description of the pull request, the check for the development scripts, the tests of the coverage tools and of the badge. With a commit that has a made-up refused word, it fails at "Check every commit" with the reason and the commit, and neither the word nor the list is in the log. |
+| `test`, Moodle 5.3 with PHP 8.4 and PostgreSQL | Runs to the end in about 25 minutes: the install (4 minutes), every static check, PHPUnit (1099 tests, 1 skipped; 12 to 13 minutes), Behat (16 scenarios, 130 steps, 2 minutes), the command line scripts, and the coverage files, which merge to 100% with `merge.php` and give the badge. Only "Upload the coverage" fails, because act has no artifact service (no `ACTIONS_RUNTIME_TOKEN`). |
+| `coverage` | Not run: it needs the artifacts of `test`. The merge of the files that the `test` run left was run by hand with the commands of the job. |
+| `Badges` | Cannot run: act has no `workflow_run` and no Pages. It first runs on GitHub; `badge.php` is tested locally. |
+| The other 17 combinations | Not run with act (about 25 minutes each); `run.sh` runs them. |
+
+What act cannot do, and what stands in for it:
+
+- `actions/checkout` with `ref`, `repository` or `path` would fetch from GitHub, which has no commit of this repository yet.
+  A local action (`.dev/ci/act/local-checkout`) takes its place, and `act.sh` copies the files that git tracks into `plugin/`.
+  The checkout of the head of a pull request (`ref`) is therefore not tried by act.
+- The job container is catthehacker's, not GitHub's: its PATH does not name Node.js, and it lacks `locale-gen`, the database clients
+  and nvm. `act.sh` sets the PATH and the image adds the rest.
+- Uploading and downloading artifacts, `workflow_run`, Pages and the environment `github-pages`.
+- macOS and the other browsers.
+
+Two defects of the workflow were found by act and fixed: the site itself was never installed (moodle-plugin-ci prepares only the
+PHPUnit and Behat sites, so the reinstall with the collector and the command line scripts failed), and the `rules` job relied on a PHP that the
+runner image happens to have.
+
 ## Changing the workflows
 
-Run the change with act first, and with `run.sh` for the parts act cannot run. Only then run it on GitHub.
+Run the change with act first, and with `run.sh` for the parts act cannot run (the `Badges` workflow: `badge.php` and its tests;
+the combinations that act does not run). Only then run it on GitHub.
 
     docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color .github/workflows/*.yml
