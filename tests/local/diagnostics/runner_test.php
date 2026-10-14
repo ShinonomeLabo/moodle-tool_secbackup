@@ -577,6 +577,25 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('', $named['moodledata']->advice);
     }
 
+    public function test_moodledata_is_found_through_a_symbolic_link(): void {
+        global $CFG;
+        $real = make_request_directory() . '/real data';
+        mkdir($real);
+        $link = make_request_directory() . '/data-link';
+        symlink($real, $link);
+        $CFG->dataroot = $link;
+        $root = make_request_directory();
+        mkdir($root . '/proc/self', 0777, true);
+        file_put_contents(
+            $root . '/proc/self/mountinfo',
+            "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n35 22 0:40 / " . str_replace(' ', '\\040', realpath($real)) .
+            " rw - nfs4 server:/x rw\n"
+        );
+        $named = self::by_name(self::runner([], $root)->run(null));
+        $this->assertSame(check_result::WARN, $named['moodledata']->result);
+        $this->assertStringContainsString(realpath($real), $named['moodledata']->detail);
+    }
+
     public function test_moodledata_is_unknown_when_no_mount_holds_it(): void {
         $root = make_request_directory();
         mkdir($root . '/proc/self', 0777, true);
