@@ -57,6 +57,13 @@ final class declarations_test extends \advanced_testcase {
         $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $messageproviders['connection']['defaults']['email']);
     }
 
+    public function test_scheduled_tasks(): void {
+        $tasks = [];
+        include(self::dir() . '/db/tasks.php');
+        $this->assertSame([['classname' => 'tool_secbackup\task\poll_status', 'blocking' => 0, 'minute' => '*/5',
+            'hour' => '*', 'day' => '*', 'month' => '*', 'dayofweek' => '*']], $tasks);
+    }
+
     public function test_capabilities(): void {
         $capabilities = [];
         include(self::dir() . '/db/access.php');
