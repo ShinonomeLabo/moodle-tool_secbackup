@@ -16,9 +16,16 @@
 
 namespace tool_secbackup\local\enrollment;
 
+use tool_secbackup\local\api\api_exception;
+use tool_secbackup\local\api\client;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\endpoint\endpoint;
+use tool_secbackup\local\net\dns_guard;
+use tool_secbackup\local\net\transport;
+use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
+use tool_secbackup\local\trust\sec_trust;
+use tool_secbackup\tests\envelope_builder;
 use tool_secbackup\tests\fake_service;
 use tool_secbackup\tests\network_fakes;
 
@@ -182,31 +189,49 @@ final class poller_test extends \advanced_testcase {
     }
 
     /**
-     * Values of an error that are stored as text.
+     * Errors whose value is not what the producers give today.
      *
      * @return array[]
      */
-    public static function error_values(): array {
+    public static function odd_errors(): array {
         return [
-            'nothing' => [null, ''],
-            'text' => ['10', '10'],
-            'number' => [7, '7'],
-            'object' => [new \stdClass(), ''],
-            'array' => [['x'], ''],
+            'api error with an object' => [new api_exception('api_unexpected', '', 500, null, null, new \stdClass()), ''],
+            'plugin error with an object' => [new plugin_exception('signingkey_corrupt', new \stdClass()), ''],
+            'plugin error with an array' => [new plugin_exception('signingkey_corrupt', ['x']), ''],
+            'plugin error with text' => [new plugin_exception('signingkey_corrupt', 'x'), 'x'],
         ];
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('error_values')]
+    #[\PHPUnit\Framework\Attributes\DataProvider('odd_errors')]
     /**
      * Only a scalar value of an error is stored; anything else would be an error or a warning when cast.
      *
-     * @dataProvider error_values
-     * @param mixed $a Value of the error.
-     * @param string $expected What is stored.
+     * The exception is thrown by the name check of the transport, which runs outside the transport's own try.
+     *
+     * @dataProvider odd_errors
+     * @param \Throwable $error What the request throws.
+     * @param string $expected What is stored as the value of the error.
      */
-    public function test_error_value_is_stored_only_when_it_is_a_scalar(mixed $a, string $expected): void {
-        $method = new \ReflectionMethod(poller::class, 'text');
-        $this->assertSame($expected, $method->invoke(null, $a));
+    public function test_error_value_is_stored_only_when_it_is_a_scalar(\Throwable $error, string $expected): void {
+        $this->register();
+        $settings = developer_settings::from_value(null);
+        $guard = new dns_guard(
+            network_fakes::ranges(),
+            [network_fakes::doh('cloudflare', ['13.225.1.1'])],
+            static function (string $host) use ($error): array {
+                throw $error;
+            }
+        );
+        $client = new client(
+            new transport($settings, $guard, $this->service->handler()),
+            new sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]),
+            $settings,
+            static fn(): int => self::NOW
+        );
+        $this->assertSame('failed', (new poller($client, static fn(): int => self::NOW))->run());
+        $state = state::load();
+        $this->assertSame($error->errorcode, $state->last_poll_error());
+        $this->assertSame($expected, $state->last_poll_error_a());
     }
 
     public function test_unreadable_signing_key_is_recorded(): void {
