@@ -1,0 +1,85 @@
+name: Badges
+
+# Publishes the coverage badge of the README on GitHub Pages after every run of CI on main. The CI workflow itself stays
+# read-only: only this workflow may write Pages, and only for a run of a push to main of this repository.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  coverage-badge:
+    name: Publish the coverage badge
+    if: >-
+      github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      # A run whose test jobs failed has no summary, because the coverage job did not run. Then the last badge stays.
+      - name: Look for the coverage summary of the run
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          count="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "coverage-summary" and (.expired | not))] | length')"
+          if [ "$count" = 1 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "The run has no coverage summary (count: $count). The badge is not changed."
+          fi
+
+      - name: Download the coverage summary
+        if: steps.find.outputs.found == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-summary
+          path: ${{ runner.temp }}/summary
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Set up PHP
+        if: steps.find.outputs.found == 'true'
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Draw the badge
+        if: steps.find.outputs.found == 'true'
+        run: |
+          mkdir "$RUNNER_TEMP/site"
+          php .dev/ci/badge.php "$RUNNER_TEMP/summary/coverage-summary.json" "$RUNNER_TEMP/site/coverage.svg"
+
+      - name: Upload the site
+        if: steps.find.outputs.found == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        if: steps.find.outputs.found == 'true'
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
