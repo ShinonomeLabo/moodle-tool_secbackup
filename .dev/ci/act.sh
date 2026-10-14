@@ -2,6 +2,8 @@
 # Runs a job of .github/workflows/ci.yml with act (GitHub Actions on the local Docker), in a clone of the committed state.
 # Usage: .dev/ci/act.sh rules                                   (needs SECBACKUP_PATTERNS in the environment: a made-up list)
 #        .dev/ci/act.sh test moodle:5.3 php:8.4 database:pgsql  (one combination of the matrix)
+# SECBK_ACT_EVENT=<file> runs the pull_request event described by that JSON file instead of a push (the rules job then
+# also checks the title and the description of the pull request).
 # Output: .dev/ci/out/act/<job>.log. See .dev/ci/README.md for what act cannot do.
 # The clone is made next to the repository (SECBK_ACT_DIR overrides), not under .dev/: the coverage collector leaves out
 # every file whose path contains /.dev/, and the plugin of the test job would be under the clone.
@@ -22,8 +24,13 @@ fi
 rm -rf "${work:?}/clone"
 git clone -q "$repo" "$work/clone"
 cd "$work/clone"
-args=(push -j "$job" --bind --pull=false --container-architecture linux/amd64 -P "ubuntu-24.04=$image"
+args=("${SECBK_ACT_EVENT:+pull_request}" -j "$job" --bind --pull=false --container-architecture linux/amd64 -P "ubuntu-24.04=$image"
     --local-repository "actions/checkout@$checkout=$repo/.dev/ci/act/local-checkout")
+if [ -n "${SECBK_ACT_EVENT:-}" ]; then
+    args+=(-e "$SECBK_ACT_EVENT")
+else
+    args[0]=push
+fi
 secrets=()
 case "$job" in
     rules)
