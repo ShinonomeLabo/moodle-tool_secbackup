@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs a job of .github/workflows/ci.yml with act (GitHub Actions on the local Docker), in a clone of the committed state.
 # Usage: .dev/ci/act.sh rules                                   (needs SECBACKUP_PATTERNS in the environment: a made-up list)
-#        .dev/ci/act.sh test moodle=5.3 php=8.4 database=pgsql  (one combination of the matrix)
+#        .dev/ci/act.sh test moodle:5.3 php:8.4 database:pgsql  (one combination of the matrix)
 # Output: .dev/ci/out/act/<job>.log. See .dev/ci/README.md for what act cannot do.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
