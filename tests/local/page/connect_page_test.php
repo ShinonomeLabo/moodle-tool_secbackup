@@ -184,6 +184,16 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertFalse(state::load()->is_enrolled());
     }
 
+    public function test_problems_are_shown_as_error_notifications(): void {
+        global $PAGE;
+        self::submit_registration(['code' => 'SEC-BK-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ']);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $expected = $PAGE->get_renderer('tool_secbackup')
+            ->error_message(get_string('api_enrollment_code_invalid', 'tool_secbackup'));
+        $this->assertStringContainsString($expected, $page->render());
+    }
+
     public function test_untrusted_answer_advises_a_new_code(): void {
         self::submit_registration();
         $page = self::page(self::service(['mode' => 'untrusted_key']));
@@ -462,6 +472,76 @@ final class connect_page_test extends \advanced_testcase {
         deregister_form::mock_submit(['stage' => 'deregister', 'confirmname' => fake_service::SITE_NAME]);
         $this->assertNotNull(self::page(self::service())->handle());
         $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    /**
+     * Differences between the clocks, and the warning that each one earns after a registration.
+     *
+     * @return array
+     */
+    public static function clock_difference_provider(): array {
+        return [
+            'just under two minutes' => [119, 0],
+            'two minutes' => [120, 2],
+            'two minutes, this server ahead' => [-120, 2],
+            'just under two minutes, this server ahead' => [-119, 0],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('clock_difference_provider')]
+    /**
+     * A registration warns about the clocks from two minutes, in either direction.
+     *
+     * @dataProvider clock_difference_provider
+     * @param int $difference How far this server's clock is behind the service's, in seconds.
+     * @param int $minutes The minutes the warning names, or 0 for no warning.
+     */
+    public function test_a_registration_warns_about_the_clocks_from_two_minutes(int $difference, int $minutes): void {
+        self::submit_registration();
+        $this->assertNotNull(self::page(self::service(), self::NOW - $difference)->handle());
+        $warnings = array_map(static fn($n): string => $n->get_message(), \core\notification::fetch());
+        $expected = $minutes === 0 ? [] : [get_string('clock_skew_warning', 'tool_secbackup', $minutes)];
+        $this->assertSame($expected, $warnings);
+    }
+
+    /**
+     * The users who have only one of the two capabilities.
+     *
+     * @return array
+     */
+    public static function one_capability_provider(): array {
+        return [
+            'only the right to manage the connection' => ['tool/secbackup:manage'],
+            'only the right to configure the site' => ['moodle/site:config'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('one_capability_provider')]
+    /**
+     * The page needs both capabilities.
+     *
+     * @dataProvider one_capability_provider
+     * @param string $capability The only capability the user has.
+     */
+    public function test_needs_both_capabilities(string $capability): void {
+        $user = $this->getDataGenerator()->create_user();
+        $role = create_role('Partial manager', 'partialmanager', '');
+        assign_capability($capability, CAP_ALLOW, $role, \context_system::instance());
+        role_assign($role, $user->id, \context_system::instance());
+        $this->setUser($user);
+        $this->expectException(\required_capability_exception::class);
+        new connect_page();
+    }
+
+    public function test_the_saved_url_of_a_registered_site_is_escaped_once(): void {
+        self::register(self::service());
+        set_config('endpoint', 'https://app.example.test/<i>&</i>', 'tool_secbackup');
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString('https://app.example.test/&lt;i&gt;&amp;&lt;/i&gt;', $html);
+        $this->assertStringNotContainsString('<i>&</i>', $html);
+        $this->assertStringNotContainsString('&amp;amp;', $html);
     }
 
     public function test_create_without_an_enroller(): void {

@@ -205,6 +205,67 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringContainsString('Example &lt;b&gt;site&lt;/b&gt;', (new status_page())->render());
     }
 
+    /**
+     * Differences between the clocks, and the warning that each one earns.
+     *
+     * @return array
+     */
+    public static function clock_difference_provider(): array {
+        return [
+            'just under two minutes' => [119, 0],
+            'two minutes' => [120, 2],
+            'just under two minutes, the service behind' => [-119, 0],
+            'two minutes, the service behind' => [-120, 2],
+            'two and a half minutes is rounded up' => [150, 3],
+            'nine minutes, the service behind' => [-540, 9],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('clock_difference_provider')]
+    /**
+     * The warning about the clocks starts at two minutes, in either direction.
+     *
+     * @dataProvider clock_difference_provider
+     * @param int $skew The service's clock minus this server's clock, in seconds.
+     * @param int $minutes The minutes the warning names, or 0 for no warning.
+     */
+    public function test_clock_warning_starts_at_two_minutes(int $skew, int $minutes): void {
+        global $PAGE;
+        $html = $PAGE->get_renderer('tool_secbackup')->clock_warning($skew);
+        if ($minutes === 0) {
+            $this->assertSame('', $html);
+        } else {
+            $this->assertStringContainsString(get_string('clock_skew_warning', 'tool_secbackup', $minutes), $html);
+        }
+    }
+
+    public function test_a_status_the_service_has_a_label_for(): void {
+        self::register();
+        state::record_poll(1760000300, new status_result('awaiting_enrollment', 1760000300, 0, 0));
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('service_status_awaiting_enrollment', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('service_status_other', 'tool_secbackup', ''), $html);
+    }
+
+    public function test_stored_values_that_hold_markup_are_escaped_once(): void {
+        self::register();
+        set_config('siteid', '<b>x&y</b>', 'tool_secbackup');
+        set_config('endpoint', 'https://app.example.test/<i>&</i>', 'tool_secbackup');
+        $html = (new status_page())->render();
+        $this->assert_escaped_once($html, '<b>x&y</b>', '&lt;b&gt;x&amp;y&lt;/b&gt;');
+        $this->assert_escaped_once($html, '<i>&</i>', '&lt;i&gt;&amp;&lt;/i&gt;');
+    }
+
+    public function test_needs_the_site_config_capability_too(): void {
+        $user = $this->getDataGenerator()->create_user();
+        $role = create_role('Site configurer', 'siteconfigurer', '');
+        assign_capability('moodle/site:config', CAP_ALLOW, $role, \context_system::instance());
+        role_assign($role, $user->id, \context_system::instance());
+        $this->setUser($user);
+        $this->expectException(\required_capability_exception::class);
+        new status_page();
+    }
+
     public function test_needs_both_capabilities(): void {
         $user = $this->getDataGenerator()->create_user();
         $role = create_role('Backup manager', 'backupmanager', '');
