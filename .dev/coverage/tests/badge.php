@@ -134,6 +134,12 @@ secbk_expect('an output that cannot be written exits 1', $code === 1 && str_cont
 $cgi = [];
 \exec('command -v php-cgi 2>/dev/null', $cgi);
 if ($cgi === []) {
+    // In CI nothing is skipped: setup-php installs php-cgi, so a missing one is a defect of the job.
+    secbk_expect(
+        'php-cgi is there when CI is set',
+        getenv('CI') === false || getenv('CI') === '',
+        'php-cgi was not found, so the refusal to run outside the command line is not tested'
+    );
     echo "SKIP: php-cgi was not found, so the refusal to run outside the command line is not tested\n";
 } else {
     $lines = [];

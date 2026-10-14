@@ -15,13 +15,13 @@ The default branch of the repository is `main`.
 |---|---|
 | `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the check that no development script can be run from the web, and the tests of the coverage tools and of the badge. |
 | `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination. Nothing in it is optional: Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
-| `coverage` | Merges the coverage of all combinations, writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
+| `coverage` | Merges the coverage of all combinations (the artifacts `coverage-run-<Moodle>-<PHP>-<database>`; no other artifact name may start with `coverage-run-`), writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
 
 The workflow `.github/workflows/badges.yml` (`Badges`) turns the summary of a push to `main` into the coverage badge of the README.
 
 ### Tested combinations
 
-The newest PHP of each Moodle version runs with each database, the oldest PHP runs with PostgreSQL. The database versions are the
+The newest PHP of each Moodle version runs with each database listed for it. Moodle 4.5, 5.1, 5.2 and 5.3 also run an older PHP, with PostgreSQL only; Moodle 5.0 has no older PHP row. The database versions are the
 lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same values.
 
 | Moodle | Newer PHP | Older PHP | PostgreSQL | MariaDB | MySQL |
@@ -112,7 +112,7 @@ What ran, and what did not:
 | Job | Result under act |
 |---|---|
 | `rules` (push and pull_request events) | Runs completely: the tests of the hooks, every commit, the title and description of the pull request, the check for the development scripts, the tests of the coverage tools and of the badge. With a commit that has a made-up refused word, it fails at "Check every commit" with the reason and the commit, and neither the word nor the list is in the log. |
-| `test`, Moodle 5.3 with PHP 8.4 and PostgreSQL | Runs to the end in about 25 minutes: the install (4 minutes), every static check, PHPUnit (1099 tests, 1 skipped; 12 to 13 minutes), Behat (16 scenarios, 130 steps, 2 minutes), the command line scripts, and the coverage files, which merge to 100% with `merge.php` and give the badge. Only "Upload the coverage" fails, because act has no artifact service (no `ACTIONS_RUNTIME_TOKEN`). |
+| `test`, Moodle 5.3 with PHP 8.4 and PostgreSQL | Runs to the end in about 25 minutes: the install (4 minutes), every static check, PHPUnit (12 to 13 minutes), Behat (2 minutes), the command line scripts, and the coverage files, which merge to 100% with `merge.php` and give the badge. Only "Upload the coverage" fails, because act has no artifact service (no `ACTIONS_RUNTIME_TOKEN`). |
 | `coverage` | Not run: it needs the artifacts of `test`. The merge of the files that the `test` run left was run by hand with the commands of the job. |
 | `Badges` | Cannot run: act has no `workflow_run` and no Pages. It first runs on GitHub; `badge.php` is tested locally. |
 | The other 17 combinations | Not run with act (about 25 minutes each); `run.sh` runs them. |

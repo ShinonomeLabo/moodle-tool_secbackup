@@ -280,6 +280,12 @@ secbk_expect('files of .dev/ are no problem', !str_contains($out, 'collector.php
 $cgi = [];
 \exec('command -v php-cgi 2>/dev/null', $cgi);
 if ($cgi === []) {
+    // In CI nothing is skipped: setup-php installs php-cgi, so a missing one is a defect of the job.
+    secbk_expect(
+        'php-cgi is there when CI is set',
+        getenv('CI') === false || getenv('CI') === '',
+        'php-cgi was not found, so the refusal to run outside the command line is not tested'
+    );
     echo "SKIP: php-cgi was not found, so the refusal to run outside the command line is not tested\n";
 } else {
     $output = [];
