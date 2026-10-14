@@ -154,5 +154,6 @@ final class declarations_test extends \advanced_testcase {
             $tree->locate('tool_secbackup_connect')->url->out(false)
         );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_status')->req_capability);
+        $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_connect')->req_capability);
     }
 }

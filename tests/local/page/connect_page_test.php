@@ -131,6 +131,15 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString('name="confirmname"', $html);
     }
 
+    public function test_a_site_that_is_not_registered_is_not_offered_to_register_again_or_to_remove(): void {
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringNotContainsString(get_string('connect_again_heading', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('connect_again_explain', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('deregister_heading', 'tool_secbackup'), $html);
+    }
+
     public function test_valid_first_step_shows_the_fingerprint(): void {
         connection_form::mock_submit([
             'stage' => 'connection',
@@ -484,6 +493,7 @@ final class connect_page_test extends \advanced_testcase {
             'just under two minutes' => [119, 0],
             'two minutes' => [120, 2],
             'two minutes, this server ahead' => [-120, 2],
+            'two and a half minutes is rounded up' => [150, 3],
             'just under two minutes, this server ahead' => [-119, 0],
         ];
     }

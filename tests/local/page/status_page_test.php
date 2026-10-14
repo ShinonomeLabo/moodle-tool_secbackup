@@ -91,6 +91,7 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringContainsString(get_string('service_status_active', 'tool_secbackup'), $html);
         $this->assertStringContainsString(userdate(1760000300), $html);
         $this->assertStringNotContainsString(get_string('status_last_error', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('status_last_error_code', 'tool_secbackup', ''), $html);
     }
 
     public function test_registered_site_never_asked(): void {
