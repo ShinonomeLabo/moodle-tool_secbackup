@@ -41,4 +41,19 @@ final class poll_status_test extends \advanced_testcase {
         $this->assertSame('*/5', $task->get_minute());
         $this->assertSame('*', $task->get_hour());
     }
+
+    public function test_every_outcome_and_the_missing_key_have_a_message(): void {
+        // The task prints the string of the outcome; the poller records the string of the missing key.
+        foreach (['task_poll_ok', 'task_poll_failed', 'task_poll_notregistered', 'task_poll_status', 'signingkey_missing'] as $id) {
+            $this->assertTrue(get_string_manager()->string_exists($id, 'tool_secbackup'), $id);
+        }
+    }
+
+    public function test_the_task_prints_one_line(): void {
+        $this->resetAfterTest();
+        ob_start();
+        (new poll_status())->execute();
+        $output = ob_get_clean();
+        $this->assertSame(1, substr_count($output, "\n"));
+    }
 }
