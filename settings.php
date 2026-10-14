@@ -38,4 +38,10 @@ if ($hassiteconfig) {
         new moodle_url('/admin/tool/secbackup/connect.php'),
         'tool/secbackup:manage'
     ));
+    $ADMIN->add('tool_secbackup', new admin_externalpage(
+        'tool_secbackup_diagnostics',
+        new lang_string('page_diagnostics', 'tool_secbackup'),
+        new moodle_url('/admin/tool/secbackup/diagnostics.php'),
+        'tool/secbackup:manage'
+    ));
 }

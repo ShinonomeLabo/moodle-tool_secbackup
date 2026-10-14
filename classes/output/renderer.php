@@ -180,6 +180,51 @@ class renderer extends \plugin_renderer_base {
     public function links(): string {
         return html_writer::alist([
             html_writer::link(new \moodle_url('/admin/tool/secbackup/connect.php'), get_string('page_connect', 'tool_secbackup')),
+            html_writer::link(
+                new \moodle_url('/admin/tool/secbackup/diagnostics.php'),
+                get_string('page_diagnostics', 'tool_secbackup')
+            ),
         ]);
+    }
+
+    /**
+     * A hint, after a failure of the network, to open the connection diagnostics.
+     *
+     * @return string
+     */
+    public function diagnostics_hint(): string {
+        $link = html_writer::link(
+            new \moodle_url('/admin/tool/secbackup/diagnostics.php'),
+            get_string('page_diagnostics', 'tool_secbackup')
+        );
+        return $this->output->notification(get_string('diag_hint', 'tool_secbackup', $link), notification::NOTIFY_INFO, false);
+    }
+
+    /**
+     * The table of the diagnostics.
+     *
+     * The texts of the results are plain text and are escaped here, once.
+     *
+     * @param \tool_secbackup\local\diagnostics\check_result[] $results Results.
+     * @return string
+     */
+    public function diagnostics(array $results): string {
+        $table = new \html_table();
+        $table->attributes['class'] = 'generaltable';
+        $table->head = [
+            get_string('diag_heading_check', 'tool_secbackup'),
+            get_string('diag_heading_result', 'tool_secbackup'),
+            get_string('diag_heading_detail', 'tool_secbackup'),
+            get_string('diag_heading_advice', 'tool_secbackup'),
+        ];
+        foreach ($results as $result) {
+            $table->data[] = [
+                get_string('check_' . $result->check, 'tool_secbackup'),
+                get_string('result_' . $result->result, 'tool_secbackup'),
+                s($result->detail),
+                s($result->advice),
+            ];
+        }
+        return html_writer::table($table);
     }
 }

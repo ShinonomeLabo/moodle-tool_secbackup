@@ -29,6 +29,7 @@ use tool_secbackup\local\enrollment\deregistration;
 use tool_secbackup\local\enrollment\enroller;
 use tool_secbackup\local\enrollment\enrollment_code;
 use tool_secbackup\local\enrollment\state;
+use tool_secbackup\local\net\transport_exception;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\local\trust\envelope_exception;
@@ -55,6 +56,9 @@ final class connect_page {
 
     /** @var string[] Error messages for the top of the page, as plain text. */
     private array $errors = [];
+
+    /** @var bool Whether the page points to the connection diagnostics, after a failure of the network. */
+    private bool $diaghint = false;
 
     /**
      * Constructor: checks access.
@@ -141,6 +145,7 @@ final class connect_page {
             return null;
         } catch (plugin_exception $e) {
             $this->errors = [$e->message()];
+            $this->diaghint = $e instanceof transport_exception;
             if ($e->errorcode === 'enroll_response_invalid') {
                 // Something accepted the code and gave an answer that cannot be read: the service, or something else
                 // at a wrong connection URL. Compared by the error code, as below.
@@ -201,6 +206,9 @@ final class connect_page {
         $out = $renderer->page_top(developer_settings::current());
         foreach ($this->errors as $message) {
             $out .= $renderer->error_message($message);
+        }
+        if ($this->diaghint) {
+            $out .= $renderer->diagnostics_hint();
         }
         if ($this->deregisterform !== null) {
             $out .= $OUTPUT->heading(get_string('connect_again_heading', 'tool_secbackup'), 3);

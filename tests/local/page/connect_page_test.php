@@ -20,12 +20,16 @@ use core\output\notification;
 use tool_secbackup\form\connection_form;
 use tool_secbackup\form\deregister_form;
 use tool_secbackup\form\register_form;
+use tool_secbackup\local\api\client;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\enroller;
 use tool_secbackup\local\enrollment\state;
+use tool_secbackup\local\net\transport;
 use tool_secbackup\local\trust\developer_settings;
+use tool_secbackup\local\trust\sec_trust;
+use tool_secbackup\tests\envelope_builder;
 use tool_secbackup\tests\fake_service;
 use tool_secbackup\tests\network_fakes;
 
@@ -697,6 +701,130 @@ final class connect_page_test extends \advanced_testcase {
         $html = $page->render();
         $this->assertStringContainsString(s(get_string('enroll_response_mismatch', 'tool_secbackup')), $html);
         $this->assertStringNotContainsString(s(get_string('enroll_reissue_advice', 'tool_secbackup')), $html);
+    }
+
+    /**
+     * The page, registering through a network whose name check fails.
+     *
+     * @param fake_service $service The fake service.
+     * @return connect_page
+     */
+    private static function page_with_a_failing_network(fake_service $service): connect_page {
+        $settings = developer_settings::from_value(null);
+        $failing = network_fakes::guard(null, null, []);
+        $client = new client(
+            new transport($settings, $failing, $service->handler()),
+            new sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]),
+            $settings,
+            static fn(): int => self::NOW
+        );
+        return new connect_page(new enroller($client));
+    }
+
+    /**
+     * The link to the diagnostics, as the page makes it.
+     *
+     * @return string
+     */
+    private static function diagnostics_link(): string {
+        return \html_writer::link(
+            new \moodle_url('/admin/tool/secbackup/diagnostics.php'),
+            get_string('page_diagnostics', 'tool_secbackup')
+        );
+    }
+
+    public function test_a_failure_of_the_network_points_to_the_diagnostics(): void {
+        self::submit_registration();
+        $page = self::page_with_a_failing_network(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string('dns_doh_unavailable', 'tool_secbackup')), $html);
+        $this->assertStringContainsString(get_string('diag_hint', 'tool_secbackup', self::diagnostics_link()), $html);
+        $this->assertSame(1, substr_count($html, 'href="https://www.example.com/moodle/admin/tool/secbackup/diagnostics.php"'));
+        $this->assertSame(1, substr_count($html, '>' . get_string('page_diagnostics', 'tool_secbackup') . '</a>'));
+        $this->assertStringNotContainsString('&lt;a', $html);
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
+    public function test_the_hint_comes_after_the_message_of_the_failure(): void {
+        self::submit_registration();
+        $page = self::page_with_a_failing_network(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertGreaterThan(
+            strpos($html, s(get_string('dns_doh_unavailable', 'tool_secbackup'))),
+            strpos($html, 'diagnostics.php')
+        );
+    }
+
+    public function test_the_hint_is_an_information_notification(): void {
+        global $PAGE, $OUTPUT;
+        $hint = $PAGE->get_renderer('tool_secbackup')->diagnostics_hint();
+        $expected = $OUTPUT->notification(
+            get_string('diag_hint', 'tool_secbackup', self::diagnostics_link()),
+            notification::NOTIFY_INFO,
+            false
+        );
+        $this->assertSame($expected, $hint);
+    }
+
+    /**
+     * Failures of the registration that do not come from the network of this server.
+     *
+     * @return array
+     */
+    public static function failures_that_are_not_the_network_provider(): array {
+        return [
+            'the service refuses the code' => [
+                ['code' => 'SEC-BK-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ'],
+                [],
+                'api_enrollment_code_invalid',
+            ],
+            'the answer does not verify' => [[], ['mode' => 'untrusted_key'], 'envelope_untrusted'],
+            'the answer cannot be read' => [[], ['enrollpayload' => ['site_id' => 'not an id']], 'enroll_response_invalid'],
+            'the answer does not belong to the request' => [
+                [],
+                ['enrollpayload' => ['api_base' => 'https://other.example.test/api/lms-backup/v1']],
+                'enroll_response_mismatch',
+            ],
+            'the public key cannot be read' => [['publickey' => 'secbk1:AAAA'], [], 'publickey_length'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failures_that_are_not_the_network_provider')]
+    /**
+     * Only a failure of the network points to the diagnostics.
+     *
+     * @dataProvider failures_that_are_not_the_network_provider
+     * @param array $submitted Changes to the submitted values.
+     * @param array $state Changes to the state of the fake service.
+     * @param string $message The string of the message that must be shown instead.
+     */
+    public function test_other_failures_do_not_point_to_the_diagnostics(array $submitted, array $state, string $message): void {
+        self::submit_registration($submitted);
+        $page = self::page(self::service($state));
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string($message, 'tool_secbackup')), $html);
+        $this->assertStringNotContainsString('diagnostics.php', $html);
+        $this->assertStringNotContainsString(get_string('page_diagnostics', 'tool_secbackup'), $html);
+    }
+
+    public function test_a_failed_save_does_not_point_to_the_diagnostics(): void {
+        $this->preventResetByRollback();
+        self::submit_registration();
+        $this->make_saving_the_key_fail();
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string('signingkey_savefailed', 'tool_secbackup')), $html);
+        $this->assertStringNotContainsString('diagnostics.php', $html);
+    }
+
+    public function test_the_hint_is_not_shown_when_nothing_failed(): void {
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assertStringNotContainsString('diagnostics.php', $page->render());
     }
 
     public function test_create_without_an_enroller(): void {

@@ -154,7 +154,12 @@ final class declarations_test extends \advanced_testcase {
             $tree->locate('tool_secbackup_connect')->url->out(false)
         );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_status')->req_capability);
+        $this->assertSame(
+            (new \moodle_url('/admin/tool/secbackup/diagnostics.php'))->out(false),
+            $tree->locate('tool_secbackup_diagnostics')->url->out(false)
+        );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_connect')->req_capability);
+        $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_diagnostics')->req_capability);
     }
 
     public function test_the_pages_are_in_the_tree_only_for_users_who_may_configure_the_site(): void {
@@ -172,6 +177,7 @@ final class declarations_test extends \advanced_testcase {
             $this->assertNull($tree->locate('tool_secbackup'));
             $this->assertNull($tree->locate('tool_secbackup_status'));
             $this->assertNull($tree->locate('tool_secbackup_connect'));
+            $this->assertNull($tree->locate('tool_secbackup_diagnostics'));
         } finally {
             $this->setAdminUser();
             \admin_get_root(true, false);

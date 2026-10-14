@@ -29,8 +29,8 @@ defined('MOODLE_INTERNAL') || die();
  */
 return new class extends phpunit_coverage_info {
     /** @var array Folders to include. */
-    protected $includelistfolders = ['classes', 'db', 'lang'];
+    protected $includelistfolders = ['classes', 'cli', 'db', 'lang'];
 
     /** @var array Files to include. */
-    protected $includelistfiles = ['version.php', 'settings.php', 'index.php', 'connect.php'];
+    protected $includelistfiles = ['version.php', 'settings.php', 'index.php', 'connect.php', 'diagnostics.php'];
 };
