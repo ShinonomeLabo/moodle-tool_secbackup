@@ -71,8 +71,7 @@ final class notifier {
                 message_send($message);
             } catch (\Throwable $e) {
                 debugging(
-                    'The message about the connection could not be sent to the user ' . $admin->id . ': ' . $e::class,
-                    DEBUG_DEVELOPER
+                    'The message about the connection could not be sent to the user ' . $admin->id . ': ' . $e::class
                 );
             }
         }

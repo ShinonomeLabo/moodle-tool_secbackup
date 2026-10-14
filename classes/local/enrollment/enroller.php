@@ -84,7 +84,7 @@ final class enroller {
                 'other' => ['endpoint' => $result->apibase, 'siteid' => $result->siteid, 'again' => $previous->is_enrolled()],
             ])->trigger();
         } catch (\Throwable $e) {
-            debugging('The registration could not be logged: ' . $e::class, DEBUG_DEVELOPER);
+            debugging('The registration could not be logged: ' . $e::class);
         }
         notifier::send(
             $previous->is_enrolled() ? 'reenrolled' : 'enrolled',

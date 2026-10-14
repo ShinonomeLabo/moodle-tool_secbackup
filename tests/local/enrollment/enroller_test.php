@@ -232,6 +232,27 @@ final class enroller_test extends \advanced_testcase {
         );
     }
 
+    /**
+     * Whether the secret, in any form it could take, is in the fields of the messages or in the data of the events.
+     *
+     * @param \stdClass[] $messages The messages (every field is searched).
+     * @param array[] $eventdata The data of the events, with their descriptions and links.
+     * @param string $secret The 64 bytes of the secret key.
+     * @return bool
+     */
+    private static function secret_is_in(array $messages, array $eventdata, string $secret): bool {
+        $seed = substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES);
+        $forms = [$secret, base64_encode($secret), bin2hex($secret), rtrim(strtr(base64_encode($secret), '+/', '-_'), '='),
+            $seed, bin2hex($seed), base64_encode($seed)];
+        $haystack = serialize($messages) . serialize($eventdata);
+        foreach ($forms as $form) {
+            if (str_contains($haystack, $form)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public function test_event_and_messages_hold_no_secret(): void {
         $events = $this->redirectEvents();
         $messages = $this->redirectMessages();
@@ -240,24 +261,37 @@ final class enroller_test extends \advanced_testcase {
         $this->assertSame(SODIUM_CRYPTO_SIGN_SECRETKEYBYTES, strlen($secret));
 
         $logged = array_values(array_filter($events->get_events(), static fn($event): bool => $event instanceof site_enrolled));
-        $texts = [$logged[0]->get_description(), $logged[0]->get_url()->out(false), json_encode($logged[0]->get_data())];
-        foreach ($messages->get_messages() as $message) {
-            $texts[] = json_encode($message);
-        }
-        $this->assertNotEmpty($messages->get_messages());
-        $forms = [$secret, base64_encode($secret), bin2hex($secret), rtrim(strtr(base64_encode($secret), '+/', '-_'), '='),
-            substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES), bin2hex(substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES)),
-            base64_encode(substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES))];
+        $sent = $messages->get_messages();
+        $this->assertNotEmpty($sent);
+        $eventdata = [$logged[0]->get_data() + ['description' => $logged[0]->get_description(),
+            'link' => $logged[0]->get_url()->out(false)]];
+
+        $this->assertFalse(self::secret_is_in($sent, $eventdata, $secret));
+        $texts = [serialize($sent), serialize($eventdata)];
         foreach ($texts as $text) {
             $this->assertStringNotContainsString(fake_service::CODE, $text);
             $this->assertStringNotContainsString(str_replace('-', '', fake_service::CODE), $text);
             $this->assertStringNotContainsString(fake_service::ENCRYPTION_KEY, $text);
-            foreach ($forms as $form) {
-                $this->assertStringNotContainsString($form, $text);
-            }
         }
-        // The control: the search finds the secret when it is there.
-        $this->assertStringContainsString(base64_encode($secret), 'x' . base64_encode($secret) . 'x');
+
+        // The control: the same search finds the secret planted in a message field, and in an event datum, in
+        // more than one form.
+        $seed = substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES);
+        foreach ([base64_encode($secret), bin2hex($secret), $secret, base64_encode($seed), bin2hex($seed), $seed] as $form) {
+            $planted = $sent;
+            $planted[0] = clone $planted[0];
+            $planted[0]->fullmessage .= ' ' . $form;
+            $this->assertTrue(self::secret_is_in($planted, $eventdata, $secret));
+
+            $planted = $sent;
+            $planted[0] = clone $planted[0];
+            $planted[0]->subject = $form;
+            $this->assertTrue(self::secret_is_in($planted, $eventdata, $secret));
+
+            $plantedevents = $eventdata;
+            $plantedevents[0]['other']['endpoint'] = $form;
+            $this->assertTrue(self::secret_is_in($sent, $plantedevents, $secret));
+        }
     }
 
     /**
@@ -321,7 +355,7 @@ final class enroller_test extends \advanced_testcase {
 
         $result = self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
 
-        $this->assertDebuggingCalled('The registration could not be logged: Error', DEBUG_DEVELOPER);
+        $this->assertDebuggingCalled('The registration could not be logged: Error', DEBUG_NORMAL);
         $this->assertSame(fake_service::SITE_ID, $result->siteid);
         $this->assertTrue(state::load()->is_enrolled());
         $this->assertNotNull(signing_keys::load());
@@ -334,7 +368,15 @@ final class enroller_test extends \advanced_testcase {
 
         $result = self::enroller(self::service())->enroll(self::endpoint(), self::key(), fake_service::CODE);
 
-        $this->assertDebuggingCalledCount(2);
+        $this->assertDebuggingCalledCount(
+            2,
+            array_map(
+                static fn($id): string => 'The message about the connection could not be sent to the user ' . $id . ': '
+                    . \core\exception\coding_exception::class,
+                array_keys(get_admins())
+            ),
+            [DEBUG_NORMAL, DEBUG_NORMAL]
+        );
         $this->assertSame(fake_service::SITE_ID, $result->siteid);
         $this->assertTrue(state::load()->is_enrolled());
         $this->assertNotNull(signing_keys::load());

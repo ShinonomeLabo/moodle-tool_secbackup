@@ -35,6 +35,9 @@ final class notifier_test extends \advanced_testcase {
     /** @var string Connection URL. */
     private const API = 'https://app.example.test/api/lms-backup/v1';
 
+    /** @var string[]|null The language folders of the site before a test installed the Japanese pack. */
+    private ?array $languageroots = null;
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
@@ -44,6 +47,8 @@ final class notifier_test extends \advanced_testcase {
     protected function tearDown(): void {
         // The observers a test replaced are not given back to the next test by every Moodle version.
         \core\event\manager::phpunit_reset();
+        // The string manager is one object for the whole process, and resetAfterTest() does not rebuild it.
+        $this->forget_japanese_pack();
         parent::tearDown();
     }
 
@@ -59,8 +64,25 @@ final class notifier_test extends \advanced_testcase {
             $root . '/ja/langconfig.php',
             "<?php\n\$string['thislanguage'] = 'Japanese';\n\$string['parentlanguage'] = '';\n"
         );
+        $this->languageroots ??= [$CFG->langotherroot, $CFG->langlocalroot];
         $CFG->langotherroot = $root;
         $CFG->langlocalroot = $root;
+        get_string_manager(true)->reset_caches(true);
+    }
+
+    /**
+     * Gives the language folders back and rebuilds the string manager, so that the temporary language is not known to
+     * the tests that run after this one.
+     */
+    private function forget_japanese_pack(): void {
+        global $CFG;
+        if ($this->languageroots === null) {
+            return;
+        }
+        [$other, $local] = $this->languageroots;
+        $this->languageroots = null;
+        $CFG->langotherroot = $other;
+        $CFG->langlocalroot = $local;
         get_string_manager(true)->reset_caches(true);
     }
 
@@ -289,6 +311,38 @@ final class notifier_test extends \advanced_testcase {
         ]]);
     }
 
+    /**
+     * Whether Moodle lists Japanese as an installed language.
+     *
+     * @return bool
+     */
+    private static function japanese_is_installed(): bool {
+        return array_key_exists('ja', get_string_manager()->get_list_of_translations(true));
+    }
+
+    public function test_forgetting_the_japanese_pack_leaves_english_only(): void {
+        $this->assertFalse(self::japanese_is_installed());
+        $this->install_japanese_pack();
+        $this->assertTrue(self::japanese_is_installed());
+        $this->assertSame('あんしんLMSバックアップ', get_string_manager()->get_string('pluginname', 'tool_secbackup', null, 'ja'));
+
+        $this->forget_japanese_pack();
+
+        $this->assertFalse(self::japanese_is_installed());
+        $this->assertSame('Shinonome LMS Backup', get_string_manager()->get_string('pluginname', 'tool_secbackup', null, 'ja'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\Depends('test_a_change_without_a_user_is_attributed_to_the_system_in_each_language')]
+    /**
+     * The tests that installed the Japanese pack did not leave it behind (this one runs after the last of them).
+     *
+     * @depends test_a_change_without_a_user_is_attributed_to_the_system_in_each_language
+     */
+    public function test_the_japanese_pack_does_not_outlive_the_tests_that_installed_it(): void {
+        $this->assertFalse(self::japanese_is_installed());
+        $this->assertSame('Shinonome LMS Backup', get_string_manager()->get_string('pluginname', 'tool_secbackup', null, 'ja'));
+    }
+
     public function test_a_message_that_cannot_be_sent_does_not_stop_the_others_or_leave_the_method(): void {
         global $DB;
         // Moodle holds events and messages back while a transaction is open, and PHPUnit wraps each test in one.
@@ -299,7 +353,7 @@ final class notifier_test extends \advanced_testcase {
         notifier::send('enrolled', 'Example Platform', 'Example site', self::API);
 
         $this->assertDebuggingCalled('The message about the connection could not be sent to the user ' . get_admin()->id
-            . ': Error', DEBUG_DEVELOPER);
+            . ': Error', DEBUG_NORMAL);
         $this->assertTrue($DB->record_exists('notifications', ['useridto' => $second->id, 'component' => 'tool_secbackup']));
     }
 
@@ -309,6 +363,14 @@ final class notifier_test extends \advanced_testcase {
 
         notifier::send('enrolled', 'Example Platform', 'Example site', self::API);
 
-        $this->assertDebuggingCalledCount(2);
+        $this->assertDebuggingCalledCount(
+            2,
+            array_map(
+                static fn($id): string => 'The message about the connection could not be sent to the user ' . $id . ': '
+                    . \core\exception\coding_exception::class,
+                array_keys(get_admins())
+            ),
+            [DEBUG_NORMAL, DEBUG_NORMAL]
+        );
     }
 }

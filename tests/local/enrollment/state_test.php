@@ -115,7 +115,14 @@ final class state_test extends \advanced_testcase {
         self::save();
         state::clear();
         $this->assertFalse(state::load()->is_enrolled());
-        $this->assertSame('', state::load()->endpoint_url());
+        $state = state::load();
+        $this->assertSame('', $state->endpoint_url());
+        $this->assertSame('', $state->site_id());
+        $this->assertSame('', $state->site_name());
+        $this->assertSame('', $state->platform_name());
+        $this->assertSame('', $state->encryption_key());
+        $this->assertNull($state->enrolled_at());
+        $this->assertNull($state->clock_skew());
         $this->assertNull(signing_keys::load());
     }
 

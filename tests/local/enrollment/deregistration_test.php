@@ -131,7 +131,7 @@ final class deregistration_test extends \advanced_testcase {
 
         deregistration::run();
 
-        $this->assertDebuggingCalled('The removal of the registration could not be logged: Error', DEBUG_DEVELOPER);
+        $this->assertDebuggingCalled('The removal of the registration could not be logged: Error', DEBUG_NORMAL);
         $this->assertFalse(state::load()->is_enrolled());
         $this->assertCount(count(get_admins()), $messages->get_messages());
     }
@@ -142,7 +142,12 @@ final class deregistration_test extends \advanced_testcase {
 
         deregistration::run();
 
-        $this->assertDebuggingCalledCount(1);
+        $this->assertDebuggingCalledCount(
+            1,
+            ['The message about the connection could not be sent to the user ' . get_admin()->id
+                . ': core\exception\coding_exception'],
+            [DEBUG_NORMAL]
+        );
         $this->assertFalse(state::load()->is_enrolled());
         $this->assertNull(signing_keys::load());
     }

@@ -68,7 +68,7 @@ final class deregistration {
                 'other' => ['endpoint' => $state->endpoint_url(), 'siteid' => $state->site_id()],
             ])->trigger();
         } catch (\Throwable $e) {
-            debugging('The removal of the registration could not be logged: ' . $e::class, DEBUG_DEVELOPER);
+            debugging('The removal of the registration could not be logged: ' . $e::class);
         }
         notifier::send('deregistered', $state->platform_name(), $state->site_name(), $state->endpoint_url());
     }

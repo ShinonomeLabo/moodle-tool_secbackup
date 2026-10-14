@@ -34,11 +34,13 @@ use tool_secbackup\local\trust\developer_settings;
  */
 final class state {
     /**
-     * @var string[] Settings that hold the registration (the signing key is kept by signing_keys). The site ID is
-     *     last: it is what makes the site read as registered.
+     * @var string[] Settings that hold the registration (the signing key is kept by signing_keys). The site name and
+     *     the site ID are last, in that order: the site ID is what makes the site read as registered, and the removal
+     *     form asks for the site name. While they are there, a removal that failed half-way can be confirmed and run
+     *     again.
      */
-    private const NAMES = ['sitename', 'platformname', 'endpoint', 'encryptionkey', 'enrolledat', 'clockskew',
-        'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'siteid'];
+    private const NAMES = ['platformname', 'endpoint', 'encryptionkey', 'enrolledat', 'clockskew',
+        'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'sitename', 'siteid'];
 
     /** @var \stdClass The plugin's settings. */
     private \stdClass $config;
@@ -293,7 +295,7 @@ final class state {
     }
 
     /**
-     * Removes the registration settings, the site ID last.
+     * Removes the registration settings, the site name and then the site ID last.
      */
     private static function forget_values(): void {
         foreach (self::NAMES as $name) {
