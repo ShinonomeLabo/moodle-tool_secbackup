@@ -177,7 +177,7 @@ final class runner {
         if ($this->settings->skip_network_checks()) {
             return new check_result('dns', check_result::INFO, get_string('diag_skipped', 'tool_secbackup'));
         }
-        $report = $this->guard->inspect($endpoint->host(), proxy_settings::for_url($endpoint->join('status')) !== '');
+        $report = $this->guard->inspect($endpoint->host(), proxy_settings::resolves_names($endpoint->join('status')));
         $lines = [];
         foreach ($report->doh as $name => $addresses) {
             $lines[] = get_string('diag_dns_source_' . $name, 'tool_secbackup') . ': ' . self::addresses($addresses);

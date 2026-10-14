@@ -261,6 +261,23 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(check_result::PASS, $named['dns']->result);
     }
 
+    public function test_a_socks5_proxy_leaves_the_name_to_this_server(): void {
+        global $CFG;
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '1080';
+        $CFG->proxytype = 'SOCKS5';
+        $named = self::by_name(self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint()));
+        $this->assertSame(
+            get_string('diag_proxy_used', 'tool_secbackup', 'SOCKS5 proxy.example.ac.jp:1080'),
+            $named['proxy']->detail
+        );
+        $this->assertStringNotContainsString(get_string('diag_dns_viaproxy', 'tool_secbackup'), $named['dns']->detail);
+        $this->assertStringContainsString(
+            get_string('diag_dns_source_os', 'tool_secbackup') . ': 13.225.9.9, 13.225.9.8',
+            $named['dns']->detail
+        );
+    }
+
     public function test_the_credentials_of_a_proxy_are_in_no_result(): void {
         global $CFG;
         $CFG->proxyhost = 'proxy.example.ac.jp';
