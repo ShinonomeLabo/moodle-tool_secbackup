@@ -77,6 +77,34 @@ secbk_expect('merged runs reach 100%', $code === 0, $out);
 secbk_expect('prints the total', str_contains($out, 'Total: 5/5 lines (100.00%)'), $out);
 secbk_expect('ignores JSON lines that are not statements', !str_contains($out, '99'), $out);
 
+// --summary writes the counted lines for the badge: also when the merge fails, never when an input cannot be used.
+$summary = sys_get_temp_dir() . '/secbk-merge-summary-' . getmypid() . '.json';
+$temporary[] = $summary;
+@unlink($summary);
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-ok.txt --summary=$summary $fixtures/phpunit.xml");
+secbk_expect('a failing merge still writes the summary', $code === 1 && is_file($summary), $out);
+secbk_expect(
+    'the summary has the counted lines',
+    json_decode((string) @file_get_contents($summary), true) === ['covered' => 2, 'total' => 5],
+    (string) @file_get_contents($summary)
+);
+[$code, $out] = secbk_run_merge(
+    "--shipped=$fixtures/shipped-ok.txt --summary=$summary $fixtures/phpunit.xml $fixtures/phpunit-405.xml $fixtures/behat-1.json"
+);
+secbk_expect(
+    'a merge at 100% writes covered equal to total',
+    $code === 0 && json_decode((string) @file_get_contents($summary), true) === ['covered' => 5, 'total' => 5],
+    (string) @file_get_contents($summary)
+);
+@unlink($summary);
+[$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-ok.txt --summary=$summary $fixtures/does-not-exist.json");
+secbk_expect('an input that cannot be used writes no summary', $code === 2 && !is_file($summary), $out);
+[$code, $out] = secbk_run_merge(
+    "--shipped=$fixtures/shipped-ok.txt --summary=/no/such/folder/summary.json $fixtures/phpunit.xml $fixtures/phpunit-405.xml"
+    . " $fixtures/behat-1.json"
+);
+secbk_expect('a summary that cannot be written exits 2', $code === 2 && str_contains($out, 'cannot write /no/such/folder'), $out);
+
 // A shipped file without any Clover entry must fail even when everything else is covered.
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-missing.txt $fixtures/phpunit.xml $fixtures/phpunit-405.xml $fixtures/behat-1.json");
 secbk_expect('missing file fails', $code === 1, $out);

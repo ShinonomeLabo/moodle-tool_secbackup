@@ -21,7 +21,11 @@
 // shipped file whose source cannot be found. The lines that the tables of the runs take away are listed in the output,
 // for every file, so that the 100% can be checked; so is every shipped file that has no statement in the Clover reports.
 //
-// Usage: php merge.php --shipped=<file list> [--report=<output file>] [--root=<plugin source>] <report files...>
+// --summary=<file> writes the counted lines as {"covered": N, "total": M}, also when the merge fails on a missed line (the
+// numbers are the ones of the output line "Total"). It is not written when an input cannot be used (exit code 2).
+//
+// Usage: php merge.php --shipped=<file list> [--report=<output file>] [--summary=<json file>] [--root=<plugin source>]
+//                      <report files...>
 // The source of the shipped files is searched in --root (default: the plugin that holds this .dev/).
 
 if (PHP_SAPI !== 'cli') {
@@ -30,6 +34,7 @@ if (PHP_SAPI !== 'cli') {
 
 $shippedfile = null;
 $reportfile = null;
+$summaryfile = null;
 $root = dirname(__DIR__, 2);
 $inputs = [];
 foreach (array_slice($argv, 1) as $arg) {
@@ -37,6 +42,8 @@ foreach (array_slice($argv, 1) as $arg) {
         $shippedfile = substr($arg, 10);
     } else if (str_starts_with($arg, '--report=')) {
         $reportfile = substr($arg, 9);
+    } else if (str_starts_with($arg, '--summary=')) {
+        $summaryfile = substr($arg, 10);
     } else if (str_starts_with($arg, '--root=')) {
         $root = rtrim(substr($arg, 7), '/');
     } else {
@@ -44,7 +51,8 @@ foreach (array_slice($argv, 1) as $arg) {
     }
 }
 if ($shippedfile === null || $inputs === []) {
-    fwrite(STDERR, "usage: merge.php --shipped=<file list> [--report=<output>] [--root=<plugin source>] <reports...>\n");
+    fwrite(STDERR, "usage: merge.php --shipped=<file list> [--report=<output>] [--summary=<json>] [--root=<plugin source>]"
+        . " <reports...>\n");
     exit(2);
 }
 
@@ -273,5 +281,11 @@ $text = implode("\n", $lines) . "\n";
 echo $text;
 if ($reportfile !== null) {
     file_put_contents($reportfile, $text);
+}
+if ($summaryfile !== null) {
+    $summary = json_encode(['covered' => $hit, 'total' => $total]) . "\n";
+    if (file_put_contents($summaryfile, $summary) !== strlen($summary)) {
+        secbk_fail("cannot write $summaryfile");
+    }
 }
 exit($problems === [] ? 0 : 1);
