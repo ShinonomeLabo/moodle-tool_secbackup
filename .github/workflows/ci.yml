@@ -1,0 +1,292 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces the run of the older one. Runs on main are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rules:
+    name: Commit rules and development tools
+    runs-on: ubuntu-24.04
+    steps:
+      # On a pull request, GitHub checks out a merge commit of its own by default. The commit rules apply to the commits of
+      # the pull request, so its head is checked out. On a push both values are empty and the default stays.
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Write the pattern list from the secret
+        env:
+          SECBACKUP_PATTERNS: ${{ secrets.SECBACKUP_PATTERNS }}
+        run: |
+          if [ -z "$SECBACKUP_PATTERNS" ]; then
+            {
+              echo "The secret SECBACKUP_PATTERNS is missing, so the commit rules cannot run."
+              echo "This is expected for a pull request from a fork: GitHub gives no secret to such a pull request."
+              echo "The maintainers run the commit rules themselves before they take the commits."
+              echo "The checks of the plugin itself are in the jobs named Moodle ..., which do not need the secret."
+            } >&2
+            exit 1
+          fi
+          printf '%s\n' "$SECBACKUP_PATTERNS" > .dev/hooks/patterns.local
+
+      - name: Test the commit rules
+        run: bash .dev/hooks/tests/run.sh
+
+      - name: Check every commit
+        run: bash .dev/hooks/check-history.sh
+
+      - name: Check the pull request title and description
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$RUNNER_TEMP/pull-request.txt"
+          source .dev/hooks/lib/rules.sh
+          secbackup_check_message "$RUNNER_TEMP/pull-request.txt"
+
+      # The steps below need no secret, so they also run when the one above failed.
+      - name: Check that the development scripts cannot be run from the web
+        if: ${{ !cancelled() }}
+        run: bash .dev/hooks/check-dev-guards.sh
+
+      - name: Test the coverage tools and the badge
+        if: ${{ !cancelled() }}
+        run: |
+          php .dev/coverage/tests/run.php
+          php .dev/coverage/tests/badge.php
+
+  test:
+    name: Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.3', database: pgsql, image: 'postgres:13', health: 'pg_isready -U postgres'}
+          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.3', database: mariadb, image: 'mariadb:10.6.7', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.3', database: mysqli, image: 'mysql:8.0', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.1', database: pgsql, image: 'postgres:13', health: 'pg_isready -U postgres'}
+          - {moodle: '5.0', branch: MOODLE_500_STABLE, php: '8.4', database: pgsql, image: 'postgres:14', health: 'pg_isready -U postgres'}
+          - {moodle: '5.0', branch: MOODLE_500_STABLE, php: '8.4', database: mariadb, image: 'mariadb:10.11', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.1', branch: MOODLE_501_STABLE, php: '8.4', database: pgsql, image: 'postgres:15', health: 'pg_isready -U postgres'}
+          - {moodle: '5.1', branch: MOODLE_501_STABLE, php: '8.4', database: mariadb, image: 'mariadb:10.11', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.1', branch: MOODLE_501_STABLE, php: '8.4', database: mysqli, image: 'mysql:8.4', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.1', branch: MOODLE_501_STABLE, php: '8.2', database: pgsql, image: 'postgres:15', health: 'pg_isready -U postgres'}
+          - {moodle: '5.2', branch: MOODLE_502_STABLE, php: '8.4', database: pgsql, image: 'postgres:16', health: 'pg_isready -U postgres'}
+          - {moodle: '5.2', branch: MOODLE_502_STABLE, php: '8.4', database: mariadb, image: 'mariadb:10.11', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.2', branch: MOODLE_502_STABLE, php: '8.4', database: mysqli, image: 'mysql:8.4', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.2', branch: MOODLE_502_STABLE, php: '8.3', database: pgsql, image: 'postgres:16', health: 'pg_isready -U postgres'}
+          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.4', database: pgsql, image: 'postgres:17', health: 'pg_isready -U postgres'}
+          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.4', database: mariadb, image: 'mariadb:11.4', health: 'mariadb-admin ping -h 127.0.0.1'}
+          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.4', database: mysqli, image: 'mysql:8.4', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.3', database: pgsql, image: 'postgres:17', health: 'pg_isready -U postgres'}
+
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 'yes'
+        ports:
+          - 5432:5432
+          - 3306:3306
+        options: >-
+          --health-cmd "${{ matrix.health }}"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          ini-values: max_input_vars=5000
+          coverage: pcov
+
+      - name: Install moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo "$(cd ci/bin; pwd)" >> "$GITHUB_PATH"
+          echo "$(cd ci/vendor/bin; pwd)" >> "$GITHUB_PATH"
+          sudo locale-gen en_AU.UTF-8
+          echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
+
+      - name: Install Moodle with the plugin
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+        env:
+          DB: ${{ matrix.database }}
+          MOODLE_BRANCH: ${{ matrix.branch }}
+
+      - name: Add the development settings and start the fake service
+        run: |
+          moodle-plugin-ci add-config 'define("TOOL_SECBACKUP_DEVELOPER", ["trustedkeys" => ["PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="], "allowhttp" => true, "allowprivatehosts" => true, "skipnetworkchecks" => true]);'
+          nohup php -S 127.0.0.1:8099 plugin/.dev/fakesec/router.php > "$RUNNER_TEMP/fakesec.log" 2>&1 &
+          for _ in $(seq 1 20); do
+            if php -r 'exit(@file_get_contents("http://127.0.0.1:8099/_fake/state") === false ? 1 : 0);'; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/fakesec.log"
+          exit 1
+
+      - name: Turn the coverage collector on and install the plugin again with it
+        run: |
+          mkdir -p plugin/.dev/coverage/out/raw
+          touch plugin/.dev/coverage/out/raw/ENABLED
+          scan="$(php -r 'echo PHP_CONFIG_FILE_SCAN_DIR;')"
+          printf 'auto_prepend_file=%s\npcov.directory=%s\n' \
+            "$GITHUB_WORKSPACE/plugin/.dev/coverage/collector.php" "$GITHUB_WORKSPACE/moodle" \
+            | sudo tee "$scan/zz-secbk-coverage.ini"
+          SECBK_COVERAGE_CLI=1 php moodle/admin/cli/uninstall_plugins.php --plugins=tool_secbackup --run
+          SECBK_COVERAGE_CLI=1 php moodle/admin/cli/upgrade.php --non-interactive
+
+      - name: PHP Lint
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phplint
+
+      - name: PHP Mess Detector
+        continue-on-error: true
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpmd
+
+      - name: Moodle Code Checker
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpcs --max-warnings 0
+
+      - name: Moodle PHPDoc Checker
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpdoc --max-warnings 0
+
+      - name: Validating
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci validate
+
+      - name: Check upgrade savepoints
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci savepoints
+
+      - name: Mustache Lint
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci mustache
+
+      - name: Grunt
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci grunt --max-lint-warnings 0
+
+      - name: PHPUnit tests
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpunit --fail-on-warning --coverage-pcov --coverage-clover
+
+      - name: Behat features
+        id: behat
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
+
+      - name: Command line scripts
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d moodle/public ]; then cli=moodle/public/admin/tool/secbackup/cli/diagnose.php; else cli=moodle/admin/tool/secbackup/cli/diagnose.php; fi
+          for args in --help --no-such-option \
+              --endpoint=http://localhost:8099/api/lms-backup/v1 \
+              --endpoint=ftp://example.org/api; do
+            SECBK_COVERAGE_CLI=1 php "$cli" "$args" || true
+          done
+          SECBK_COVERAGE_CLI=1 php "$cli" || true
+
+      - name: Keep the coverage of this combination
+        if: ${{ !cancelled() }}
+        run: |
+          rm -f plugin/.dev/coverage/out/raw/ENABLED
+          mkdir -p "$RUNNER_TEMP/coverage"
+          cp coverage.xml "$RUNNER_TEMP/coverage/phpunit.xml"
+          cp plugin/.dev/coverage/out/raw/*.json "$RUNNER_TEMP/coverage/"
+
+      - name: Upload the coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.moodle }}-${{ matrix.php }}-${{ matrix.database }}
+          path: ${{ runner.temp }}/coverage
+          retention-days: 7
+
+      - name: Upload Behat Faildump
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Behat Faildump Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+          path: ${{ github.workspace }}/moodledata/behat_dump
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Mark cancelled jobs as failed
+        if: ${{ cancelled() }}
+        run: exit 1
+
+  coverage:
+    name: Line coverage of all combinations
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the coverage of every combination
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          path: ${{ runner.temp }}/coverage
+
+      # The merge always writes the numbers it counted, also when it finds lines that no run executed. The step after
+      # the upload fails the job in that case.
+      - name: Merge the coverage
+        id: merge
+        run: |
+          bash .dev/coverage/shipped_files.sh > "$RUNNER_TEMP/shipped.txt"
+          mkdir -p "$RUNNER_TEMP/summary"
+          status=0
+          # The file names have no spaces: they are made from the names of the artifacts above.
+          # shellcheck disable=SC2046
+          php .dev/coverage/merge.php --shipped="$RUNNER_TEMP/shipped.txt" \
+            --summary="$RUNNER_TEMP/summary/coverage-summary.json" \
+            $(find "$RUNNER_TEMP/coverage" -name '*.xml' -o -name '*.json' | sort) || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the coverage summary
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-summary
+          path: ${{ runner.temp }}/summary/coverage-summary.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Require 100%
+        env:
+          MERGE_STATUS: ${{ steps.merge.outputs.status }}
+        run: exit "$MERGE_STATUS"
