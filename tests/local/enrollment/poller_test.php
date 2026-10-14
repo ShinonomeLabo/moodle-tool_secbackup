@@ -148,9 +148,15 @@ final class poller_test extends \advanced_testcase {
     }
 
     public function test_empty_site_id_is_not_a_registration(): void {
+        global $DB;
         set_config('siteid', '', 'tool_secbackup');
-        $this->assertTrue($GLOBALS['DB']->record_exists('config_plugins', ['plugin' => 'tool_secbackup', 'name' => 'siteid']));
+        set_config('sitename', 'Example site', 'tool_secbackup');
+        $this->assertTrue($DB->record_exists('config_plugins', ['plugin' => 'tool_secbackup', 'name' => 'siteid']));
+        // The cache holds what the table holds and one more value. Reading the table again would not bring it back.
+        $cache = \cache::make('core', 'config');
+        $cache->set('tool_secbackup', ['siteid' => '', 'sentinel' => 'cached']);
         $this->assertSame('notregistered', $this->poller(self::NOW)->run());
+        $this->assertSame('cached', $cache->get('tool_secbackup')['sentinel']);
         $this->assertSame([], $this->service->state['requests']);
         $this->assertFalse(get_config('tool_secbackup', 'lastpoll'));
     }
@@ -164,6 +170,8 @@ final class poller_test extends \advanced_testcase {
         $this->assertSame('active', $state->last_poll_status());
         $this->assertSame('api_unavailable', $state->last_poll_error());
         $this->assertSame(self::NOW + 300, $state->last_poll());
+        // The service gave no time with the refusal, so the clock difference stays what the success found.
+        $this->assertSame(0, $state->clock_skew());
         // A later success clears the error.
         $this->service->state['mode'] = '';
         $this->assertSame('ok', $this->poller(self::NOW)->run());
@@ -197,5 +205,34 @@ final class poller_test extends \advanced_testcase {
     public function test_error_value_is_stored_only_when_it_is_a_scalar(mixed $a, string $expected): void {
         $method = new \ReflectionMethod(poller::class, 'text');
         $this->assertSame($expected, $method->invoke(null, $a));
+    }
+
+    public function test_unreadable_signing_key_is_recorded(): void {
+        $this->register();
+        set_config('signingsecret', 'not a stored key', 'tool_secbackup');
+        $this->assertSame('failed', $this->poller(self::NOW)->run());
+        $state = state::load();
+        $this->assertSame('signingkey_corrupt', $state->last_poll_error());
+        $this->assertSame('', $state->last_poll_error_a());
+        $this->assertSame(self::NOW, $state->last_poll());
+        $this->assertSame([], array_filter($this->service->state['requests'], static fn($r) => str_contains($r, 'status')));
+    }
+
+    public function test_unacceptable_stored_connection_url_is_recorded(): void {
+        $this->register();
+        set_config('endpoint', 'ftp://app.example.test/api', 'tool_secbackup');
+        $this->assertSame('failed', $this->poller(self::NOW)->run());
+        $this->assertSame('endpoint_scheme', state::load()->last_poll_error());
+        $this->assertSame(self::NOW, state::load()->last_poll());
+    }
+
+    public function test_default_clock_is_the_time_of_this_server(): void {
+        $this->register();
+        // Without a signing key nothing is sent, so the default client is never asked.
+        unset_config('signingsecret', 'tool_secbackup');
+        $before = time();
+        $this->assertSame('failed', (new poller())->run());
+        $this->assertGreaterThanOrEqual($before, state::load()->last_poll());
+        $this->assertLessThanOrEqual(time(), state::load()->last_poll());
     }
 }
