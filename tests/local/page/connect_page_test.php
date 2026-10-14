@@ -601,6 +601,68 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString('&amp;lt;', $html);
     }
 
+    /**
+     * Checks the top of a page: the introduction with the trademark mark, the trademark notice, and the developer warning.
+     *
+     * @param string $html The page.
+     * @param bool $developer Whether the developer settings are active.
+     */
+    private function assert_page_top(string $html, bool $developer): void {
+        $this->assertStringContainsString(get_string('intro', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(get_string('trademark', 'tool_secbackup'), $html);
+        $banner = get_string('developer_banner', 'tool_secbackup');
+        if ($developer) {
+            $this->assertStringContainsString($banner, $html);
+        } else {
+            $this->assertStringNotContainsString($banner, $html);
+        }
+    }
+
+    public function test_the_top_of_the_page_before_a_registration(): void {
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assert_page_top($page->render(), false);
+    }
+
+    public function test_the_top_of_the_page_of_a_registered_site(): void {
+        self::register(self::service());
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assert_page_top($page->render(), false);
+    }
+
+    public function test_the_top_of_the_second_step(): void {
+        connection_form::mock_submit(['stage' => 'connection', 'endpoint' => self::API, 'publickey' => fake_service::ENCRYPTION_KEY]);
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString('name="code"', $html);
+        $this->assert_page_top($html, false);
+    }
+
+    public function test_the_page_warns_while_developer_settings_are_active(): void {
+        global $CFG;
+        $CFG->tool_secbackup_developer = ['allowhttp' => true];
+        $page = self::page(self::service());
+        $this->assertNull($page->handle());
+        $this->assert_page_top($page->render(), true);
+    }
+
+    public function test_the_page_sends_the_registration_code_in_its_normal_form(): void {
+        self::submit_registration(['code' => '  sec bk aaaa bbbb-cccc dddd eeee ']);
+        $service = self::service();
+        $this->assertNotNull(self::page($service)->handle());
+        // What the service received, and not what it made of it.
+        $this->assertSame(fake_service::CODE, json_decode($service->state['lastbody'], true)['enrollment_code']);
+    }
+
+    public function test_the_message_after_a_removal_is_a_success(): void {
+        self::register(self::service());
+        deregister_form::mock_submit(['stage' => 'deregister', 'confirmname' => fake_service::SITE_NAME]);
+        $redirection = self::page(self::service())->handle();
+        $this->assertSame(notification::NOTIFY_SUCCESS, $redirection->type);
+    }
+
     public function test_create_without_an_enroller(): void {
         $page = new connect_page();
         $this->assertNull($page->handle());

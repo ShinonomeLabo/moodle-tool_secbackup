@@ -156,4 +156,25 @@ final class declarations_test extends \advanced_testcase {
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_status')->req_capability);
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_connect')->req_capability);
     }
+
+    public function test_the_pages_are_in_the_tree_only_for_users_who_may_configure_the_site(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        require_once($CFG->libdir . '/adminlib.php');
+        $user = $this->getDataGenerator()->create_user();
+        $role = create_role('Backup manager', 'backupmanager', '');
+        assign_capability('tool/secbackup:manage', CAP_ALLOW, $role, \context_system::instance());
+        role_assign($role, $user->id, \context_system::instance());
+        $this->setUser($user);
+        try {
+            // The tree is built again for this user: settings.php decides what is in it from the user's capabilities.
+            $tree = \admin_get_root(true, false);
+            $this->assertNull($tree->locate('tool_secbackup'));
+            $this->assertNull($tree->locate('tool_secbackup_status'));
+            $this->assertNull($tree->locate('tool_secbackup_connect'));
+        } finally {
+            $this->setAdminUser();
+            \admin_get_root(true, false);
+        }
+    }
 }

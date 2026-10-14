@@ -74,6 +74,20 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString(get_string('developer_banner', 'tool_secbackup'), $html);
     }
 
+    public function test_the_top_of_the_page_of_a_registered_site(): void {
+        self::register();
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('intro', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(get_string('trademark', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('developer_banner', 'tool_secbackup'), $html);
+    }
+
+    public function test_the_intro_and_the_notice_are_on_the_page_before_a_registration(): void {
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('intro', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(get_string('trademark', 'tool_secbackup'), $html);
+    }
+
     public function test_developer_banner(): void {
         global $CFG;
         $CFG->tool_secbackup_developer = ['allowhttp' => true];
@@ -92,6 +106,15 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringContainsString(userdate(1760000300), $html);
         $this->assertStringNotContainsString(get_string('status_last_error', 'tool_secbackup'), $html);
         $this->assertStringNotContainsString(get_string('status_last_error_code', 'tool_secbackup', ''), $html);
+    }
+
+    public function test_the_page_of_a_registered_site_links_to_the_connection_settings(): void {
+        self::register();
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(
+            'href="https://www.example.com/moodle/admin/tool/secbackup/connect.php"',
+            $html
+        );
     }
 
     public function test_registered_site_never_asked(): void {
