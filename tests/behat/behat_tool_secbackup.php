@@ -28,6 +28,9 @@
 require_once(__DIR__ . '/../../../../../lib/behat/behat_base.php');
 
 use Behat\Mink\Exception\ExpectationException;
+use tool_secbackup\local\crypto\public_key_format;
+use tool_secbackup\local\endpoint\endpoint;
+use tool_secbackup\local\enrollment\enroller;
 use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\local\trust\sec_trust;
 
@@ -40,6 +43,9 @@ use tool_secbackup\local\trust\sec_trust;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class behat_tool_secbackup extends behat_base {
+    /** @var string Address of the fake backup service. */
+    private const FAKE = 'http://localhost:8099';
+
     /**
      * Installs a minimal Japanese language, so that real pages load the strings of lang/ja of the plugin.
      *
@@ -126,6 +132,63 @@ class behat_tool_secbackup extends behat_base {
         }
         if (in_array(sec_trust::kid($publickey), $keyids, true)) {
             throw new ExpectationException('The plugin trusts a key that config.php did not give it.', $this->getSession());
+        }
+    }
+
+    /**
+     * Forgets everything the fake backup service knows.
+     *
+     * @Given /^the fake backup service is reset$/
+     */
+    public function the_fake_backup_service_is_reset(): void {
+        $this->control('reset');
+    }
+
+    /**
+     * Makes the fake backup service answer in a special way.
+     *
+     * @Given /^the fake backup service answers in "(?P<mode_string>[a-z_]+)" mode$/
+     * @param string $mode Mode of the fake service.
+     */
+    public function the_fake_backup_service_answers_in_mode(string $mode): void {
+        $this->control('mode/' . $mode);
+    }
+
+    /**
+     * Lets the registration code be used once more, like a new code issued on the platform.
+     *
+     * @Given /^the fake backup service issued a new registration code$/
+     */
+    public function the_fake_backup_service_issued_a_new_registration_code(): void {
+        $this->control('newcode');
+    }
+
+    /**
+     * Registers the site with the fake backup service without the pages.
+     *
+     * @Given /^the site is registered with the fake backup service$/
+     */
+    public function the_site_is_registered_with_the_fake_backup_service(): void {
+        $endpoint = endpoint::parse(self::FAKE . '/api/lms-backup/v1', developer_settings::current());
+        enroller::create()->enroll(
+            $endpoint,
+            public_key_format::parse('secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE='),
+            'SEC-BK-AAAA-BBBB-CCCC-DDDD-EEEE'
+        );
+    }
+
+    /**
+     * Sends a control request to the fake backup service.
+     *
+     * @param string $action Control action.
+     */
+    private function control(string $action): void {
+        $client = new \core\http_client(['ignoresecurity' => true]);
+        $response = $client->post(self::FAKE . '/_fake/' . $action, ['http_errors' => false, 'timeout' => 10]);
+        if ($response->getStatusCode() !== 204) {
+            throw new \Exception(
+                'The fake backup service did not accept "' . $action . '". Start it with .dev/fakesec/start.sh.'
+            );
         }
     }
 }

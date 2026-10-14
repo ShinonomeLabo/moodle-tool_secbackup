@@ -22,5 +22,6 @@ elif [ "$enable_status" -ne 0 ]; then
     echo "util_single_run.php --enable failed (exit $enable_status)" >&2
     exit 1
 fi
+"$SECBK_REPO/.dev/fakesec/start.sh" "$secbk_ver" "$secbk_db"
 "$here/run.sh" "$secbk_ver" "$secbk_db" php vendor/bin/behat \
     --config /var/www/behatdata/behatrun/behat/behat.yml --tags=@tool_secbackup "$@"

@@ -32,5 +32,5 @@ return new class extends phpunit_coverage_info {
     protected $includelistfolders = ['classes', 'db', 'lang'];
 
     /** @var array Files to include. */
-    protected $includelistfiles = ['version.php'];
+    protected $includelistfiles = ['version.php', 'settings.php', 'index.php', 'connect.php'];
 };

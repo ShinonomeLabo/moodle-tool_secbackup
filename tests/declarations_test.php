@@ -137,4 +137,22 @@ final class declarations_test extends \advanced_testcase {
             $this->assertSame(0, preg_match('/[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]/u', $text), $id);
         }
     }
+
+    public function test_settings_register_the_pages(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        require_once($CFG->libdir . '/adminlib.php');
+        $tree = \admin_get_root(true, false);
+        $this->assertInstanceOf(\admin_category::class, $tree->locate('tool_secbackup'));
+        $this->assertSame(
+            (new \moodle_url('/admin/tool/secbackup/index.php'))->out(false),
+            $tree->locate('tool_secbackup_status')->url->out(false)
+        );
+        $this->assertSame(
+            (new \moodle_url('/admin/tool/secbackup/connect.php'))->out(false),
+            $tree->locate('tool_secbackup_connect')->url->out(false)
+        );
+        $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_status')->req_capability);
+    }
 }
