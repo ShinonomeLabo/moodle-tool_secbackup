@@ -28,3 +28,12 @@ Web ports: 4.5 = 18045, 5.1 = 18051, 5.2 = 18052, 5.3 = 18053 (admin / test).
 
 Users are named `secbk_<time>_<n>` and courses `secbk-<time>-<n>`. A second run does nothing
 unless `--force` is given.
+
+## Development settings in config.php
+
+`.dev/env/devconfig.sh 503` adds a block to the `config.php` of the development site of that Moodle version (once; a second run
+says "already set"). The block defines `TOOL_SECBACKUP_DEVELOPER`: it trusts the key of the fake backup service, accepts
+`http://localhost:8099` and skips the network checks. The block starts with the comment `tool_secbackup development
+settings` and ends with the comment `End of tool_secbackup development settings.`. To undo it, delete the lines from the first
+comment to the last one. The plugin's pages then show no developer warning, and registration with the fake service no longer
+works. Nothing else of the site is changed.
