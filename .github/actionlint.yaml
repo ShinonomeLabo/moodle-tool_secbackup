@@ -1,0 +1,4 @@
+# macos-26 is a runner label that GitHub lists (actions/runner-images); this actionlint release does not know it yet.
+self-hosted-runner:
+  labels:
+    - macos-26

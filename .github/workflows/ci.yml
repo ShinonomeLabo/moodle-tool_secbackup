@@ -19,6 +19,7 @@ jobs:
   rules:
     name: Commit rules and development tools
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       # On a pull request, GitHub checks out a merge commit of its own by default. The commit rules apply to the commits of
       # the pull request, so its head is checked out. On a push both values are empty and the default stays.
@@ -78,9 +79,33 @@ jobs:
           php .dev/coverage/tests/run.php
           php .dev/coverage/tests/badge.php
 
+  inventory:
+    name: UI inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      # No secret is needed here, so a pull request from a fork gets this check too.
+      - name: Check that every page and operation has a Behat scenario
+        run: php .dev/ci/check-ui-inventory.php
+
+      - name: Test the check
+        run: bash .dev/hooks/tests/run.sh
+
   test:
     name: Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
@@ -280,10 +305,245 @@ jobs:
         if: ${{ cancelled() }}
         run: exit 1
 
+  # Behat in Firefox and Edge, in every Moodle version with both databases. The Chrome run, with the coverage, is in the
+  # test job. A scenario has to pass the first time (--auto-rerun 0). No secret and no coverage here.
+  behat:
+    name: Behat ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, edge]
+        moodle: ['4.5', '5.0', '5.1', '5.2', '5.3']
+        database: [pgsql, mariadb]
+        include:
+          - {moodle: '4.5', database: pgsql, branch: MOODLE_405_STABLE, php: '8.3', image: 'postgres:13', health: 'pg_isready -U postgres'}
+          - {moodle: '4.5', database: mariadb, branch: MOODLE_405_STABLE, php: '8.3', image: 'mariadb:10.6.7', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.0', database: pgsql, branch: MOODLE_500_STABLE, php: '8.4', image: 'postgres:14', health: 'pg_isready -U postgres'}
+          - {moodle: '5.0', database: mariadb, branch: MOODLE_500_STABLE, php: '8.4', image: 'mariadb:10.11', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.1', database: pgsql, branch: MOODLE_501_STABLE, php: '8.4', image: 'postgres:15', health: 'pg_isready -U postgres'}
+          - {moodle: '5.1', database: mariadb, branch: MOODLE_501_STABLE, php: '8.4', image: 'mariadb:10.11', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.2', database: pgsql, branch: MOODLE_502_STABLE, php: '8.4', image: 'postgres:16', health: 'pg_isready -U postgres'}
+          - {moodle: '5.2', database: mariadb, branch: MOODLE_502_STABLE, php: '8.4', image: 'mariadb:10.11', health: 'mysqladmin ping -h 127.0.0.1'}
+          - {moodle: '5.3', database: pgsql, branch: MOODLE_503_STABLE, php: '8.4', image: 'postgres:17', health: 'pg_isready -U postgres'}
+          - {moodle: '5.3', database: mariadb, branch: MOODLE_503_STABLE, php: '8.4', image: 'mariadb:11.4', health: 'mariadb-admin ping -h 127.0.0.1'}
+
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 'yes'
+        ports:
+          - 5432:5432
+          - 3306:3306
+        options: >-
+          --health-cmd "${{ matrix.health }}"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+          persist-credentials: false
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Install moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo "$(cd ci/bin; pwd)" >> "$GITHUB_PATH"
+          echo "$(cd ci/vendor/bin; pwd)" >> "$GITHUB_PATH"
+          sudo locale-gen en_AU.UTF-8
+          echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
+
+      - name: Install Moodle with the plugin
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+        env:
+          DB: ${{ matrix.database }}
+          MOODLE_BRANCH: ${{ matrix.branch }}
+
+      - name: Add the development settings and start the fake service
+        run: |
+          moodle-plugin-ci add-config 'define("TOOL_SECBACKUP_DEVELOPER", ["trustedkeys" => ["PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="], "allowhttp" => true, "allowprivatehosts" => true, "skipnetworkchecks" => true]);'
+          nohup php -S 127.0.0.1:8099 plugin/.dev/fakesec/router.php > "$RUNNER_TEMP/fakesec.log" 2>&1 &
+          for _ in $(seq 1 20); do
+            if php -r 'exit(@file_get_contents("http://127.0.0.1:8099/_fake/state") === false ? 1 : 0);'; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/fakesec.log"
+          exit 1
+
+      # moodle-plugin-ci knows the profiles chrome and firefox. Edge is added to config.php, and the Behat site is enabled
+      # again so that behat.yml has the profile.
+      - name: Add the Edge profile
+        if: matrix.browser == 'edge'
+        run: |
+          # shellcheck disable=SC2016
+          moodle-plugin-ci add-config '$CFG->behat_profiles["edge"] = ["browser" => "MicrosoftEdge", "wd_host" => "http://localhost:4444/wd/hub", "capabilities" => ["browserName" => "MicrosoftEdge"]];'
+          if [ -d moodle/public ]; then cli=moodle/public/admin/tool/behat/cli; else cli=moodle/admin/tool/behat/cli; fi
+          php "$cli/util_single_run.php" --enable --add-core-features-to-theme
+
+      - name: Behat features
+        id: behat
+        run: moodle-plugin-ci behat --profile ${{ matrix.browser }} --selenium selenium/standalone-${{ matrix.browser }}:4 --auto-rerun 0
+
+      - name: Upload Behat Faildump
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Behat Faildump ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+          path: ${{ github.workspace }}/moodledata/behat_dump
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Behat in Safari, on a macOS runner (the newest image GitHub lists: macos-26, Apple silicon, Safari 26). There is no
+  # Docker on it, so the databases come from Homebrew, at the lowest version that Homebrew still has and that the Moodle
+  # version supports; the web server is the one of PHP, and safaridriver is the one of macOS.
+  behat-safari:
+    name: Behat safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        moodle: ['4.5', '5.0', '5.1', '5.2', '5.3']
+        database: [pgsql, mariadb]
+        include:
+          - {moodle: '4.5', database: pgsql, branch: MOODLE_405_STABLE, php: '8.3', formula: 'postgresql@14'}
+          - {moodle: '4.5', database: mariadb, branch: MOODLE_405_STABLE, php: '8.3', formula: 'mariadb@10.6'}
+          - {moodle: '5.0', database: pgsql, branch: MOODLE_500_STABLE, php: '8.4', formula: 'postgresql@14'}
+          - {moodle: '5.0', database: mariadb, branch: MOODLE_500_STABLE, php: '8.4', formula: 'mariadb@10.11'}
+          - {moodle: '5.1', database: pgsql, branch: MOODLE_501_STABLE, php: '8.4', formula: 'postgresql@15'}
+          - {moodle: '5.1', database: mariadb, branch: MOODLE_501_STABLE, php: '8.4', formula: 'mariadb@10.11'}
+          - {moodle: '5.2', database: pgsql, branch: MOODLE_502_STABLE, php: '8.4', formula: 'postgresql@16'}
+          - {moodle: '5.2', database: mariadb, branch: MOODLE_502_STABLE, php: '8.4', formula: 'mariadb@10.11'}
+          - {moodle: '5.3', database: pgsql, branch: MOODLE_503_STABLE, php: '8.4', formula: 'postgresql@17'}
+          - {moodle: '5.3', database: mariadb, branch: MOODLE_503_STABLE, php: '8.4', formula: 'mariadb@11.4'}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+          persist-credentials: false
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      # PostgreSQL 13 is no longer in Homebrew (PostgreSQL 14 is the lowest), so Moodle 4.5 runs on 14 here, and MariaDB
+      # 10.6 and 11.4 are the versions of ci.yml's images.
+      - name: Install and start the database
+        env:
+          FORMULA: ${{ matrix.formula }}
+          DATABASE: ${{ matrix.database }}
+        run: |
+          brew install "$FORMULA"
+          prefix="$(brew --prefix "$FORMULA")"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          export PATH="$prefix/bin:$PATH"
+          if [ "$DATABASE" = pgsql ]; then
+            brew services start "$FORMULA"
+            for _ in $(seq 1 30); do pg_isready -h 127.0.0.1 && break; sleep 2; done
+            createuser -h 127.0.0.1 -s postgres
+          else
+            brew services start "$FORMULA"
+            for _ in $(seq 1 30); do mariadb-admin ping -h 127.0.0.1 --silent && break; sleep 2; done
+            # Moodle connects as root without a password.
+            mariadb -u "$(whoami)" -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('');" || true
+          fi
+
+      - name: Install moodle-plugin-ci
+        run: |
+          brew install nvm
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo "$(cd ci/bin; pwd)" >> "$GITHUB_PATH"
+          echo "$(cd ci/vendor/bin; pwd)" >> "$GITHUB_PATH"
+          echo "NVM_DIR=$(brew --prefix nvm)" >> "$GITHUB_ENV"
+
+      - name: Install Moodle with the plugin
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+        env:
+          DB: ${{ matrix.database }}
+          MOODLE_BRANCH: ${{ matrix.branch }}
+
+      - name: Add the development settings and start the fake service
+        run: |
+          moodle-plugin-ci add-config 'define("TOOL_SECBACKUP_DEVELOPER", ["trustedkeys" => ["PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="], "allowhttp" => true, "allowprivatehosts" => true, "skipnetworkchecks" => true]);'
+          nohup php -S 127.0.0.1:8099 plugin/.dev/fakesec/router.php > "$RUNNER_TEMP/fakesec.log" 2>&1 &
+          for _ in $(seq 1 20); do
+            if php -r 'exit(@file_get_contents("http://127.0.0.1:8099/_fake/state") === false ? 1 : 0);'; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/fakesec.log"
+          exit 1
+
+      # safaridriver answers at /session, without the /wd/hub of Selenium.
+      - name: Add the Safari profile
+        run: |
+          # shellcheck disable=SC2016
+          moodle-plugin-ci add-config '$CFG->behat_profiles["safari"] = ["browser" => "safari", "wd_host" => "http://localhost:4444", "capabilities" => ["browserName" => "safari"]];'
+          if [ -d moodle/public ]; then cli=moodle/public/admin/tool/behat/cli; else cli=moodle/admin/tool/behat/cli; fi
+          php "$cli/util_single_run.php" --enable --add-core-features-to-theme
+
+      # moodle-plugin-ci would start Selenium in Docker for the install's setting MOODLE_START_BEHAT_SERVERS, so it is told
+      # not to, and the two servers are started here: safaridriver, and the web server of PHP with several workers (a page
+      # asks for many files at once).
+      - name: Start safaridriver and the web server of the Behat site
+        run: |
+          sudo safaridriver --enable
+          nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
+          if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
+          PHP_CLI_SERVER_WORKERS=4 nohup php -S localhost:8000 -t "$root" > "$RUNNER_TEMP/web.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fs http://localhost:4444/status > /dev/null && curl -s -o /dev/null http://localhost:8000/; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/safaridriver.log" "$RUNNER_TEMP/web.log"
+          exit 1
+
+      - name: Behat features
+        id: behat
+        env:
+          MOODLE_START_BEHAT_SERVERS: 'NO'
+        run: moodle-plugin-ci behat --profile safari --auto-rerun 0
+
+      - name: Upload Behat Faildump
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Behat Faildump safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+          path: ${{ github.workspace }}/moodledata/behat_dump
+          retention-days: 7
+          if-no-files-found: ignore
+
   coverage:
     name: Line coverage of all combinations
     needs: test
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

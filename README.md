@@ -38,6 +38,10 @@ Every change runs the plugin's checks, PHPUnit tests and Behat features on these
 | 5.3 | 8.4 | PostgreSQL 17, MariaDB 11.4, MySQL 8.4 |
 | 5.3 | 8.3 | PostgreSQL 17 |
 
+Behat (every page and every operation of the plugin, see `tests/behat/inventory.txt`) also runs in Chrome on every
+combination above, and in Firefox, Edge and Safari on every Moodle version with PostgreSQL and MariaDB (the newest PHP of
+the version; Safari on a macOS runner, with the databases of Homebrew).
+
 ## Privacy
 
 The plugin sends backups of the whole site, including the personal data of all users,
