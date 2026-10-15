@@ -78,8 +78,19 @@ machine. `-j 2` runs two at once (never more: the disk is the limit), `-k` keeps
 ## Results (2026-10-15)
 
 All twelve combinations match `expect.txt`, with the real service and with the stand-in (36 results for each SELinux
-combination, 72 for each AppArmor one). Machines: aarch64 under Lima 2.2.1. `dns / connection` is the result of the
-plugin's two network checks; "denials" means a denied network connection in the kernel log; PHP warnings: none anywhere.
+combination, 72 for each AppArmor one) in the first run of 2026-10-15. Machines: aarch64 under Lima 2.2.1. `dns /
+connection` is the result of the plugin's two network checks; "denials" means a denied network connection in the kernel log.
+
+**PHP warnings.** The first run counted warnings in logs that Moodle's default `debug` level never fills, so its "none"
+proved nothing. `provision.sh` now sets `$CFG->debug` to developer level (not displayed) and sends PHP's errors to
+`/var/moodledata/secbk-php-errors.log`; `check.sh` counts the lines that name `/admin/tool/secbackup/` (other lines are
+counted in the case file but do not count), and each state has a control case in which `probe.php` raises one warning from a
+file of the plugin's directory: `phpwarnings` must be `present` there (`selinux-web-control`, `standard-web-control`,
+`confined-web-control`). Measured with this count on 2026-10-15 on `rocky-9` and `ubuntu-24.04`: `none` in every other case,
+`present` in the control (44 and 88 results, all as expected). Still to be measured on the other six templates (17b-2).
+
+`out/` holds the page and command-line output of every case. The connection URL is replaced by `<endpoint>` in it, but the
+rest (DNS answers, addresses) is not redacted: `out/` is a local, git-ignored folder and is never uploaded anywhere.
 
 | Template | Moodle | PHP | PostgreSQL | Extra repositories |
 |---|---|---|---|---|
@@ -124,6 +135,12 @@ diagnosis says nothing about the web server.
 
 ## AppArmor facts (the base of the AppArmor check of the plugin)
 
+Observed on 2026-10-15 on aarch64 machines under Lima 2.2.1 (vz driver), with the packages of that day: Debian 12 (kernel
+6.1.0-53, apparmor 3.0.8-3), Ubuntu 22.04 (5.15.0-194, 3.0.4-2ubuntu2.5), Ubuntu 24.04 (6.8.0-142, 4.0.1-0ubuntu0.24.04.9);
+the kernel and package versions of Debian 13 were not recorded. Not verified on x86_64: the log wording, the complain flags
+shipped in a profile and the list of rules may differ with another kernel or package version. IPv6 is untested too: the
+network of the machines has no IPv6 route.
+
 **The profile.** `apparmor-profiles` ships `/etc/apparmor.d/php-fpm`, attached to `/usr/sbin/php-fpm*` (Debian 13:
 `/usr/{bin,sbin}/php-fpm*`). Debian 12, Debian 13 and Ubuntu 22.04 ship it with `flags=(complain,...)`; Ubuntu 24.04 ships
 it enforcing. The tests put it in enforce mode with `aa-enforce php-fpm` and restart php-fpm. php-fpm and all its workers,
@@ -135,8 +152,8 @@ is `unconfined`.
 readable; `/sys/module/apparmor/parameters/enabled` is **not** readable (denied). The profile also denies
 `/proc/<pid>/mountinfo`, so the plugin's data directory check shows "Cannot be read" under the profile.
 
-**The smallest local rules Moodle needs** (`/etc/apparmor.d/local/php-fpm`; `<root>` is the Moodle directory, the data
-directory is `/var/moodledata`). Found from the `DENIED` lines; without them the page is 403 or 503/500:
+**A sufficient set of local rules for Moodle** (`/etc/apparmor.d/local/php-fpm`; `<root>` is the Moodle directory, the data
+directory is `/var/moodledata`). Found from the `DENIED` lines, so sufficient; that no rule can be left out was tried only for the data directory itself. Without them the page is 403 or 503/500:
 
 | Template | Rules |
 |---|---|
@@ -160,15 +177,17 @@ On the Ubuntu machines a first run that read only the kernel ring buffer (`journ
 while the whole journal had them; so use `journalctl --since "10 min ago" | grep 'apparmor="DENIED"'` (or `dmesg`). The kernel drops these messages when many come
 within seconds (`kernel.printk_ratelimit`), so a test that counts them sets it to 0.
 
-**The narrowest rule that lets the plugin connect** when a profile has no network permission (a test-only copy of the profile
-whose name-service abstraction has no `network inet` rules):
+**The narrowest network rule that lets the plugin connect** when a profile has no network permission (a test-only copy of the
+profile whose name-service abstraction has no `network inet` rules; its file rules, such as `resolv.conf` and the CA
+bundle, are kept, so the result holds for a profile that already has those):
 
     network inet stream,      # HTTPS to the DNS over HTTPS services and to the service
     network inet dgram,       # the name lookup of the operating system (not needed on Debian 13)
 
-Both for IPv4; add `network inet6 stream,` and `network inet6 dgram,` for a server whose resolver or route is IPv6 (Ubuntu
-22.04 tries an IPv6 UDP socket during the lookup; the lookup still works, but the attempt is logged). With the stream rules
-only, the name check fails with `dns_os_failed` on three of the four. An administrator loads a changed rule with
+Both for IPv4. The IPv6 rules (`network inet6 stream,` and `network inet6 dgram,`) for a server whose resolver or route is
+IPv6 are untested. Ubuntu 22.04 tries an IPv6 UDP socket during the lookup; the lookup still works, but the attempt is
+logged. The stream-only test carried `inet stream` and `inet6 stream` together, so "Debian 13 needs no UDP rule" is shown for
+that pair, not for IPv4 stream alone; with only the stream rules the name check fails with `dns_os_failed` on the other three. An administrator loads a changed rule with
 
     sudo apparmor_parser -r /etc/apparmor.d/php-fpm
 
