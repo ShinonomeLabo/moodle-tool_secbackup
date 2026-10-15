@@ -47,7 +47,8 @@ fi
 mkdir -p "$out"
 
 run_one() {
-    local template="$1" port="$2" log="$out/$1.log" options=(-p "$port") status
+    local template="$1" port="$2" log="$out/$1.log" status
+    local options=(-p "$port")
     [ -z "$realurl" ] || options+=(-u "$realurl" -m both)
     [ "$keep" = no ] || options+=(-k)
     [ "$replace" = no ] || options+=(-r)
