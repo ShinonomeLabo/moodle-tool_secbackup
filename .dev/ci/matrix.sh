@@ -4,8 +4,9 @@
 # Usage: .dev/ci/matrix.sh [filter]    only the combinations whose text ("<ver> <db> <php>") contains the filter, such as 503 or mysqli
 #        .dev/ci/matrix.sh --list      print the combinations and stop
 # An environment that this script installs is removed with its data when its combination is done, so that the disk holds
-# one site at a time; one that was installed before (a marker file made by install.sh) is only stopped. SECBK_MATRIX_KEEP=1
-# stops them all without removing. Moodle 5.0 runs in its own checkout (SECBK_SITE=matrix): devconfig.sh edits config.php,
+# one site at a time; one that was installed before (a marker file made by install.sh) is only stopped. SECBK_MATRIX_KEEP is a
+# regular expression for "<ver> <db> <php>": the environments of the combinations it matches are stopped, not removed
+# (SECBK_MATRIX_KEEP=. keeps all of them). Moodle 5.0 runs in its own checkout (SECBK_SITE=matrix): devconfig.sh edits config.php,
 # and the plain 5.0 site may hold a registration made by hand that must stay as it is.
 # One line per combination goes to .dev/ci/out/matrix.log: ok or FAILED, and the minutes. The logs of the steps are in
 # .dev/ci/out/<ver>-<db>[-php<version>]/. Exits non-zero when a combination failed.
@@ -72,7 +73,7 @@ while read -r ver db php; do
         status=1
     fi
     printf '%-7s %s %s %s (%d min)\n' "$result" "$ver" "$db" "$php" $(((SECONDS - started + 59) / 60)) | tee -a "$log"
-    if [ "$was_installed" -eq 0 ] && [ -z "${SECBK_MATRIX_KEEP:-}" ]; then
+    if [ "$was_installed" -eq 0 ] && ! { [ -n "${SECBK_MATRIX_KEEP:-}" ] && [[ "$ver $db $php" =~ $SECBK_MATRIX_KEEP ]]; }; then
         "$repo/.dev/env/down.sh" "$ver" "$db" --volumes
     else
         "$repo/.dev/env/down.sh" "$ver" "$db"
