@@ -463,24 +463,29 @@ the_dev_directory_of_this_repository_has_its_guards() { "$here/../check-dev-guar
 expect_check ok "every PHP file of .dev has its guard" the_dev_directory_of_this_repository_has_its_guards
 
 # The check of the UI inventory (.dev/ci/check-ui-inventory.php): a small plugin is planted in a temporary directory, with a
-# page, a form with a button and a cancel button, a link of the renderer, an entry of the administration tree and a feature
-# file that does everything; the check passes on it, and fails after each kind of damage.
+# page (index.php, its page class, a form with a button and a cancel button, a link of the renderer), an entry of the
+# administration tree and a feature file that does everything; the check passes on it, and fails after each kind of damage.
 inventory_check="$here/../../ci/check-ui-inventory.php"
 plant_plugin() {
     local dir="$1"
     rm -rf "$dir"
-    mkdir -p "$dir/classes/form" "$dir/classes/output" "$dir/lang/en" "$dir/tests/behat" || return 1
-    printf '%s\n' '<?php' 'echo 1;' > "$dir/index.php"
+    mkdir -p "$dir/classes/form" "$dir/classes/output" "$dir/classes/local/page" "$dir/lang/en" "$dir/tests/behat" || return 1
+    printf '%s\n' '<?php' 'echo (new \tool_secbackup\local\page\main_page())->render();' > "$dir/index.php"
     printf '%s\n' '<?php' 'echo 1;' > "$dir/version.php"
     printf '%s\n' '<?php' "\$ADMIN->add('tools', new admin_externalpage('x', new lang_string('page_status', 'tool_secbackup'), 'u'));" \
         > "$dir/settings.php"
-    printf '%s\n' '<?php' '// $this->add_action_buttons(false, get_string("commented", "tool_secbackup"));' \
-        "\$this->add_action_buttons(true, get_string('action_go', 'tool_secbackup'));" > "$dir/classes/form/f.php"
-    printf '%s\n' '<?php' \
-        "return html_writer::link(new moodle_url('/a.php'), get_string('page_other', 'tool_secbackup'));" \
-        > "$dir/classes/output/r.php"
-    printf '%s\n' '<?php' "\$string['action_go'] = 'Go';" "\$string['page_other'] = 'Other page';" \
-        "\$string['page_status'] = 'Status';" "\$string['commented'] = 'Never shown';" > "$dir/lang/en/tool_secbackup.php"
+    printf '%s\n' '<?php' 'class main_page {' '    public function render() {' '        $form = new go_form();' \
+        '        return $renderer->links();' '    }' '}' > "$dir/classes/local/page/main_page.php"
+    printf '%s\n' '<?php' 'class go_form {' '    public function definition() {' \
+        '        // $this->add_action_buttons(false, get_string("commented", "tool_secbackup"));' \
+        "        \$this->add_action_buttons(true, get_string('action_go', 'tool_secbackup'));" '    }' '}' \
+        > "$dir/classes/form/go_form.php"
+    printf '%s\n' '<?php' 'class renderer {' '    public function links() {' \
+        "        return html_writer::link(new moodle_url('/a.php'), get_string('page_other', 'tool_secbackup'));" '    }' '}' \
+        > "$dir/classes/output/renderer.php"
+    printf '%s\n' '<?php' "\$string['action_go'] = 'Go';" "\$string['action_more'] = 'More';" \
+        "\$string['page_other'] = 'Other page';" "\$string['page_status'] = 'Status';" \
+        "\$string['commented'] = 'Never shown';" > "$dir/lang/en/tool_secbackup.php"
     printf '%s\n' '@tool @tool_secbackup @javascript' 'Feature: F' '' '  Scenario: Does everything' \
         '    When I open "Plugins > Status" in site administration' '    And I press "Go"' '    And I press "Cancel"' \
         '    And I follow "Other page"' '    Then I should see "Done"' > "$dir/tests/behat/f.feature"
@@ -495,25 +500,34 @@ inventory_after() {
     plant_plugin "$dir" || return 1
     sed -i.bak "$3" "$dir/$2" && inventory_check_passes "$dir"
 }
-inventory_with_extra_file() {
+inventory_with_file() {
+    # inventory_with_file <name> <file> <text>: plants the plugin, adds one file (the text is PHP after the tag), checks.
     local dir="$work/inventory-$1"
     plant_plugin "$dir" || return 1
-    printf '%s\n' '<?php' 'echo 2;' > "$dir/$2"
+    mkdir -p "$(dirname "$dir/$2")" && printf '%s\n' '<?php' "$3" > "$dir/$2"
+    inventory_check_passes "$dir"
+}
+inventory_with_feature() {
+    # inventory_with_feature <name> <steps...>: the scenario of the planted plugin gets these steps instead.
+    local dir="$work/inventory-$1"
+    shift
+    plant_plugin "$dir" || return 1
+    printf '%s\n' '@tool @tool_secbackup @javascript' 'Feature: F' '' '  Scenario: Does everything' "$@" \
+        > "$dir/tests/behat/f.feature"
     inventory_check_passes "$dir"
 }
 planted_plugin_passes() { plant_plugin "$work/inventory-ok" && inventory_check_passes "$work/inventory-ok"; }
 expect_check ok "the inventory check accepts a planted plugin that is complete" planted_plugin_passes
-expect_check ng "the inventory check refuses a page that is not in the inventory" inventory_with_extra_file page second.php
-expect_check ok "the inventory check leaves version.php out" planted_plugin_passes
+expect_check ng "the inventory check refuses a page that is not in the inventory" inventory_with_file page second.php 'echo 2;'
+expect_check ok "the inventory check ignores a label in a comment of the code" planted_plugin_passes
 expect_check ng "the inventory check refuses a button label that is not in the inventory" \
     inventory_after button tests/behat/inventory.txt '/| Go |/d'
-expect_check ng "the inventory check refuses the cancel button of a form that is not in the inventory" \
+expect_check ng "the inventory check refuses the cancel button of a form that is not in the inventory (probe D)" \
     inventory_after cancel tests/behat/inventory.txt '/| Cancel |/d'
 expect_check ng "the inventory check refuses a link of the renderer that is not in the inventory" \
     inventory_after link tests/behat/inventory.txt '/| Other page |/d'
 expect_check ng "the inventory check refuses an entry of the administration tree that is not in the inventory" \
     inventory_after entry tests/behat/inventory.txt '/settings.php/d'
-expect_check ok "the inventory check ignores a label in a comment of the code" planted_plugin_passes
 expect_check ng "the inventory check refuses a scenario that does not exist" \
     inventory_after noscenario tests/behat/inventory.txt 's/Does everything/Does nothing/'
 expect_check ng "the inventory check refuses a feature file that does not exist" \
@@ -533,7 +547,88 @@ expect_check ng "the inventory check refuses a feature without @javascript" \
 expect_check ng "the inventory check refuses a line with the wrong number of fields" \
     inventory_after fields tests/behat/inventory.txt 's/ | Cancel | / | /'
 expect_check ng "the inventory check refuses a label that it cannot read" \
-    inventory_after unreadable classes/output/r.php 's/get_string(.page_other., .tool_secbackup.)/$text/'
+    inventory_after unreadable classes/output/renderer.php 's/get_string(.page_other., .tool_secbackup.)/$text/'
+# The probes of the review: buttons that the first version did not see, and lines that nothing held up.
+second_page_with_the_same_label() {
+    local dir="$work/inventory-probe-a"
+    plant_plugin "$dir" || return 1
+    printf '%s\n' '<?php' 'echo (new \tool_secbackup\local\page\other_page())->render();' > "$dir/other.php"
+    printf '%s\n' '<?php' 'class other_page {' '    public function render() {' '        $form = new other_form();' '    }' '}' \
+        > "$dir/classes/local/page/other_page.php"
+    printf '%s\n' '<?php' 'class other_form {' '    public function definition() {' \
+        "        \$this->add_action_buttons(false, get_string('action_go', 'tool_secbackup'));" '    }' '}' \
+        > "$dir/classes/form/other_form.php"
+    printf '%s\n' 'other.php | Go | f.feature: Does everything' >> "$dir/tests/behat/inventory.txt"
+    inventory_check_passes "$dir"
+}
+expect_check ok "the inventory check accepts a second page that has its own line for the same label" second_page_with_the_same_label
+second_page_without_its_line() {
+    local dir="$work/inventory-probe-a2"
+    plant_plugin "$dir" || return 1
+    printf '%s\n' '<?php' 'echo (new \tool_secbackup\local\page\other_page())->render();' > "$dir/other.php"
+    printf '%s\n' '<?php' 'class other_page {' '    public function render() {' '        $form = new other_form();' '    }' '}' \
+        > "$dir/classes/local/page/other_page.php"
+    printf '%s\n' '<?php' 'class other_form {' '    public function definition() {' \
+        "        \$this->add_action_buttons(false, get_string('action_go', 'tool_secbackup'));" '    }' '}' \
+        > "$dir/classes/form/other_form.php"
+    printf '%s\n' 'other.php | Other page | f.feature: Does everything' >> "$dir/tests/behat/inventory.txt"
+    inventory_check_passes "$dir"
+}
+expect_check ng "the inventory check refuses a button of another page that only the line of the first page seems to cover (probe A)" \
+    second_page_without_its_line
+renderer_with_single_button() {
+    local dir="$work/inventory-probe-b"
+    plant_plugin "$dir" || return 1
+    sed -i.bak 's/return \$renderer->links();/return $renderer->links() . $renderer->extra();/' "$dir/classes/local/page/main_page.php"
+    printf '%s\n' '<?php' 'class renderer {' '    public function links() {' \
+        "        return html_writer::link(new moodle_url('/a.php'), get_string('page_other', 'tool_secbackup'));" '    }' \
+        '    public function extra() {' \
+        "        return \$this->output->single_button(new moodle_url('/b.php'), get_string('action_more', 'tool_secbackup'));" \
+        '    }' '}' > "$dir/classes/output/renderer.php"
+    inventory_check_passes "$dir"
+}
+expect_check ng "the inventory check refuses a single_button of the renderer that is not in the inventory (probe B)" \
+    renderer_with_single_button
+form_with_a_button_in_a_group() {
+    local dir="$work/inventory-probe-c"
+    plant_plugin "$dir" || return 1
+    printf '%s\n' '<?php' 'class go_form {' '    public function definition() {' \
+        "        \$this->add_action_buttons(true, get_string('action_go', 'tool_secbackup'));" \
+        "        \$buttons = [\$mform->createElement('submit', 'more', get_string('action_more', 'tool_secbackup'))];" \
+        "        \$mform->addGroup(\$buttons, 'group', '', ' ', false);" '    }' '}' > "$dir/classes/form/go_form.php"
+    inventory_check_passes "$dir"
+}
+expect_check ng "the inventory check refuses a createElement button inside a group (probe C)" form_with_a_button_in_a_group
+form_in_a_subfolder() {
+    local dir="$work/inventory-probe-e"
+    plant_plugin "$dir" || return 1
+    mkdir -p "$dir/classes/form/sub"
+    sed -i.bak 's/\$form = new go_form();/$form = new go_form(); $more = new more_form();/' "$dir/classes/local/page/main_page.php"
+    printf '%s\n' '<?php' 'class more_form {' '    public function definition() {' \
+        "        \$this->_form->addElement('submit', 'more', get_string('action_more', 'tool_secbackup'));" '    }' '}' \
+        > "$dir/classes/form/sub/more_form.php"
+    inventory_check_passes "$dir"
+}
+expect_check ng "the inventory check scans the folders below classes/form, and the form element of \$this->_form (probe E)" \
+    form_in_a_subfolder
+expect_check ok "the inventory check reads add_action_buttons with TRUE" \
+    inventory_after upper classes/form/go_form.php 's/add_action_buttons(true/add_action_buttons(TRUE/'
+expect_check ng "the inventory check reads add_action_buttons with named arguments (no cancel button then)" \
+    inventory_after named classes/form/go_form.php "s/add_action_buttons(true, get_string('action_go', 'tool_secbackup'))/add_action_buttons(cancel: false, submitlabel: get_string('action_go', 'tool_secbackup'))/"
+expect_check ng "the inventory check reads add_action_buttons without a label as Save changes" \
+    inventory_after nolabeled classes/form/go_form.php "s/add_action_buttons(true, get_string('action_go', 'tool_secbackup'))/add_action_buttons()/"
+expect_check ng "the inventory check refuses a line whose button is no longer in the code (probe F)" \
+    inventory_after stale classes/form/go_form.php "s/.*add_action_buttons(true.*//"
+expect_check ng "the inventory check refuses a line whose link is no longer in the code" \
+    inventory_after stalelink classes/output/renderer.php "s/html_writer::link/html_writer::tag/"
+expect_check ng "the inventory check refuses a form that no page reaches" \
+    inventory_with_file orphan classes/form/orphan_form.php "class orphan_form { public function d() { \$this->add_action_buttons(false, get_string('action_more', 'tool_secbackup')); } }"
+expect_check ng "the inventory check refuses a path name that the step does not use (a name between the row and the link)" \
+    inventory_with_feature middle '    When I open "Plugins > Heading > Status > Gone" in site administration' \
+        '    And I press "Go"' '    And I press "Cancel"' '    And I follow "Other page"' '    Then I should see "Done"'
+expect_check ng "the inventory check refuses a result that is checked only before the operation (probe H)" \
+    inventory_with_feature before '    When I open "Plugins > Status" in site administration' '    And I press "Go"' \
+        '    And I press "Cancel"' '    Then I should see "Done"' '    And I follow "Other page"'
 expect_check ok "the inventory check passes in this repository" inventory_check_passes "$here/../../.."
 
 echo "rules: ${pass} passed, ${fail} failed"

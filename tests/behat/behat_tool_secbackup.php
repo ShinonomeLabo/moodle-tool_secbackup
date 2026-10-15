@@ -158,7 +158,7 @@ class behat_tool_secbackup extends behat_base {
         // The click may meet a page that the step before has not finished leaving, so it is tried again.
         $this->click_and_wait_for_new_page(function (): void {
             $this->execute('behat_navigation::i_select_from_primary_navigation', [get_string('administrationsite')]);
-        });
+        }, 'Site administration');
 
         $tabxpath = '//ul[@role="tablist"]/li/a[contains(normalize-space(.), ' . behat_context_helper::escape($tab) . ')]';
         $this->click_when_present($tabxpath, 'The tab "' . $tab . '" is not on the page.', false);
@@ -168,7 +168,7 @@ class behat_tool_secbackup extends behat_base {
             $xpath .= '//div[@class="row" and contains(., ' . behat_context_helper::escape($nodes[0]) . ')]';
         }
         $xpath .= '//a[contains(normalize-space(.), ' . behat_context_helper::escape($link) . ')]';
-        $this->click_when_present($xpath, 'The link "' . $path . '" is not on the page.', true);
+        $this->click_when_present($xpath, 'The link "' . $path . '" is not on the page.', true, $path);
     }
 
     /**
@@ -181,8 +181,9 @@ class behat_tool_secbackup extends behat_base {
      * @param string $xpath The element.
      * @param string $message What to say when the element did not come.
      * @param bool $loadspage Whether the click loads a new page, which is then waited for.
+     * @param string $name What is clicked, for the message when no new page came.
      */
-    private function click_when_present(string $xpath, string $message, bool $loadspage): void {
+    private function click_when_present(string $xpath, string $message, bool $loadspage, string $name = ''): void {
         $attempt = function () use ($xpath, $message): void {
             $node = $this->getSession()->getPage()->find('xpath', $xpath);
             if ($node === null) {
@@ -191,7 +192,7 @@ class behat_tool_secbackup extends behat_base {
             $this->execute('behat_general::i_click_on', [$node, 'NodeElement']);
         };
         if ($loadspage) {
-            $this->click_and_wait_for_new_page($attempt);
+            $this->click_and_wait_for_new_page($attempt, $name);
         } else {
             $this->spin(function () use ($attempt): bool {
                 $attempt();
@@ -207,17 +208,22 @@ class behat_tool_secbackup extends behat_base {
      * A marker is put on the old page before each attempt; the new page does not have it.
      *
      * @param callable $click The click; it throws when it cannot be done (yet).
+     * @param string $name What is clicked, for the message when no new page came.
      */
-    private function click_and_wait_for_new_page(callable $click): void {
+    private function click_and_wait_for_new_page(callable $click, string $name): void {
         $this->spin(function () use ($click): bool {
             $this->getSession()->executeScript('window.tool_secbackup_old_page = true;');
             $click();
             return true;
         }, false, self::get_extended_timeout());
-        $this->getSession()->wait(
+        $arrived = $this->getSession()->wait(
             self::get_extended_timeout() * 1000,
             '(typeof window.tool_secbackup_old_page === "undefined" && document.readyState === "complete")'
         );
+        if (!$arrived) {
+            // Going on would let the next step look at the old page, and a text that both pages show would pass.
+            throw new ExpectationException('"' . $name . '" did not load a new page.', $this->getSession());
+        }
         $this->wait_for_pending_js();
     }
 

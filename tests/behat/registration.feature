@@ -70,6 +70,8 @@ Feature: Register this site with the backup service
     And "Registration code" "field" should exist
     And I press "Cancel"
     Then "Connection URL" "field" should exist
+    And the field "Connection URL" matches value ""
+    And the field "Public key of this site" matches value ""
     And "Registration code" "field" should not exist
     And I open "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
     And I should see "This site is not registered with the backup service yet."
