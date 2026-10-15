@@ -1,4 +1,4 @@
-@tool @tool_secbackup
+@tool @tool_secbackup @javascript
 Feature: Register this site with the backup service
   In order to send backups to the backup service
   As a site administrator
@@ -9,13 +9,13 @@ Feature: Register this site with the backup service
     And I log in as "admin"
 
   Scenario: The status page explains that the site is not registered
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
     Then I should see "This site is not registered with the backup service yet."
     And I should see "Developer settings are active in config.php"
     And I should see "The word Moodle and associated Moodle logos are trademarks"
 
   Scenario: Register the site
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
     And I set the following fields to these values:
       | Connection URL          | http://localhost:8099/api/lms-backup/v1/              |
       | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
@@ -31,7 +31,7 @@ Feature: Register this site with the backup service
     And I should see "http://localhost:8099/api/lms-backup/v1"
 
   Scenario: A wrong registration code saves nothing
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
     And I set the following fields to these values:
       | Connection URL          | http://localhost:8099/api/lms-backup/v1              |
       | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
@@ -42,12 +42,12 @@ Feature: Register this site with the backup service
       | Registration code | SEC-BK-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ |
     And I press "Register"
     Then I should see "The registration code is wrong, has expired"
-    And I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
+    And I open "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
     And I should see "This site is not registered with the backup service yet."
 
   Scenario: An answer signed with an unknown key is refused
     Given the fake backup service answers in "untrusted_key" mode
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
     And I set the following fields to these values:
       | Connection URL          | http://localhost:8099/api/lms-backup/v1              |
       | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
@@ -60,8 +60,22 @@ Feature: Register this site with the backup service
     Then I should see "The response was signed with a key that this plugin does not trust."
     And I should see "To be safe, issue a new registration code on the platform screen."
 
+  Scenario: Cancel on the second step returns to the first step and stores nothing
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    And I set the following fields to these values:
+      | Connection URL          | http://localhost:8099/api/lms-backup/v1              |
+      | Public key of this site | secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE= |
+    And I press "Next"
+    And I should see "http://localhost:8099/api/lms-backup/v1"
+    And "Registration code" "field" should exist
+    And I press "Cancel"
+    Then "Connection URL" "field" should exist
+    And "Registration code" "field" should not exist
+    And I open "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
+    And I should see "This site is not registered with the backup service yet."
+
   Scenario: Wrong values are explained before anything is sent
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
     And I set the following fields to these values:
       | Connection URL          | localhost:8099/api |
       | Public key of this site | secbk1:AQEB        |
@@ -72,7 +86,7 @@ Feature: Register this site with the backup service
   Scenario: Register again with a new registration code, without changing the connection URL
     Given the site is registered with the fake backup service
     And the fake backup service issued a new registration code
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
     Then I should see "The connection URL cannot be changed while the site is registered."
     And "Connection URL" "field" should not exist
     And I set the field "Public key of this site" to "secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
@@ -86,7 +100,7 @@ Feature: Register this site with the backup service
 
   Scenario: Remove the registration
     Given the site is registered with the fake backup service
-    When I navigate to "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
     And I set the field "Site name" to "Another site"
     And I press "Remove the registration"
     Then I should see "The typed name is not the site name on the platform."

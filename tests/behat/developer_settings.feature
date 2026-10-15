@@ -1,4 +1,4 @@
-@tool @tool_secbackup
+@tool @tool_secbackup @javascript
 Feature: The developer settings come from config.php only
   In order to keep the trust of the plugin out of reach of the database and of the caches of Moodle
   As an administrator

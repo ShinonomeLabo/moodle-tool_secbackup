@@ -1,0 +1,32 @@
+# Every page and every operation of the plugin, with the Behat scenario that does it and checks the result.
+# Format: page | operation | feature file: scenario title
+# The page is the file that serves it, settings.php for the entries of the administration tree, or core:<path> for a page of
+# Moodle that this plugin adds to. The operation is the English label of the button, link, entry or field.
+# .dev/ci/check-ui-inventory.php fails when a page, a button, a link or an entry of the plugin is missing here, or a scenario
+# listed here does not exist or does not use the label.
+
+# Status page.
+index.php | Connection settings | status.feature: The status page links to the connection settings
+index.php | Connection diagnostics | status.feature: The status page links to the connection diagnostics
+
+# Connection settings page: the first step, the second step, the registered site.
+connect.php | Next | registration.feature: Register the site
+connect.php | Register | registration.feature: Register the site
+connect.php | Cancel | registration.feature: Cancel on the second step returns to the first step and stores nothing
+connect.php | Remove the registration | registration.feature: Remove the registration
+# The name that is typed to confirm the removal.
+connect.php | Site name | registration.feature: Remove the registration
+connect.php | Connection diagnostics | diagnostics.feature: A registration that cannot reach the service points to the diagnostics
+
+# Diagnostics page.
+diagnostics.php | Check the connection | diagnostics.feature: A typed connection URL is checked before registration
+
+# Entries of the administration tree (Site administration > Plugins > Admin tools).
+settings.php | Shinonome LMS Backup | registration.feature: The status page explains that the site is not registered
+settings.php | Status | registration.feature: The status page explains that the site is not registered
+settings.php | Connection settings | registration.feature: Register the site
+settings.php | Connection diagnostics | diagnostics.feature: The registered site is checked at once
+
+# A page of Moodle that this plugin adds a row to (Site administration > Server > Tasks > Scheduled tasks). The edit, disable
+# and run-now controls of the row are Moodle's, not the plugin's; the plugin owns the name of the task.
+core:admin/tool/task/scheduledtasks.php | Ask the backup service for the status of this site | scheduled_task.feature: The task of the plugin is listed with its name

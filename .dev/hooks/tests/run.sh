@@ -462,5 +462,79 @@ expect_check ng "the dev guard rule checks the other files next to the collector
 the_dev_directory_of_this_repository_has_its_guards() { "$here/../check-dev-guards.sh" > /dev/null 2>&1; }
 expect_check ok "every PHP file of .dev has its guard" the_dev_directory_of_this_repository_has_its_guards
 
+# The check of the UI inventory (.dev/ci/check-ui-inventory.php): a small plugin is planted in a temporary directory, with a
+# page, a form with a button and a cancel button, a link of the renderer, an entry of the administration tree and a feature
+# file that does everything; the check passes on it, and fails after each kind of damage.
+inventory_check="$here/../../ci/check-ui-inventory.php"
+plant_plugin() {
+    local dir="$1"
+    rm -rf "$dir"
+    mkdir -p "$dir/classes/form" "$dir/classes/output" "$dir/lang/en" "$dir/tests/behat" || return 1
+    printf '%s\n' '<?php' 'echo 1;' > "$dir/index.php"
+    printf '%s\n' '<?php' 'echo 1;' > "$dir/version.php"
+    printf '%s\n' '<?php' "\$ADMIN->add('tools', new admin_externalpage('x', new lang_string('page_status', 'tool_secbackup'), 'u'));" \
+        > "$dir/settings.php"
+    printf '%s\n' '<?php' '// $this->add_action_buttons(false, get_string("commented", "tool_secbackup"));' \
+        "\$this->add_action_buttons(true, get_string('action_go', 'tool_secbackup'));" > "$dir/classes/form/f.php"
+    printf '%s\n' '<?php' \
+        "return html_writer::link(new moodle_url('/a.php'), get_string('page_other', 'tool_secbackup'));" \
+        > "$dir/classes/output/r.php"
+    printf '%s\n' '<?php' "\$string['action_go'] = 'Go';" "\$string['page_other'] = 'Other page';" \
+        "\$string['page_status'] = 'Status';" "\$string['commented'] = 'Never shown';" > "$dir/lang/en/tool_secbackup.php"
+    printf '%s\n' '@tool @tool_secbackup @javascript' 'Feature: F' '' '  Scenario: Does everything' \
+        '    When I open "Plugins > Status" in site administration' '    And I press "Go"' '    And I press "Cancel"' \
+        '    And I follow "Other page"' '    Then I should see "Done"' > "$dir/tests/behat/f.feature"
+    printf '%s\n' '# comment' 'index.php | Go | f.feature: Does everything' 'index.php | Cancel | f.feature: Does everything' \
+        'index.php | Other page | f.feature: Does everything' 'settings.php | Status | f.feature: Does everything' \
+        > "$dir/tests/behat/inventory.txt"
+}
+inventory_check_passes() { php "$inventory_check" "$1" > /dev/null 2>&1; }
+inventory_after() {
+    # inventory_after <name> <file> <sed expression>: plants the plugin, changes one file, runs the check.
+    local dir="$work/inventory-$1"
+    plant_plugin "$dir" || return 1
+    sed -i.bak "$3" "$dir/$2" && inventory_check_passes "$dir"
+}
+inventory_with_extra_file() {
+    local dir="$work/inventory-$1"
+    plant_plugin "$dir" || return 1
+    printf '%s\n' '<?php' 'echo 2;' > "$dir/$2"
+    inventory_check_passes "$dir"
+}
+planted_plugin_passes() { plant_plugin "$work/inventory-ok" && inventory_check_passes "$work/inventory-ok"; }
+expect_check ok "the inventory check accepts a planted plugin that is complete" planted_plugin_passes
+expect_check ng "the inventory check refuses a page that is not in the inventory" inventory_with_extra_file page second.php
+expect_check ok "the inventory check leaves version.php out" planted_plugin_passes
+expect_check ng "the inventory check refuses a button label that is not in the inventory" \
+    inventory_after button tests/behat/inventory.txt '/| Go |/d'
+expect_check ng "the inventory check refuses the cancel button of a form that is not in the inventory" \
+    inventory_after cancel tests/behat/inventory.txt '/| Cancel |/d'
+expect_check ng "the inventory check refuses a link of the renderer that is not in the inventory" \
+    inventory_after link tests/behat/inventory.txt '/| Other page |/d'
+expect_check ng "the inventory check refuses an entry of the administration tree that is not in the inventory" \
+    inventory_after entry tests/behat/inventory.txt '/settings.php/d'
+expect_check ok "the inventory check ignores a label in a comment of the code" planted_plugin_passes
+expect_check ng "the inventory check refuses a scenario that does not exist" \
+    inventory_after noscenario tests/behat/inventory.txt 's/Does everything/Does nothing/'
+expect_check ng "the inventory check refuses a feature file that does not exist" \
+    inventory_after nofeature tests/behat/inventory.txt 's/f.feature/g.feature/'
+expect_check ng "the inventory check refuses a page that does not exist" \
+    inventory_after nopage tests/behat/inventory.txt 's/^index.php/gone.php/'
+expect_check ng "the inventory check refuses a scenario that does not use the label of the operation" \
+    inventory_after nolabel tests/behat/f.feature 's/I press "Go"/I press "Stop"/'
+expect_check ng "the inventory check refuses a label that is only seen, not done" \
+    inventory_after onlyseen tests/behat/f.feature 's/I press "Go"/I should see "Go"/'
+expect_check ng "the inventory check refuses a scenario that checks nothing" \
+    inventory_after nocheck tests/behat/f.feature 's/Then I should see "Done"/And I press "Done"/'
+expect_check ng "the inventory check refuses a feature without @tool_secbackup" \
+    inventory_after notag tests/behat/f.feature '1s/@tool_secbackup //'
+expect_check ng "the inventory check refuses a feature without @javascript" \
+    inventory_after nojs tests/behat/f.feature '1s/ @javascript//'
+expect_check ng "the inventory check refuses a line with the wrong number of fields" \
+    inventory_after fields tests/behat/inventory.txt 's/ | Cancel | / | /'
+expect_check ng "the inventory check refuses a label that it cannot read" \
+    inventory_after unreadable classes/output/r.php 's/get_string(.page_other., .tool_secbackup.)/$text/'
+expect_check ok "the inventory check passes in this repository" inventory_check_passes "$here/../../.."
+
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

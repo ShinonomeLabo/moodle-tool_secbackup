@@ -1,4 +1,4 @@
-@tool @tool_secbackup
+@tool @tool_secbackup @javascript
 Feature: The plugin is installed
   In order to manage the backup connection
   As an administrator
@@ -6,7 +6,7 @@ Feature: The plugin is installed
 
   Scenario: The plugin appears in the plugins overview
     Given I log in as "admin"
-    When I navigate to "Plugins > Plugins overview" in site administration
+    When I open "Plugins > Plugins overview" in site administration
     Then I should see "Shinonome LMS Backup"
 
   Scenario: The plugin name is shown in Japanese
@@ -16,5 +16,6 @@ Feature: The plugin is installed
     And I follow "Preferred language"
     And I set the field "Preferred language" to "日本語 ‎(ja)‎"
     And I press "Save changes"
-    When I navigate to "Plugins > Plugins overview" in site administration
+    And I should see "Changes saved"
+    When I open "Plugins > Plugins overview" in site administration
     Then I should see "あんしんLMSバックアップ"

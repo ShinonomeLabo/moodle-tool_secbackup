@@ -136,6 +136,95 @@ class behat_tool_secbackup extends behat_base {
     }
 
     /**
+     * Opens a page of the site administration: the primary navigation, the tab of the administration page, the link.
+     *
+     * It does what the step "I navigate to ... in site administration" of Moodle does, with one difference that matters in
+     * Safari: Moodle looks for the tab at once after it clicked "Site administration", and safaridriver gives the control back
+     * before the page has changed, so the tab is looked for on the old page and is not there. This step waits until the new
+     * page has replaced the old one, and then looks for the tab, like the step of Moodle in the other browsers.
+     * The path starts with the tab (for example "Plugins"), may name the section that holds the link, and ends with the link.
+     *
+     * @When /^I open "(?P<path_string>[^"]*)" in site administration$/
+     * @param string $path Names separated by ">".
+     */
+    public function i_open_in_site_administration(string $path): void {
+        $nodes = array_map('trim', explode('>', $path));
+        if (count($nodes) < 2) {
+            throw new \Exception('The path needs a tab and a link, separated by ">".');
+        }
+        $tab = array_shift($nodes);
+        $link = array_pop($nodes);
+
+        // The click may meet a page that the step before has not finished leaving, so it is tried again.
+        $this->spin(
+            function (): bool {
+                $this->wait_for_new_page(function (): void {
+                    $this->execute('behat_navigation::i_select_from_primary_navigation', [get_string('administrationsite')]);
+                });
+                return true;
+            },
+            false,
+            self::get_extended_timeout()
+        );
+
+        $tabxpath = '//ul[@role="tablist"]/li/a[contains(normalize-space(.), ' . behat_context_helper::escape($tab) . ')]';
+        $this->click_when_present($tabxpath, 'The tab "' . $tab . '" is not on the page.', false);
+
+        $xpath = '//div[@id="region-main"]//div[contains(@class, "active")]';
+        if ($nodes) {
+            $xpath .= '//div[@class="row" and contains(., ' . behat_context_helper::escape($nodes[0]) . ')]';
+        }
+        $xpath .= '//a[contains(normalize-space(.), ' . behat_context_helper::escape($link) . ')]';
+        $this->click_when_present($xpath, 'The link "' . $path . '" is not on the page.', true);
+    }
+
+    /**
+     * Clicks the element that an XPath finds, trying again until it is there and can be clicked.
+     *
+     * The page that holds the element may still be loading: safaridriver gives the control back before a page has changed,
+     * so an element can be missing at first, or can be gone from the old page when it is clicked.
+     *
+     * @param string $xpath The element.
+     * @param string $message What to say when the element did not come.
+     * @param bool $loadspage Whether the click loads a new page, which is then waited for.
+     */
+    private function click_when_present(string $xpath, string $message, bool $loadspage): void {
+        $node = $this->spin(
+            function () use ($xpath) {
+                return $this->getSession()->getPage()->find('xpath', $xpath);
+            },
+            false,
+            self::get_extended_timeout(),
+            new ExpectationException($message, $this->getSession())
+        );
+        $click = function () use ($node): void {
+            $this->execute('behat_general::i_click_on', [$node, 'NodeElement']);
+        };
+        if ($loadspage) {
+            $this->wait_for_new_page($click);
+        } else {
+            $click();
+        }
+    }
+
+    /**
+     * Runs an action that loads a new page, and returns when the new page has replaced the old one.
+     *
+     * A marker is put on the old page; the new page does not have it.
+     *
+     * @param callable $action The action.
+     */
+    private function wait_for_new_page(callable $action): void {
+        $this->getSession()->executeScript('window.tool_secbackup_old_page = true;');
+        $action();
+        $this->getSession()->wait(
+            self::get_extended_timeout() * 1000,
+            '(typeof window.tool_secbackup_old_page === "undefined" && document.readyState === "complete")'
+        );
+        $this->wait_for_pending_js();
+    }
+
+    /**
      * Forgets everything the fake backup service knows.
      *
      * @Given /^the fake backup service is reset$/
