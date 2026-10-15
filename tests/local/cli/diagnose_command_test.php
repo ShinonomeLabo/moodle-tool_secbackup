@@ -112,7 +112,7 @@ final class diagnose_command_test extends \advanced_testcase {
         [, $lines] = self::run_command(self::API, [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
         $checks = array_map(
             static fn(string $name): string => get_string('check_' . $name, 'tool_secbackup'),
-            ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'moodledata']
+            ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata']
         );
         $found = [];
         foreach (array_slice($lines, 2) as $line) {
@@ -145,7 +145,7 @@ final class diagnose_command_test extends \advanced_testcase {
 
     public function test_a_check_without_advice_has_no_advice_line(): void {
         [, $lines] = self::run_command(self::API, [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
-        $this->assertCount(2 + 8, $lines, 'The heading, the connection URL and one line for each check.');
+        $this->assertCount(2 + 9, $lines, 'The heading, the connection URL and one line for each check.');
         foreach ($lines as $line) {
             $this->assertStringStartsNotWith('    ', $line);
         }
@@ -236,6 +236,14 @@ final class diagnose_command_test extends \advanced_testcase {
         $this->assertStringContainsString('<b>A&B</b>', $text);
         $this->assertStringNotContainsString('&lt;', $text);
         $this->assertStringNotContainsString('&amp;', $text);
+    }
+
+    public function test_the_apparmor_profile_name_is_printed_as_it_is(): void {
+        $root = system_roots::with_files(['/proc/self/attr/apparmor/current' => "<u>C&D</u> (enforce)\n"]);
+        [, $lines] = self::run_command('', [], ['sodium'], $root);
+        $text = implode("\n", $lines);
+        $this->assertStringContainsString(get_string('diag_apparmor_enforcing', 'tool_secbackup', '<u>C&D</u>'), $text);
+        $this->assertStringNotContainsString('&lt;', $text);
     }
 
     public function test_default_runner(): void {

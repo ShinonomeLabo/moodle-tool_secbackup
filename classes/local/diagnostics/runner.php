@@ -41,6 +41,15 @@ final class runner {
     private const NETWORK_FILE_SYSTEMS = ['nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'ceph', 'glusterfs', '9p', 'fuse.s3fs',
         'fuse.sshfs', 'fuse.glusterfs', 'fuse.rclone', 'fuse.goofys', 'fuse.mountpoint-s3'];
 
+    /** @var string[] Modes of an AppArmor profile in which an access that the profile does not allow is stopped. */
+    private const APPARMOR_DENYING_MODES = ['enforce', 'kill', 'prompt', 'user', 'mixed'];
+
+    /** @var int Characters of an AppArmor profile name that are shown. */
+    private const APPARMOR_NAME_LENGTH = 100;
+
+    /** @var string[] Problems of the name check and of the connection that an AppArmor profile can cause. */
+    private const APPARMOR_PROBLEMS = ['dns_doh_unavailable', 'dns_os_failed'];
+
     /** @var developer_settings Developer settings. */
     private developer_settings $settings;
 
@@ -97,14 +106,17 @@ final class runner {
     public function run(?endpoint $endpoint): array {
         $enforce = $this->files->read('/sys/fs/selinux/enforce');
         $enforcing = $enforce !== null && trim($enforce) === '1';
+        $profile = $this->apparmor_profile();
+        $confining = $profile !== null && in_array($profile['mode'], self::APPARMOR_DENYING_MODES, true);
         return [
             $this->developer(),
             $this->extensions(),
             $this->proxy($endpoint),
-            $this->dns($endpoint, $enforcing),
-            $this->connection($endpoint, $enforcing),
+            $this->dns($endpoint, $enforcing, $confining),
+            $this->connection($endpoint, $enforcing, $confining),
             $this->clock(),
             $this->selinux($enforce),
+            $this->apparmor($profile),
             $this->moodledata(),
         ];
     }
@@ -168,9 +180,10 @@ final class runner {
      *
      * @param endpoint|null $endpoint Connection URL.
      * @param bool $enforcing Whether SELinux is enforcing.
+     * @param bool $confining Whether an AppArmor profile that denies is on this process.
      * @return check_result
      */
-    private function dns(?endpoint $endpoint, bool $enforcing): check_result {
+    private function dns(?endpoint $endpoint, bool $enforcing, bool $confining): check_result {
         if ($endpoint === null) {
             return new check_result('dns', check_result::INFO, get_string('diag_no_endpoint', 'tool_secbackup'));
         }
@@ -192,22 +205,30 @@ final class runner {
             'dns',
             check_result::FAIL,
             implode('; ', $lines),
-            self::with_selinux_advice(get_string($problem, 'tool_secbackup'), $enforcing && $problem === 'dns_doh_unavailable')
+            self::with_access_control_advice(
+                get_string($problem, 'tool_secbackup'),
+                $enforcing && $problem === 'dns_doh_unavailable',
+                $confining && in_array($problem, self::APPARMOR_PROBLEMS, true)
+            )
         );
     }
 
     /**
-     * Adds the SELinux advice to an advice.
+     * Adds the advice about SELinux and about AppArmor to an advice.
      *
      * @param string $advice The advice; may be empty.
-     * @param bool $add Whether SELinux may be the cause.
+     * @param bool $selinux Whether SELinux may be the cause.
+     * @param bool $apparmor Whether AppArmor may be the cause.
      * @return string
      */
-    private static function with_selinux_advice(string $advice, bool $add): string {
-        if (!$add) {
-            return $advice;
+    private static function with_access_control_advice(string $advice, bool $selinux, bool $apparmor): string {
+        if ($selinux) {
+            $advice .= ' ' . get_string('diag_selinux_advice', 'tool_secbackup');
         }
-        return trim($advice . ' ' . get_string('diag_selinux_advice', 'tool_secbackup'));
+        if ($apparmor) {
+            $advice .= ' ' . get_string('diag_apparmor_advice', 'tool_secbackup');
+        }
+        return trim($advice);
     }
 
     /**
@@ -228,9 +249,10 @@ final class runner {
      *
      * @param endpoint|null $endpoint Connection URL.
      * @param bool $enforcing Whether SELinux is enforcing.
+     * @param bool $confining Whether an AppArmor profile that denies is on this process.
      * @return check_result
      */
-    private function connection(?endpoint $endpoint, bool $enforcing): check_result {
+    private function connection(?endpoint $endpoint, bool $enforcing, bool $confining): check_result {
         if ($endpoint === null) {
             return new check_result('connection', check_result::INFO, get_string('diag_no_endpoint', 'tool_secbackup'));
         }
@@ -238,7 +260,13 @@ final class runner {
             $response = $this->transport->send('GET', $endpoint, 'status', ['Accept' => 'application/json'], '');
         } catch (plugin_exception $e) {
             $selinux = $enforcing && in_array($e->errorcode, ['transport_connect', 'dns_doh_unavailable'], true);
-            return new check_result('connection', check_result::FAIL, $e->message(), self::with_selinux_advice('', $selinux));
+            $apparmor = $confining && in_array($e->errorcode, array_merge(['transport_connect'], self::APPARMOR_PROBLEMS), true);
+            return new check_result(
+                'connection',
+                check_result::FAIL,
+                $e->message(),
+                self::with_access_control_advice('', $selinux, $apparmor)
+            );
         }
         $data = json_decode($response->body, true);
         $code = is_array($data) && is_array($data['error'] ?? null) ? ($data['error']['code'] ?? null) : null;
@@ -301,6 +329,68 @@ final class runner {
             return new check_result('selinux', check_result::INFO, get_string('diag_selinux_permissive', 'tool_secbackup', $type));
         }
         return new check_result('selinux', check_result::UNKNOWN, get_string('diag_selinux_unknown', 'tool_secbackup'));
+    }
+
+    /**
+     * The AppArmor profile of this process, from the label the kernel gives it.
+     *
+     * The label is "unconfined", or "<profile> (<mode>)". The file of AppArmor is read first; the older file is also
+     * the one of SELinux, so its content counts only when it has the form of an AppArmor label. Nothing is returned when
+     * AppArmor is off, or when no label can be read (the profile of php-fpm hides the switch of AppArmor from the process).
+     * The name comes from the kernel and is shown to an administrator, so its control characters are removed and its
+     * length is cut.
+     *
+     * @return array|null ['profile' => name, empty when not confined, 'mode' => mode word], or null when not known
+     */
+    private function apparmor_profile(): ?array {
+        $enabled = $this->files->read('/sys/module/apparmor/parameters/enabled');
+        if ($enabled !== null && trim($enabled) === 'N') {
+            return null;
+        }
+        foreach (['/proc/self/attr/apparmor/current', '/proc/self/attr/current'] as $file) {
+            $label = trim($this->files->read($file) ?? '', "\0\r\n\t ");
+            if ($label === 'unconfined') {
+                return ['profile' => '', 'mode' => 'unconfined'];
+            }
+            if (preg_match('/^(.+) \(([a-z]{1,16})\)$/s', $label, $matches) !== 1) {
+                continue;
+            }
+            $name = mb_scrub((string) preg_replace('/[\x00-\x1f\x7f]/', '', $matches[1]));
+            if ($name !== '') {
+                if (mb_strlen($name) > self::APPARMOR_NAME_LENGTH) {
+                    $name = mb_substr($name, 0, self::APPARMOR_NAME_LENGTH) . "\u{2026}";
+                }
+                return ['profile' => $name, 'mode' => $matches[2]];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * AppArmor.
+     *
+     * @param array|null $profile The profile of this process; see apparmor_profile().
+     * @return check_result
+     */
+    private function apparmor(?array $profile): check_result {
+        if ($profile === null) {
+            return new check_result('apparmor', check_result::UNKNOWN, get_string('diag_apparmor_unknown', 'tool_secbackup'));
+        }
+        ['profile' => $name, 'mode' => $mode] = $profile;
+        if ($name === '') {
+            return new check_result('apparmor', check_result::INFO, get_string('diag_apparmor_unconfined', 'tool_secbackup'));
+        }
+        $advice = in_array($mode, self::APPARMOR_DENYING_MODES, true) ? get_string('diag_apparmor_advice', 'tool_secbackup') : '';
+        $string = ['enforce' => 'diag_apparmor_enforcing', 'complain' => 'diag_apparmor_complain'][$mode] ?? null;
+        if ($string === null) {
+            return new check_result(
+                'apparmor',
+                check_result::INFO,
+                get_string('diag_apparmor_other', 'tool_secbackup', $name . ' (' . $mode . ')'),
+                $advice
+            );
+        }
+        return new check_result('apparmor', check_result::INFO, get_string($string, 'tool_secbackup', $name), $advice);
     }
 
     /**

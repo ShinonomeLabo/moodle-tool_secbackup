@@ -127,7 +127,7 @@ final class runner_test extends \advanced_testcase {
     public function test_all_checks_in_order(): void {
         $results = self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint());
         $this->assertSame(
-            ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'moodledata'],
+            ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'],
             array_map(static fn(check_result $result): string => $result->check, $results)
         );
         $named = self::by_name($results);
@@ -302,7 +302,7 @@ final class runner_test extends \advanced_testcase {
         $CFG->proxyuser = 'proxyuser-7f3a';
         $CFG->proxypassword = 'proxypass-91bc';
         $results = self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint());
-        $this->assertCount(8, $results);
+        $this->assertCount(9, $results);
         foreach ($results as $result) {
             foreach ([$result->detail, $result->advice] as $text) {
                 $this->assertStringNotContainsString('proxyuser-7f3a', $text, $result->check);
@@ -527,6 +527,329 @@ final class runner_test extends \advanced_testcase {
             get_string('diag_selinux_permissive', 'tool_secbackup', get_string('result_unknown', 'tool_secbackup')),
             $named['selinux']->detail
         );
+    }
+
+    /**
+     * A root where AppArmor can be read.
+     *
+     * @param string|null $label The content of /proc/self/attr/apparmor/current; null for no file.
+     * @param string|null $enabled The content of /sys/module/apparmor/parameters/enabled; null for no file.
+     * @param string|null $root An existing root to add the files to.
+     * @return string
+     */
+    private static function apparmor_root(?string $label, ?string $enabled = "Y\n", ?string $root = null): string {
+        $files = [];
+        if ($label !== null) {
+            $files['/proc/self/attr/apparmor/current'] = $label;
+        }
+        if ($enabled !== null) {
+            $files['/sys/module/apparmor/parameters/enabled'] = $enabled;
+        }
+        return system_roots::with_files($files, $root);
+    }
+
+    public function test_apparmor_enforcing(): void {
+        $root = self::apparmor_root("php-fpm (enforce)\n", null);
+        $named = self::by_name(self::runner([], $root)->run(null));
+        $this->assertSame(check_result::INFO, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', 'php-fpm'), $named['apparmor']->detail);
+        $this->assertSame(get_string('diag_apparmor_advice', 'tool_secbackup'), $named['apparmor']->advice);
+        $this->assertSame(check_result::UNKNOWN, $named['selinux']->result, 'SELinux is not used on this machine.');
+    }
+
+    public function test_apparmor_complain_mode(): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("php-fpm (complain)\n"))->run(null));
+        $this->assertSame(check_result::INFO, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_complain', 'tool_secbackup', 'php-fpm'), $named['apparmor']->detail);
+        $this->assertSame('', $named['apparmor']->advice);
+    }
+
+    public function test_apparmor_enabled_and_the_process_not_confined(): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("unconfined\n"))->run(null));
+        $this->assertSame(check_result::INFO, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_unconfined', 'tool_secbackup'), $named['apparmor']->detail);
+        $this->assertSame('', $named['apparmor']->advice);
+    }
+
+    public function test_apparmor_label_with_a_nul_at_the_end(): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("php-fpm (enforce)\0"))->run(null));
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', 'php-fpm'), $named['apparmor']->detail);
+    }
+
+    public function test_apparmor_that_is_not_enabled_is_unknown(): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("unconfined\n", "N\n"))->run(null));
+        $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_unknown', 'tool_secbackup'), $named['apparmor']->detail);
+        $this->assertSame('', $named['apparmor']->advice);
+    }
+
+    public function test_apparmor_that_is_not_readable_is_unknown(): void {
+        $named = self::by_name(self::runner([], make_request_directory())->run(null));
+        $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_unknown', 'tool_secbackup'), $named['apparmor']->detail);
+        $this->assertSame('', $named['apparmor']->advice);
+    }
+
+    public function test_apparmor_that_is_enabled_but_has_no_label_is_unknown(): void {
+        $named = self::by_name(self::runner([], self::apparmor_root(null))->run(null));
+        $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result);
+    }
+
+    public function test_apparmor_label_from_the_older_file(): void {
+        $root = system_roots::with_files(['/proc/self/attr/current' => "php-fpm (enforce)\n"]);
+        $named = self::by_name(self::runner([], $root)->run(null));
+        $this->assertSame(check_result::INFO, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', 'php-fpm'), $named['apparmor']->detail);
+        $this->assertSame(get_string('diag_apparmor_advice', 'tool_secbackup'), $named['apparmor']->advice);
+    }
+
+    public function test_the_newer_file_wins_over_the_older_one(): void {
+        $root = system_roots::with_files([
+            '/proc/self/attr/apparmor/current' => "unconfined\n",
+            '/proc/self/attr/current' => "php-fpm (enforce)\n",
+        ]);
+        $named = self::by_name(self::runner([], $root)->run(null));
+        $this->assertSame(get_string('diag_apparmor_unconfined', 'tool_secbackup'), $named['apparmor']->detail);
+    }
+
+    public function test_an_selinux_context_is_never_read_as_apparmor(): void {
+        $named = self::by_name(self::runner([], system_roots::nfs('1'))->run(null));
+        $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_unknown', 'tool_secbackup'), $named['apparmor']->detail);
+        $this->assertSame(check_result::INFO, $named['selinux']->result);
+        $this->assertSame(get_string('diag_selinux_enforcing', 'tool_secbackup', 'httpd_t'), $named['selinux']->detail);
+        $this->assertSame(get_string('diag_selinux_advice', 'tool_secbackup'), $named['selinux']->advice);
+    }
+
+    /**
+     * Contexts of SELinux in the older file, none of which is an AppArmor label.
+     *
+     * @return array
+     */
+    public static function selinux_context_provider(): array {
+        return [
+            'a context' => ["system_u:system_r:httpd_t:s0\0"],
+            'a context with a range' => ["unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023\n"],
+            'a context that has no level' => ["system_u:system_r:httpd_t\n"],
+            'text that is not a label' => ["php-fpm enforce\n"],
+            'a mode without a profile' => [" (enforce)\n"],
+            'a label that is not finished' => ["php-fpm (enforce\n"],
+            'an empty file' => [''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('selinux_context_provider')]
+    /**
+     * Only the form of AppArmor's label is accepted from the older file.
+     *
+     * @dataProvider selinux_context_provider
+     * @param string $content The content of /proc/self/attr/current.
+     */
+    public function test_the_older_file_must_have_the_form_of_a_label(string $content): void {
+        $root = system_roots::with_files(['/proc/self/attr/current' => $content]);
+        $named = self::by_name(self::runner([], $root)->run(null));
+        $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result);
+    }
+
+    /**
+     * The modes AppArmor prints (the kernel's aa_label_modename) and the ones it may print in the future.
+     *
+     * @return array
+     */
+    public static function apparmor_mode_provider(): array {
+        return [
+            'kill' => ['kill', true],
+            'prompt' => ['prompt', true],
+            'user' => ['user', true],
+            'mixed' => ['mixed', true],
+            'a profile that does not confine' => ['unconfined', false],
+            'a mode that is not known' => ['future', false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('apparmor_mode_provider')]
+    /**
+     * Another mode is shown as it is read; the advice is for the modes that deny.
+     *
+     * @dataProvider apparmor_mode_provider
+     * @param string $mode The mode word.
+     * @param bool $denies Whether the advice is given.
+     */
+    public function test_another_apparmor_mode_is_shown_as_it_is(string $mode, bool $denies): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("php-fpm ($mode)\n"))->run(null));
+        $this->assertSame(check_result::INFO, $named['apparmor']->result);
+        $this->assertSame(get_string('diag_apparmor_other', 'tool_secbackup', "php-fpm ($mode)"), $named['apparmor']->detail);
+        $this->assertSame($denies ? get_string('diag_apparmor_advice', 'tool_secbackup') : '', $named['apparmor']->advice);
+    }
+
+    public function test_the_apparmor_profile_name_is_cut_and_has_no_control_characters(): void {
+        $long = str_repeat('a', 300);
+        $named = self::by_name(self::runner([], self::apparmor_root("$long (enforce)\n"))->run(null));
+        $this->assertSame(
+            get_string('diag_apparmor_enforcing', 'tool_secbackup', str_repeat('a', 100) . "\u{2026}"),
+            $named['apparmor']->detail
+        );
+        $this->assertSame(check_result::INFO, $named['apparmor']->result);
+
+        $named = self::by_name(self::runner([], self::apparmor_root("php\x1b[31m-fpm\r\n\0x (enforce)\n"))->run(null));
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', 'php[31m-fpmx'), $named['apparmor']->detail);
+
+        $named = self::by_name(self::runner([], self::apparmor_root("php-fpm (compl\x01ain)\n"))->run(null));
+        $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result, 'A mode word has letters only.');
+
+        foreach (["\x01 (enforce)\n", "php-fpm (" . str_repeat('a', 17) . ")\n"] as $odd) {
+            $named = self::by_name(self::runner([], self::apparmor_root($odd))->run(null));
+            $this->assertSame(check_result::UNKNOWN, $named['apparmor']->result, 'No name left, or a mode word too long.');
+        }
+
+        $named = self::by_name(self::runner([], self::apparmor_root("php\xff-fpm (enforce)\n"))->run(null));
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', 'php?-fpm'), $named['apparmor']->detail);
+
+        $multibyte = str_repeat("\u{3042}", 150);
+        $named = self::by_name(self::runner([], self::apparmor_root("$multibyte (enforce)\n"))->run(null));
+        $this->assertSame(
+            get_string('diag_apparmor_enforcing', 'tool_secbackup', str_repeat("\u{3042}", 100) . "\u{2026}"),
+            $named['apparmor']->detail
+        );
+    }
+
+    public function test_the_apparmor_profile_name_is_kept_as_text(): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("<b>A&B</b> (enforce)\n"))->run(null));
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', '<b>A&B</b>'), $named['apparmor']->detail);
+    }
+
+    public function test_apparmor_enforcing_and_a_failed_connection(): void {
+        $root = self::apparmor_root("php-fpm (enforce)\n");
+        $named = self::by_name(self::runner([self::failure(7)], $root)->run(self::endpoint()));
+        $this->assertSame(check_result::FAIL, $named['connection']->result);
+        $this->assertSame(get_string('transport_connect', 'tool_secbackup'), $named['connection']->detail);
+        $this->assertSame(get_string('diag_apparmor_advice', 'tool_secbackup'), $named['connection']->advice);
+    }
+
+    public function test_apparmor_enforcing_does_not_explain_another_failure(): void {
+        $root = self::apparmor_root("php-fpm (enforce)\n");
+        $named = self::by_name(self::runner([self::failure(60)], $root)->run(self::endpoint()));
+        $this->assertSame(get_string('transport_tls', 'tool_secbackup'), $named['connection']->detail);
+        $this->assertSame('', $named['connection']->advice);
+    }
+
+    /**
+     * The modes of AppArmor that give no advice to a failed connection.
+     *
+     * @return array
+     */
+    public static function quiet_apparmor_provider(): array {
+        return [
+            'complain mode' => ["php-fpm (complain)\n", "Y\n"],
+            'not confined' => ["unconfined\n", "Y\n"],
+            'a label that cannot be read' => [null, null],
+            'not enabled' => ["php-fpm (enforce)\n", "N\n"],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('quiet_apparmor_provider')]
+    /**
+     * Without an enforcing profile, AppArmor is not blamed for a failed connection or for a name check that failed.
+     *
+     * @dataProvider quiet_apparmor_provider
+     * @param string|null $label The content of /proc/self/attr/apparmor/current.
+     * @param string|null $enabled The content of /sys/module/apparmor/parameters/enabled.
+     */
+    public function test_apparmor_that_does_not_enforce_is_not_blamed(?string $label, ?string $enabled): void {
+        $root = self::apparmor_root($label, $enabled);
+        $named = self::by_name(self::runner([self::failure(7)], $root)->run(self::endpoint()));
+        $this->assertSame('', $named['connection']->advice);
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $named = self::by_name(self::runner([], $root, [], $guard)->run(self::endpoint()));
+        $this->assertSame(get_string('dns_doh_unavailable', 'tool_secbackup'), $named['dns']->advice);
+        $this->assertSame('', $named['connection']->advice);
+    }
+
+    public function test_apparmor_enforcing_and_no_dns_over_https(): void {
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $root = self::apparmor_root("php-fpm (enforce)\n");
+        $named = self::by_name(self::runner([], $root, [], $guard)->run(self::endpoint()));
+        $this->assertSame(check_result::FAIL, $named['dns']->result);
+        $this->assertSame(
+            get_string('dns_doh_unavailable', 'tool_secbackup') . ' ' . get_string('diag_apparmor_advice', 'tool_secbackup'),
+            $named['dns']->advice
+        );
+        $this->assertSame(get_string('dns_doh_unavailable', 'tool_secbackup'), $named['connection']->detail);
+        $this->assertSame(get_string('diag_apparmor_advice', 'tool_secbackup'), $named['connection']->advice);
+    }
+
+    public function test_apparmor_enforcing_and_this_server_cannot_look_the_name_up(): void {
+        $guard = network_fakes::guard(['13.225.1.1'], ['13.225.1.2'], []);
+        $root = self::apparmor_root("php-fpm (enforce)\n");
+        $named = self::by_name(self::runner([], $root, [], $guard)->run(self::endpoint()));
+        $this->assertSame(
+            get_string('dns_os_failed', 'tool_secbackup') . ' ' . get_string('diag_apparmor_advice', 'tool_secbackup'),
+            $named['dns']->advice
+        );
+        $this->assertSame(get_string('dns_os_failed', 'tool_secbackup'), $named['connection']->detail);
+        $this->assertSame(get_string('diag_apparmor_advice', 'tool_secbackup'), $named['connection']->advice);
+    }
+
+    /**
+     * Problems of the name check that a profile of AppArmor does not cause.
+     *
+     * @return array
+     */
+    public static function other_name_problem_provider(): array {
+        return [
+            'the name was not found' => ['dns_not_found', [], [], ['13.225.9.9']],
+            'the name is outside the service' => ['dns_outside_aws', ['203.0.113.55'], ['203.0.113.55'], ['13.225.9.9']],
+            'this server answers with other addresses' => ['dns_os_mismatch', ['13.225.1.1'], ['13.225.1.2'], ['203.0.113.55']],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('other_name_problem_provider')]
+    /**
+     * The advice of AppArmor is for the problems it can cause.
+     *
+     * @dataProvider other_name_problem_provider
+     * @param string $problem The string id of the problem.
+     * @param array $cloudflare Cloudflare's answer.
+     * @param array $google Google's answer.
+     * @param array $os The answer of this server.
+     */
+    public function test_apparmor_enforcing_does_not_explain_another_name_problem(
+        string $problem,
+        array $cloudflare,
+        array $google,
+        array $os
+    ): void {
+        $guard = network_fakes::guard($cloudflare, $google, $os);
+        $root = self::apparmor_root("php-fpm (enforce)\n");
+        $named = self::by_name(self::runner([], $root, [], $guard)->run(self::endpoint()));
+        $this->assertSame(get_string($problem, 'tool_secbackup'), $named['dns']->advice);
+        $this->assertSame('', $named['connection']->advice);
+    }
+
+    public function test_the_advice_of_selinux_and_of_apparmor_do_not_depend_on_each_other(): void {
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $selinux = get_string('diag_selinux_advice', 'tool_secbackup');
+        $apparmor = get_string('diag_apparmor_advice', 'tool_secbackup');
+        $problem = get_string('dns_doh_unavailable', 'tool_secbackup');
+
+        $both = self::apparmor_root("php-fpm (enforce)\n", "Y\n", system_roots::nfs('1'));
+        $named = self::by_name(self::runner([], $both, [], $guard)->run(self::endpoint()));
+        $this->assertSame("$problem $selinux $apparmor", $named['dns']->advice);
+        $this->assertSame("$selinux $apparmor", $named['connection']->advice);
+        $named = self::by_name(self::runner([self::failure(7)], $both)->run(self::endpoint()));
+        $this->assertSame("$selinux $apparmor", $named['connection']->advice);
+
+        $only = self::apparmor_root("php-fpm (enforce)\n", "Y\n", system_roots::nfs('0'));
+        $named = self::by_name(self::runner([], $only, [], $guard)->run(self::endpoint()));
+        $this->assertSame("$problem $apparmor", $named['dns']->advice);
+
+        $only = self::apparmor_root("php-fpm (complain)\n", "Y\n", system_roots::nfs('1'));
+        $named = self::by_name(self::runner([], $only, [], $guard)->run(self::endpoint()));
+        $this->assertSame("$problem $selinux", $named['dns']->advice);
+
+        $failed = network_fakes::guard(['13.225.1.1'], ['13.225.1.2'], []);
+        $named = self::by_name(self::runner([], $both, [], $failed)->run(self::endpoint()));
+        $this->assertSame(get_string('dns_os_failed', 'tool_secbackup') . " $apparmor", $named['dns']->advice);
     }
 
     public function test_clock(): void {

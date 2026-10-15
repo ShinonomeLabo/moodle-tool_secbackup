@@ -71,4 +71,22 @@ final class system_roots {
         );
         return $root;
     }
+
+    /**
+     * A root with exactly these files, for the tests of one file at a time.
+     *
+     * @param string[] $contents Content by absolute path, such as /proc/self/attr/apparmor/current.
+     * @param string|null $root An existing root to add the files to; null for a new one.
+     * @return string
+     */
+    public static function with_files(array $contents, ?string $root = null): string {
+        $root = $root ?? make_request_directory();
+        foreach ($contents as $path => $content) {
+            if (!is_dir(dirname($root . $path))) {
+                mkdir(dirname($root . $path), 0777, true);
+            }
+            file_put_contents($root . $path, $content);
+        }
+        return $root;
+    }
 }

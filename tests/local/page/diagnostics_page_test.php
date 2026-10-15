@@ -128,7 +128,7 @@ final class diagnostics_page_test extends \advanced_testcase {
         $page = new diagnostics_page(self::runner(new MockHandler([])));
         $page->handle();
         $html = $page->render();
-        foreach (['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'moodledata'] as $check) {
+        foreach (['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'] as $check) {
             $this->assertStringContainsString(get_string('check_' . $check, 'tool_secbackup'), $html, $check);
         }
         foreach (['check', 'result', 'detail', 'advice'] as $heading) {
@@ -228,6 +228,13 @@ final class diagnostics_page_test extends \advanced_testcase {
         $this->assert_escaped_once($html, '<b>A&B</b>', '&lt;b&gt;A&amp;B&lt;/b&gt;');
         $this->assert_escaped_once($html, '<u>C&D</u>', '&lt;u&gt;C&amp;D&lt;/u&gt;');
         $this->assert_escaped_once($html, '<i>x</i>', '&lt;i&gt;x&lt;/i&gt;');
+    }
+
+    public function test_the_apparmor_profile_name_is_escaped_once(): void {
+        $root = system_roots::with_files(['/proc/self/attr/apparmor/current' => "<u>C&D</u> (enforce)\n"]);
+        $page = new diagnostics_page(self::runner(new MockHandler([]), $root));
+        $page->handle();
+        $this->assert_escaped_once($page->render(), '<u>C&D</u>', '&lt;u&gt;C&amp;D&lt;/u&gt;');
     }
 
     public function test_the_advice_and_the_detail_of_a_failure_are_escaped_once(): void {
