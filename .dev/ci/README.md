@@ -6,6 +6,7 @@ leaves one log per step in `.dev/ci/out/<ver>-<db>/`. It exits with 0 only when 
 
     .dev/ci/run.sh 503 pgsql
     SECBK_PHP=8.1 .dev/ci/run.sh 405 mariadb     # another PHP version, in its own containers
+    SECBK_BROWSER=firefox .dev/ci/run.sh 503 pgsql   # Behat in another browser: firefox, edge or safari (see "Behat in four browsers")
 
 The default branch of the repository is `main`.
 
@@ -14,8 +15,18 @@ The default branch of the repository is `main`.
 | Job | What it does |
 |---|---|
 | `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the check that no development script can be run from the web, and the tests of the coverage tools and of the badge. |
+| `inventory` | `tests/behat/inventory.txt` against the code (below), and the tests of that check. It needs no secret, so a pull request from a fork gets it. |
 | `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination. Nothing in it is optional: Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
+| `behat` | Behat in Firefox and in Edge on Moodle 4.5, 5.0, 5.1, 5.2 and 5.3, each with PostgreSQL and MariaDB: 20 jobs, with the newest PHP of the Moodle version. The same install as `test`, without the coverage; `moodle-plugin-ci behat --profile <browser> --selenium selenium/standalone-<browser>:4 --auto-rerun 0`. The Edge profile is added to `config.php` by the job (moodle-plugin-ci knows only chrome and firefox). On failure the Behat dump is uploaded (`Behat Faildump <browser> ...`; no artifact name but the coverage ones starts with `coverage-run-`). |
+| `behat-safari` | Behat in Safari on a macOS runner (below): the same ten Moodle and database pairs, 10 jobs. |
 | `coverage` | Merges the coverage of all combinations (the artifacts `coverage-run-<Moodle>-<PHP>-<database>`; no other artifact name may start with `coverage-run-`), writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
+
+Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 40, `test` 60,
+`behat-safari` 60 and the badge job 10. They sit above the longest time measured under act, which is slower than a GitHub runner
+(amd64 emulated on Apple silicon): the `test` job took 44 minutes (the install 7 minutes, PHPUnit 14, Behat 12), a `behat` job 22 minutes
+(Firefox) or 26 (Edge, with Behat 14 of them), `inventory` 2 minutes. `rules` and `coverage` take a few minutes at most. A hung
+job is stopped, and a slow day does not fail a job. `behat-safari` has no measurement (it cannot run here), so its limit is a
+guess: the Homebrew install of a database and the Moodle install come before Behat.
 
 The workflow `.github/workflows/badges.yml` (`Badges`) turns the summary of a push to `main` into the coverage badge of the README.
 
@@ -39,7 +50,9 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 | Commit rules and development tools | `bash .dev/hooks/tests/run.sh`, `bash .dev/hooks/check-history.sh`, `bash .dev/hooks/check-dev-guards.sh`, `php .dev/coverage/tests/run.php`, `php .dev/coverage/tests/badge.php` |
 | Install Moodle with the plugin | `.dev/env/setup.sh`, `up.sh`, `install.sh`, `devconfig.sh` |
 | PHP Lint, Mess Detector, Code Checker, PHPDoc, Validating, Savepoints, Mustache, Grunt | moodle-plugin-ci in the web server container |
-| PHPUnit tests, Behat features, command line scripts, coverage of this combination | `.dev/coverage/run.sh <ver> <db>` (PHPUnit with `--fail-on-warning`, Behat with the fake service of `.dev/fakesec`) |
+| UI inventory | `php .dev/ci/check-ui-inventory.php` (inside `run.sh`, in the web server container) |
+| PHPUnit tests, Behat features, command line scripts, coverage of this combination | `.dev/coverage/run.sh <ver> <db>` (PHPUnit with `--fail-on-warning`, Behat in Chrome with the fake service of `.dev/fakesec`) |
+| Behat in Firefox, Edge, Safari | `SECBK_BROWSER=<browser> .dev/ci/run.sh <ver> <db>` (below) |
 | Line coverage of all combinations | `php .dev/coverage/merge.php --shipped=... .dev/coverage/out/*/*` |
 
 ### Steps whose local counterpart differs
@@ -48,9 +61,53 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 |---|---|
 | Grunt (`moodle-plugin-ci grunt`) | The Gherkin lint of `tests/behat/*.feature`, which is the only Grunt task that applies to this plugin, with the configuration `.gherkin-lintrc` of the environment's Moodle checkout and the version of gherkin-lint that the Moodle branch pins in `npm-shrinkwrap.json`. `moodle-plugin-ci grunt` cannot run in the development environments: the web server image has no Node.js, and the command copies the plugin folder away and mirrors it back, which here is this repository with its `.git`. No check may write to the repository. gherkin-lint is installed once with npm into `.dev/ci/out/tools/gherkin-lint` (nothing global). The step fails when the plugin gains `amd/src`, `yui/src`, CSS, SCSS or LESS files, because CI would then run Grunt tasks that this step does not. |
 | Install Moodle with the plugin, Turn the coverage collector on | Done once by `.dev/env` scripts, and by `.dev/coverage/run.sh` for the collector. |
+| `behat` and `behat-safari` jobs | `SECBK_BROWSER=<firefox|edge|safari> run.sh`. The browsers run in Selenium containers (Firefox, Edge) or on this Mac (Safari), and the Behat site is served by the Apache of the environment, not by the web server of PHP. `behat-safari`'s own steps (Homebrew databases, `safaridriver` on the runner, `php -S`) have no local counterpart. |
+| `inventory` job: the tests of the check | Part of `bash .dev/hooks/tests/run.sh`, which `run.sh` does not run (it runs the check itself). |
 | Upload the coverage, Upload Behat Faildump | No counterpart: the results stay in `.dev/coverage/out/<ver>-<db>/` and `.dev/ci/out/<ver>-<db>/`. |
 | `coverage` job (merge of all combinations, summary, 100% gate) | Not part of `run.sh`: one environment is one combination. `.dev/coverage/run.sh` merges the combination alone, and the merge of several is `php .dev/coverage/merge.php`. |
 | `Badges` workflow | Cannot run outside GitHub (`workflow_run`, Pages). `badge.php` and its tests run locally. |
+
+## Behat in four browsers
+
+Behat proves that every page and every operation of the plugin works (`tests/behat/inventory.txt`, below). Every feature file
+has `@javascript`, so each scenario runs in a real browser, with the JavaScript that Moodle's forms run for an administrator.
+
+| Browser | In CI | Locally (`SECBK_BROWSER=...`) |
+|---|---|---|
+| Chrome | `test`, all 18 combinations, with the coverage | The default; `run.sh` and `.dev/coverage/run.sh` run it in the Selenium container of the environment, with the coverage. |
+| Firefox | `behat`, 10 jobs | `.dev/env/browser.sh` starts `selenium/standalone-firefox:4` next to the environment; `run.sh` runs only the inventory and Behat. |
+| Edge | `behat`, 10 jobs | The same with `selenium/standalone-edge:4`, as linux/amd64 under emulation (no Edge for Linux on arm64): slow, so the time limits of Behat are 8 times longer. |
+| Safari | `behat-safari`, 10 jobs | Safari on this Mac through `safaridriver` (allowed once with `sudo safaridriver --enable`): see `.dev/env/README.md` for what the script sets up and undoes. Safari opens an automation window on the desktop. |
+
+Only Chrome has coverage. `run.sh` for another browser makes no coverage and does not run the static checks, PHPUnit or the
+command line scripts (they do not depend on the browser).
+
+The Safari job (`behat-safari`) runs on `macos-26` (the newest macOS image of GitHub's runner list, Apple silicon, Safari 26).
+There is no Docker on macOS runners, so: PHP comes from setup-php; the databases come from Homebrew at the lowest version that
+Homebrew still has and the Moodle version supports (PostgreSQL 13 is no longer in Homebrew, so Moodle 4.5 uses 14 there, where
+`ci.yml`'s service uses 13; PostgreSQL 14, 15, 16 and 17 and MariaDB 10.11 and 11.4 are the same as in the other jobs, MariaDB 10.6
+for Moodle 4.5 is Homebrew's 10.6.x instead of 10.6.7); `sudo safaridriver --enable` allows the automation; `safaridriver -p 4444`
+and PHP's own web server (`php -S localhost:8000`, four workers) are started by the job, and `moodle-plugin-ci behat` is told
+not to start Selenium in Docker (`MOODLE_START_BEHAT_SERVERS=NO`). The Safari profile (`wd_host` without `/wd/hub`) is added to
+`config.php` by the job. This job cannot run outside GitHub: the local Safari run (`SECBK_BROWSER=safari`) uses another set-up
+(Docker, relays), so it proves the scenarios in Safari but not these job steps. Their first run is on GitHub.
+
+## The UI inventory
+
+`tests/behat/inventory.txt` has one line for each operation a person can do: `page | operation | feature file: scenario title`.
+The pages are the web entry files of the plugin, `settings.php` for the entries of the administration tree, and the one page of
+Moodle that the plugin adds a row to (Scheduled tasks; its controls are Moodle's, so only the plugin's task name is listed).
+`.dev/ci/check-ui-inventory.php` (job `inventory`, and `run.sh`) fails with the file and the missing name when: a feature file lacks
+`@tool_secbackup` (moodle-plugin-ci runs only the features that carry the tag of the component) or `@javascript`; a web entry
+file at the root is not a page of the inventory (`version.php`, `settings.php` and `lib.php` are not pages, for the reasons in
+the script); a button label of a form, a link text of the renderer or an entry of the administration tree is not an operation of
+the inventory; a listed scenario does not exist, or has no step that does the operation (press, click on, follow, set the field,
+open) with its label, or no step that checks what the page shows. Its tests are part of `bash .dev/hooks/tests/run.sh`.
+
+The step `I open "Plugins > ... > Status" in site administration` of the plugin's Behat context replaces Moodle's `I navigate
+to ...`: safaridriver gives the control back after a click before the page has changed, and Moodle's step looks for the tab of
+the administration page at once, on the old page. The plugin's step waits for the new page (a marker on the old one) and tries the
+click again until the element is there; it finds the same tab and link, in every browser.
 
 ## The commit rules and the history
 
@@ -105,14 +162,17 @@ Silicon they run emulated and slowly.
     SECBACKUP_PATTERNS="$(printf '%s\n' some made-up words)" .dev/ci/act.sh rules
     .dev/ci/act.sh test moodle:5.3 php:8.4 database:pgsql
 
-Never give act the real list of refused words. SECBK_ACT_EVENT=<file> runs a `pull_request` event from a JSON file.
+Never give act the real list of refused words. SECBK_ACT_EVENT=<file> runs a `pull_request` event from a JSON file. Jobs: `rules`, `inventory`, `test` and `behat` (`.dev/ci/act.sh behat browser:firefox moodle:5.3 database:pgsql`; `browser:edge` for Edge). act makes one Docker network for each job, and Docker's pool of networks can run out when many environments exist ("all predefined address pools have been fully subnetted"): remove networks that are not in use. A failed job can leave its containers (`act-CI-...` and `selenium`) behind, which keep ports 3306, 5432 and 4444 busy for the next run.
 
 What ran, and what did not:
 
 | Job | Result under act |
 |---|---|
 | `rules` (push and pull_request events) | Runs completely: the tests of the hooks, every commit, the title and description of the pull request, the check for the development scripts, the tests of the coverage tools and of the badge. With a commit that has a made-up refused word, it fails at "Check every commit" with the reason and the commit, and neither the word nor the list is in the log. |
-| `test`, Moodle 5.3 with PHP 8.4 and PostgreSQL | Runs to the end in about 25 minutes: the install (4 minutes), every static check, PHPUnit (12 to 13 minutes), Behat (2 minutes), the command line scripts, and the coverage files, which merge to 100% with `merge.php` and give the badge. Only "Upload the coverage" fails, because act has no artifact service (no `ACTIONS_RUNTIME_TOKEN`). |
+| `inventory` | Runs completely (2 minutes). |
+| `test`, Moodle 5.3 with PHP 8.4 and PostgreSQL | Runs to the end in about 44 minutes: the install (7 minutes), every static check, PHPUnit (14 minutes, 1105 tests), Behat in Chrome (12 minutes, 21 scenarios), the command line scripts with their five exit codes, and the coverage files, which merge to 1556/1556 lines with `merge.php` (the same report, line by line, as `run.sh`'s merge). Only "Upload the coverage" fails, because act has no artifact service (no `ACTIONS_RUNTIME_TOKEN`). `SECBK_ACT_KEEP=1` keeps the clone, so the coverage files can be merged by hand. |
+| `behat`, Moodle 5.3 with PostgreSQL, Firefox and Edge | Firefox runs to the end in about 22 minutes and Edge in 26, 21 scenarios each. Only the upload of the Behat dump fails when a scenario fails (no artifact service). Edge runs emulated and misses Moodle's time limit of 10 seconds now and then, so `act.sh` sets `SECBK_BEHAT_TIMEOUT_FACTOR` (the job adds `$CFG->behat_increasetimeout`; unset on GitHub). |
+| `behat-safari` | Cannot run: it needs a macOS runner. `SECBK_BROWSER=safari .dev/ci/run.sh` runs the scenarios in Safari on this Mac (another set-up), and the YAML of the job is checked by actionlint only. |
 | `coverage` | Not run: it needs the artifacts of `test`. The merge of the files that the `test` run left was run by hand with the commands of the job. |
 | `Badges` | Cannot run: act has no `workflow_run` and no Pages. It first runs on GitHub; `badge.php` is tested locally. |
 | The other 17 combinations | Not run with act (about 25 minutes each); `run.sh` runs them. |
@@ -120,12 +180,16 @@ What ran, and what did not:
 What act cannot do, and what stands in for it:
 
 - `actions/checkout` with `ref`, `repository` or `path` would fetch from GitHub, which has no commit of this repository yet.
-  A local action (`.dev/ci/act/local-checkout`) takes its place, and `act.sh` copies the files that git tracks into `plugin/`.
+  A local action (`.dev/ci/act/local-checkout`) takes its place and copies the files that git tracks into the folder that the step names (`plugin/`).
   The checkout of the head of a pull request (`ref`) is therefore not tried by act.
 - The job container is catthehacker's, not GitHub's: its PATH does not name Node.js, and it lacks `locale-gen`, the database clients
   and nvm. `act.sh` sets the PATH and the image adds the rest.
 - Uploading and downloading artifacts, `workflow_run`, Pages and the environment `github-pages`.
-- macOS and the other browsers.
+- macOS (the job `behat-safari`).
+- `actions/checkout`: act skips every checkout step unless `--no-skip-checkout` is given, which `act.sh` does so that the local
+  action runs. The PHP web server that serves the Behat site gets four workers (`PHP_CLI_SERVER_WORKERS` in the Behat steps),
+  because with one worker the AJAX calls of Moodle queued behind each other and Behat's 10-second limit failed 18 of 21
+  scenarios in Chrome under act.
 
 Two defects of the workflow were found by act and fixed: the site itself was never installed (moodle-plugin-ci prepares only the
 PHPUnit and Behat sites, so the reinstall with the collector and the command line scripts failed), and the `rules` job relied on a PHP that the
