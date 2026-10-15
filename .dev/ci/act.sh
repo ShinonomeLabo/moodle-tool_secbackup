@@ -59,6 +59,8 @@ case "$job" in
         ;;
     inventory) ;;
     test | behat)
+        # Edge runs emulated (amd64 on Apple silicon) and misses Moodle's time limits of 10 seconds now and then.
+        [ "$job" = behat ] && args+=(--env "SECBK_BEHAT_TIMEOUT_FACTOR=8")
         # The local checkout action copies the files that git tracks into plugin/ (the step has path: plugin).
         # The image has node, but the PATH that act gives the steps does not name it.
         args+=(--env "PATH=/opt/acttoolcache/node/24.19.0/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")

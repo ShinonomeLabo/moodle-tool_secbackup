@@ -392,10 +392,16 @@ jobs:
           exit 1
 
       # moodle-plugin-ci knows the profiles chrome and firefox. Edge is added to config.php, and the Behat site is enabled
-      # again so that behat.yml has the profile.
+      # again so that behat.yml has the profile. SECBK_BEHAT_TIMEOUT_FACTOR is not set on GitHub; .dev/ci/act.sh sets it,
+      # because Edge runs emulated (amd64 on Apple silicon) under act and needs longer time limits there.
       - name: Add the Edge profile
         if: matrix.browser == 'edge'
+        env:
+          TIMEOUT_FACTOR: ${{ env.SECBK_BEHAT_TIMEOUT_FACTOR }}
         run: |
+          if [ -n "$TIMEOUT_FACTOR" ]; then
+            moodle-plugin-ci add-config "\$CFG->behat_increasetimeout = $TIMEOUT_FACTOR;"
+          fi
           # shellcheck disable=SC2016
           moodle-plugin-ci add-config '$CFG->behat_profiles["edge"] = ["browser" => "MicrosoftEdge", "wd_host" => "http://localhost:4444/wd/hub", "capabilities" => ["browserName" => "MicrosoftEdge"]];'
           if [ -d moodle/public ]; then cli=moodle/public/admin/tool/behat/cli; else cli=moodle/admin/tool/behat/cli; fi
