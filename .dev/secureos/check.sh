@@ -217,7 +217,8 @@ state_standard() {
 state_confined() {
     touched=yes
     apparmor reset
-    apparmor install
+    # Prints the first line of the profile as shipped, which says whether it comes in complain mode (flags).
+    apparmor install > "$out/profile-header.txt"
     base=()
     while IFS= read -r line; do base+=("$line"); done < <(override)
     apparmor local "${base[@]}"

@@ -44,7 +44,7 @@ start_vm() {
     local name="$1" port="$2" template="$3" attempt
     for attempt in 1 2; do
         limactl delete -f "$name" > /dev/null 2>&1 || true
-        if limactl create --tty=false --name="$name" --cpus=2 --memory=4 --disk=20 --mount-none --containerd=none \
+        if limactl create --tty=false --name="$name" --cpus=2 --memory=4 --disk=20 --mount-none \
             --set ".portForwards=[{\"guestPort\":80,\"hostPort\":$port,\"hostIP\":\"127.0.0.1\"}]" "template:$template" \
             && limactl start --tty=false "$name"; then
             return 0

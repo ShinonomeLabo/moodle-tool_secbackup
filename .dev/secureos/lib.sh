@@ -1,6 +1,6 @@
 # Shared by the scripts on the Mac (sourced, not run). Development only.
-# SECBK_VM is the name of the Lima machine; matrix.sh sets it for each template.
-SECBK_VM="${SECBK_VM:-secbk-selinux}"
+# SECBK_VM is the name of the Lima machine; matrix.sh sets it for each template. Without it, the machine of SECBK_TEMPLATE.
+SECBK_VM="${SECBK_VM:-secbk-${SECBK_TEMPLATE:-rocky-9}}"
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Runs a command in the VM. Standard input is closed, so that nothing waits for it (ausearch does).

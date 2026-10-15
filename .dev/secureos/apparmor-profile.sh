@@ -2,7 +2,7 @@
 # Runs in a Debian or Ubuntu VM as root: manages the php-fpm AppArmor profile of the distribution (package
 # apparmor-profiles) for check.sh. Development only. Usage: sudo bash -s -- <command> [lines...] < apparmor-profile.sh
 #   reset          remove the package and everything this script made, so that AppArmor is as shipped
-#   install        install the package and put the php-fpm profile in enforce mode
+#   install        install the package, print the profile's first line as shipped, put the profile in enforce mode
 #   local <lines>  write the lines as /etc/apparmor.d/local/php-fpm, load the profile again and restart php-fpm
 #   nonet          make the profile a test-only copy that has no network rule (the name-service abstraction without them)
 #   net            make it include the unchanged name-service abstraction again
@@ -28,6 +28,7 @@ case "${1:?command}" in
     install)
         DEBIAN_FRONTEND=noninteractive apt-get -y install apparmor-profiles > /dev/null
         test -f "$profile"
+        grep -h -m 1 '^profile php-fpm' "$profile"
         aa-enforce "$profile" > /dev/null
         apparmor_parser -r "$profile"
         ;;
