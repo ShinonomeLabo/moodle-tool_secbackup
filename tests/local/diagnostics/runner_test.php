@@ -675,7 +675,7 @@ final class runner_test extends \advanced_testcase {
     }
 
     /**
-     * The modes AppArmor prints (the kernel's aa_label_modename) and the ones it may print in the future.
+     * The modes AppArmor prints (the kernel's label_modename in security/apparmor/label.c) and the ones it may print in the future.
      *
      * @return array
      */
@@ -705,7 +705,7 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame($denies ? get_string('diag_apparmor_advice', 'tool_secbackup') : '', $named['apparmor']->advice);
     }
 
-    public function test_the_apparmor_profile_name_is_cut_and_has_no_control_characters(): void {
+    public function test_the_apparmor_profile_name_is_cut_and_has_no_control_characters_or_bytes_that_make_one(): void {
         $long = str_repeat('a', 300);
         $named = self::by_name(self::runner([], self::apparmor_root("$long (enforce)\n"))->run(null));
         $this->assertSame(
@@ -734,6 +734,94 @@ final class runner_test extends \advanced_testcase {
             get_string('diag_apparmor_enforcing', 'tool_secbackup', str_repeat("\u{3042}", 100) . "\u{2026}"),
             $named['apparmor']->detail
         );
+    }
+
+    /**
+     * Names that hold a control character of C0, DEL or C1, or bytes that become one when a control character beside them goes.
+     *
+     * @return array
+     */
+    public static function control_name_provider(): array {
+        return [
+            'C1: the control sequence introducer' => ["php\u{9b}31mX", 'php31mX'],
+            'C1: the next line control' => ["a\u{85}b", 'ab'],
+            'an orphan lead byte, a C0 control, then a continuation byte' => ["ab\xc2\x1b\x9b31m", 'ab??31m'],
+            'C0 and DEL' => ["a\x1b[31m\x7fb", 'a[31mb'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('control_name_provider')]
+    /**
+     * A name that the kernel gives comes out without any control character, whichever way it was written.
+     *
+     * @dataProvider control_name_provider
+     * @param string $raw The name as read.
+     * @param string $shown The name as shown.
+     */
+    public function test_no_control_character_reaches_the_diagnostics(string $raw, string $shown): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("$raw (enforce)\n"))->run(null));
+        $this->assertSame(get_string('diag_apparmor_enforcing', 'tool_secbackup', $shown), $named['apparmor']->detail);
+
+        $root = system_roots::with_files([
+            '/sys/fs/selinux/enforce' => "1\n",
+            '/proc/self/attr/current' => "system_u:system_r:t{$raw}:s0\0",
+        ]);
+        $named = self::by_name(self::runner([], $root)->run(null));
+        $this->assertSame(get_string('diag_selinux_enforcing', 'tool_secbackup', "t{$shown}"), $named['selinux']->detail);
+        $this->assertSame(1, preg_match('/\A[^\p{Cc}]*\z/u', $named['selinux']->detail));
+    }
+
+    public function test_no_control_character_reaches_the_mount_table_texts(): void {
+        $mount = runner::mount_of(
+            "/data/x\x1by/sub",
+            "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n35 22 0:40 / /data/x\\033y rw - ex\u{9b}t4 /dev/\\302\\233s\\033d rw\n"
+        );
+        $this->assertSame(['type' => 'ext4', 'source' => '/dev/sd', 'mount' => '/data/xy'], $mount);
+    }
+
+    /**
+     * Labels of stacked and nested profiles.
+     *
+     * @return array
+     */
+    public static function stacked_label_provider(): array {
+        return [
+            'a nested profile' => ['a//b (enforce)', 'diag_apparmor_enforcing', 'a//b', true],
+            'a stack with a mixed mode' => ['a//&b (mixed)', 'diag_apparmor_other', 'a//&b (mixed)', true],
+            'a stack with a namespace' => [
+                'p//&:ns:unconfined (enforce)', 'diag_apparmor_enforcing', 'p//&:ns:unconfined', true,
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('stacked_label_provider')]
+    /**
+     * The name is everything before the mode, also when it holds slashes, ampersands and colons.
+     *
+     * @dataProvider stacked_label_provider
+     * @param string $label The label.
+     * @param string $string The string id of the detail.
+     * @param string $shown The argument of the string.
+     * @param bool $advice Whether the advice is given.
+     */
+    public function test_stacked_labels(string $label, string $string, string $shown, bool $advice): void {
+        $named = self::by_name(self::runner([], self::apparmor_root("$label\n"))->run(null));
+        $this->assertSame(get_string($string, 'tool_secbackup', $shown), $named['apparmor']->detail);
+        $this->assertSame($advice ? get_string('diag_apparmor_advice', 'tool_secbackup') : '', $named['apparmor']->advice);
+    }
+
+    public function test_the_code_of_a_failed_lookup_by_this_server_and_of_a_skipped_check(): void {
+        $guard = network_fakes::guard(['13.225.1.1'], ['13.225.1.2'], []);
+        $named = self::by_name(self::runner([], make_request_directory(), [], $guard)->run(self::endpoint()));
+        $this->assertSame('dns_os_failed', $named['dns']->code);
+        $this->assertSame('dns_os_failed', $named['connection']->code);
+
+        $named = self::by_name(
+            self::runner([self::unsigned_answer()], make_request_directory(), ['skipnetworkchecks' => true])->run(self::endpoint())
+        );
+        $this->assertSame(check_result::INFO, $named['dns']->result);
+        $this->assertSame('', $named['dns']->code);
+        $this->assertSame('http_401', $named['connection']->code);
     }
 
     public function test_the_apparmor_profile_name_is_kept_as_text(): void {

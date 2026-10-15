@@ -321,7 +321,7 @@ final class runner {
     private function selinux(?string $enforce): check_result {
         $context = $this->files->read('/proc/self/attr/current');
         $parts = $context === null ? [] : explode(':', trim($context, "\0\n "));
-        $type = $parts[2] ?? get_string('result_unknown', 'tool_secbackup');
+        $type = isset($parts[2]) ? self::plain($parts[2]) : get_string('result_unknown', 'tool_secbackup');
         $enforce = $enforce === null ? null : trim($enforce);
         if ($enforce === '1') {
             return new check_result(
@@ -343,8 +343,7 @@ final class runner {
      * The label is "unconfined", or "<profile> (<mode>)". The file of AppArmor is read first; the older file is also
      * the one of SELinux, so its content counts only when it has the form of an AppArmor label. Nothing is returned when
      * AppArmor is off, or when no label can be read (the profile of php-fpm hides the switch of AppArmor from the process).
-     * The name comes from the kernel and is shown to an administrator, so its control characters are removed and its
-     * length is cut.
+     * The name comes from the kernel and is shown to an administrator, so it is made plain (see plain()) and its length is cut.
      *
      * @return array|null ['profile' => name, empty when not confined, 'mode' => mode word], or null when not known
      */
@@ -361,7 +360,7 @@ final class runner {
             if (preg_match('/^(.+) \(([a-z]{1,16})\)$/s', $label, $matches) !== 1) {
                 continue;
             }
-            $name = mb_scrub((string) preg_replace('/[\x00-\x1f\x7f]/', '', $matches[1]));
+            $name = self::plain($matches[1]);
             if ($name !== '') {
                 if (mb_strlen($name) > self::APPARMOR_NAME_LENGTH) {
                     $name = mb_substr($name, 0, self::APPARMOR_NAME_LENGTH) . "\u{2026}";
@@ -448,7 +447,21 @@ final class runner {
                 $best = ['type' => $right[0], 'source' => self::unescape($right[1]), 'mount' => $mountpoint];
             }
         }
-        return $best;
+        return $best === null ? null : array_map(self::plain(...), $best);
+    }
+
+    /**
+     * A text that the kernel gives, made safe to print on a terminal and on a page.
+     *
+     * Bytes that are not UTF-8 are replaced first, then every control character is removed: C0, DEL and C1 (U+0080 to
+     * U+009F, which a terminal can take as an escape sequence). The order matters: removing a control character first can
+     * join an orphan lead byte to a continuation byte and make a C1 control out of them.
+     *
+     * @param string $text The text as read.
+     * @return string
+     */
+    private static function plain(string $text): string {
+        return (string) preg_replace('/\p{Cc}/u', '', mb_scrub($text));
     }
 
     /**
