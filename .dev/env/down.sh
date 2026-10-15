@@ -9,6 +9,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/env.sh" "${1:?ver}" "${2:?db}"
 if [ "${3:-}" = "--volumes" ]; then
     "$SECBK_DOCKER/bin/moodle-docker-compose" down --volumes
+    command rm -f "$SECBK_ENV_ROOT/installed-$COMPOSE_PROJECT_NAME"
 else
     "$SECBK_DOCKER/bin/moodle-docker-compose" stop
 fi

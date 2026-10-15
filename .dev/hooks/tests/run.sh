@@ -636,5 +636,40 @@ expect_check ng "the inventory check refuses a result that is checked only befor
         '    And I press "Cancel"' '    Then I should see "Done"' '    And I follow "Other page"'
 expect_check ok "the inventory check passes in this repository" inventory_check_passes "$here/../../.."
 
+# .dev/ci/matrix.sh --list prints the combinations of the `test` job of ci.yml (SECBK_CI_YML names another file for the test),
+# so a combination added to ci.yml is run by the matrix without a second list to keep.
+matrix="$here/../../ci/matrix.sh"
+matrix_yml() {
+    local file="$work/matrix-ci.yml"
+    {
+        printf '%s\n' 'jobs:' '  other:' "    - {moodle: '9.9', php: '8.9', database: other}" '  test:' '    strategy:' '      matrix:' '        include:'
+        printf '%s\n' "$@"
+        printf '%s\n' '    services:' '  later:' "    - {moodle: '8.8', php: '8.8', database: later}"
+    } > "$file"
+    SECBK_CI_YML="$file" bash "$matrix" --list 2>&1
+}
+matrix_lists() {
+    local expected="$1" out
+    shift
+    out="$(matrix_yml "$@")" && [ "$out" = "$expected" ]
+}
+expect_check ok "the matrix lists the rows of the test job only, in the order of ci.yml, with the PHP version of each row"     matrix_lists $'405 pgsql 8.3\n503 mariadb 8.4\n503 pgsql 8.3' \
+        "          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.3', database: pgsql, image: 'postgres:13'}" \
+        "          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.4', database: mariadb, image: 'mariadb:11.4'}" \
+        "          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.3', database: pgsql, image: 'postgres:17'}"
+expect_check ok "the matrix lists a combination that is added to ci.yml" \
+    matrix_lists $'405 pgsql 8.3\n502 mysqli 8.4' \
+        "          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.3', database: pgsql, image: 'postgres:13'}" \
+        "          - {moodle: '5.2', branch: MOODLE_502_STABLE, php: '8.4', database: mysqli, image: 'mysql:8.4'}"
+expect_check ng "the matrix fails when the test job has no combination" matrix_lists ''
+matrix_real() {
+    local listed rows
+    listed="$(bash "$matrix" --list | wc -l)" || return 1
+    rows="$(awk '/^  test:/ {in_test = 1} /^    services:/ {in_test = 0} in_test && /- \{moodle: / {n++} END {print n + 0}' \
+        "$here/../../../.github/workflows/ci.yml")" || return 1
+    [ "$listed" -eq "$rows" ] && [ "$listed" -gt 0 ]
+}
+expect_check ok "the matrix lists as many combinations as ci.yml has (the other jobs have rows of their own)" matrix_real
+
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

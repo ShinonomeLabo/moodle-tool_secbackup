@@ -20,7 +20,10 @@ logs="$repo/.dev/ci/out/act"
 logname="$job$(printf -- '-%s' "$@" | tr ':' '_')"
 mkdir -p "$work" "$logs"
 # The commit of actions/checkout that ci.yml names; the local action below stands in for exactly that one.
-checkout="$(grep -o 'actions/checkout@[0-9a-f]\{40\}' "$repo/.github/workflows/ci.yml" | head -1 | cut -d@ -f2)"
+# Read into variables first: with pipefail, grep gets SIGPIPE when head exits before it has written everything.
+checkout_refs="$(grep -o 'actions/checkout@[0-9a-f]\{40\}' "$repo/.github/workflows/ci.yml" || true)"
+checkout="${checkout_refs%%$'\n'*}"
+checkout="${checkout#*@}"
 [ -n "$checkout" ] || { echo "no pinned actions/checkout in ci.yml" >&2; exit 1; }
 image=secbk-act-ubuntu:24.04
 

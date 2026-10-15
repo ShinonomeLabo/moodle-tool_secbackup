@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Sets the variables for one dedicated development environment.
 # Usage: source .dev/env/env.sh <ver> <db>   (ver: 405|500|501|502|503, db: pgsql|mariadb|mysqli)
+# SECBK_SITE=<name> gives the environment a Moodle checkout, a moodle-docker folder, containers and a web port of its own
+# (moodle-<ver>-<name>, port 190..), next to the plain one of the same version. .dev/ci/matrix.sh uses it for Moodle 5.0, so
+# that the devconfig.sh of the matrix does not touch the plain 5.0 site, which may hold a registration made by hand.
 secbk_ver="${1:?usage: env.sh <405|500|501|502|503> <pgsql|mariadb|mysqli>}"
 secbk_db="${2:?usage: env.sh <405|500|501|502|503> <pgsql|mariadb|mysqli>}"
 
@@ -44,8 +47,8 @@ if [ -f "$SECBK_REPO/.dev/env/local.env" ]; then
 fi
 SECBK_ENV_ROOT="${secbk_caller_env_root:-${SECBK_ENV_ROOT:-$HOME/secbackup-env}}"
 unset secbk_caller_env_root
-SECBK_MOODLE="$SECBK_ENV_ROOT/moodle-$secbk_ver"
-SECBK_DOCKER="$SECBK_ENV_ROOT/moodle-docker-$secbk_ver"
+SECBK_MOODLE="$SECBK_ENV_ROOT/moodle-$secbk_ver${SECBK_SITE:+-$SECBK_SITE}"
+SECBK_DOCKER="$SECBK_ENV_ROOT/moodle-docker-$secbk_ver${SECBK_SITE:+-$SECBK_SITE}"
 SECBK_BRANCH="$secbk_branch"
 
 export SECBK_REPO SECBK_ENV_ROOT SECBK_MOODLE SECBK_DOCKER SECBK_BRANCH SECBK_PLUGIN_PATH
@@ -53,8 +56,10 @@ export MOODLE_DOCKER_WWWROOT="$SECBK_MOODLE"
 export MOODLE_DOCKER_DB="$secbk_docker_db"
 export MOODLE_DOCKER_PHP_VERSION="$secbk_php"
 export MOODLE_DOCKER_DB_VERSION="$secbk_db_version"
-export MOODLE_DOCKER_WEB_PORT="127.0.0.1:180${secbk_ver:0:1}${secbk_ver:2:1}"
+secbk_port_base=180
+if [ -n "${SECBK_SITE:-}" ]; then secbk_port_base=190; fi
+export MOODLE_DOCKER_WEB_PORT="127.0.0.1:${secbk_port_base}${secbk_ver:0:1}${secbk_ver:2:1}"
 # Moodle redirects every other host name to $CFG->wwwroot, so wwwroot must be the address the scripts print.
 export MOODLE_DOCKER_WEB_HOST=127.0.0.1
 export MOODLE_DOCKER_BROWSER=chrome
-export COMPOSE_PROJECT_NAME="secbk${secbk_ver}${secbk_db}${SECBK_PHP:+php${SECBK_PHP//./}}"
+export COMPOSE_PROJECT_NAME="secbk${secbk_ver}${secbk_db}${SECBK_PHP:+php${SECBK_PHP//./}}${SECBK_SITE:-}"
