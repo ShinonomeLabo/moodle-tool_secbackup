@@ -6,9 +6,9 @@ This Rocky Linux 9 VM (Lima) runs Apache as httpd_t, like university servers.
     limactl create --name=secbk-selinux --cpus=2 --memory=4 --disk=30 \
         --set '.portForwards=[{"guestPort":80,"hostPort":18080}]' template:rocky-9
     limactl start secbk-selinux
-    limactl shell secbk-selinux sudo bash "$PWD/.dev/selinux/provision.sh"
-    .dev/selinux/sync-plugin.sh
-    .dev/selinux/check.sh <connection URL of a real service>
+    limactl shell secbk-selinux sudo bash "$PWD/.dev/secureos/provision.sh"
+    .dev/secureos/sync-plugin.sh
+    .dev/secureos/check.sh <connection URL of a real service>
 
 Moodle: http://localhost:18080 (admin / test). Use `localhost`, not `127.0.0.1`: the site's wwwroot is
 `http://localhost:18080`, and Moodle redirects other host names. The database is PostgreSQL on a Unix socket.

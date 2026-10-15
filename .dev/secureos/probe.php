@@ -1,8 +1,8 @@
 <?php
 // Development only (SELinux VM): runs the connection diagnostics inside the web server, as httpd_t, and prints them.
-// Not part of the plugin package. It refuses to run unless /etc/secbk-selinux-probe exists (made by provision.sh).
+// Not part of the plugin package. It refuses to run unless /etc/secbk-secureos-probe exists (made by provision.sh).
 
-if (!is_file('/etc/secbk-selinux-probe')) {
+if (!is_file('/etc/secbk-secureos-probe')) {
     http_response_code(404);
     exit;
 }

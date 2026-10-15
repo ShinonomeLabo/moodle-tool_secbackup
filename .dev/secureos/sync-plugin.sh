@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copies the plugin repository into the Moodle of the SELinux VM, upgrades Moodle and restores the SELinux labels.
-# Development only. Usage (on the Mac): .dev/selinux/sync-plugin.sh
+# Development only. Usage (on the Mac): .dev/secureos/sync-plugin.sh
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 limactl shell secbk-selinux sudo rsync -a --delete --exclude .git "$repo/" /var/www/html/moodle/admin/tool/secbackup/

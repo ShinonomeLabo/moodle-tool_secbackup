@@ -33,5 +33,5 @@ sudo -u apache php /var/www/html/moodle/admin/cli/install.php --non-interactive 
     --dbuser=apache --fullname="secbackup SELinux" --shortname=selinux --adminpass=test --adminemail=admin@example.com
 
 # Marks this machine as the SELinux test machine (probe.php refuses to run elsewhere).
-touch /etc/secbk-selinux-probe
+touch /etc/secbk-secureos-probe
 echo "provisioned"

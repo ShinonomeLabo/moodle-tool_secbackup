@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Runs the diagnostics in the SELinux VM with the network booleans off, relay only and connect on,
-# from the web server (httpd_t) and from the command line. Results go to .dev/selinux/out/.
-# Development only. Usage (on the Mac): .dev/selinux/check.sh <connection URL of a real service>
+# from the web server (httpd_t) and from the command line. Results go to .dev/secureos/out/.
+# Development only. Usage (on the Mac): .dev/secureos/check.sh <connection URL of a real service>
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$repo/.dev/selinux/out"
+out="$repo/.dev/secureos/out"
 mkdir -p "$out"
 url="${1:?usage: check.sh <connection URL>}"
 # ausearch reads standard input when it is a pipe; --input-logs makes it read the audit log instead.
 vm() { limactl shell secbk-selinux "$@" < /dev/null; }
-probe() { curl -s "http://localhost:18080/admin/tool/secbackup/.dev/selinux/probe.php?endpoint=$url"; }
+probe() { curl -s "http://localhost:18080/admin/tool/secbackup/.dev/secureos/probe.php?endpoint=$url"; }
 
 vm sudo setsebool httpd_can_network_connect off
 vm sudo setsebool httpd_can_network_relay off
