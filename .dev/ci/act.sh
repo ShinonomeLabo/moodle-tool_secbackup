@@ -28,8 +28,13 @@ if ! docker image inspect "$image" > /dev/null 2>&1; then
     docker build --platform linux/amd64 -t "$image" "$repo/.dev/ci/act"
 fi
 # A clone, not the work tree: the job overwrites .dev/hooks/patterns.local and leaves files of its own in the folder.
-# It is removed when the script ends, and so is the folder if nothing else is in it.
+# It is removed when the script ends, and so is the folder if nothing else is in it. SECBK_ACT_KEEP=1 keeps the clone, to
+# look at what a job left in it (for example the coverage files of the test job, which act cannot upload).
 cleanup() {
+    if [ -n "${SECBK_ACT_KEEP:-}" ]; then
+        echo "kept: $work/clone" >&2
+        return 0
+    fi
     rm -rf "${work:?}/clone"
     rmdir "$work" 2> /dev/null || true
 }
