@@ -1,0 +1,129 @@
+# What check.sh must find. Columns: case, check, result with the real connection URL, result with the stand-in URL.
+# The stand-in's address is not in the AWS ranges: where the network is open its checks fail with dns_outside_aws,
+# where it is closed they fail with dns_doh_unavailable, so the stand-in tells open from closed without the real service.
+# Used by assert.sh. A new case needs its rows here, or assert.sh fails.
+
+# Rocky Linux and AlmaLinux: SELinux enforcing, php-fpm runs as httpd_t
+selinux-web-off dns fail fail
+selinux-web-off dnsproblem dns_doh_unavailable dns_doh_unavailable
+selinux-web-off connection fail fail
+selinux-web-off connectionerror dns_doh_unavailable dns_doh_unavailable
+selinux-web-off plugin-mac info info
+selinux-web-off mac httpd_t httpd_t
+selinux-web-off netdenials present present
+selinux-web-off phpwarnings none none
+selinux-cli-off dns pass fail
+selinux-cli-off connection pass fail
+selinux-cli-off mac unconfined_t unconfined_t
+selinux-cli-off netdenials none none
+selinux-web-relay dns pass fail
+selinux-web-relay dnsproblem none dns_outside_aws
+selinux-web-relay connection pass fail
+selinux-web-relay connectionerror http_401 dns_outside_aws
+selinux-web-relay plugin-mac info info
+selinux-web-relay mac httpd_t httpd_t
+selinux-web-relay netdenials none none
+selinux-web-relay phpwarnings none none
+selinux-cli-relay dns pass fail
+selinux-cli-relay connection pass fail
+selinux-cli-relay mac unconfined_t unconfined_t
+selinux-cli-relay netdenials none none
+selinux-web-connect dns pass fail
+selinux-web-connect dnsproblem none dns_outside_aws
+selinux-web-connect connection pass fail
+selinux-web-connect connectionerror http_401 dns_outside_aws
+selinux-web-connect plugin-mac info info
+selinux-web-connect mac httpd_t httpd_t
+selinux-web-connect netdenials none none
+selinux-web-connect phpwarnings none none
+selinux-cli-connect dns pass fail
+selinux-cli-connect connection pass fail
+selinux-cli-connect mac unconfined_t unconfined_t
+selinux-cli-connect netdenials none none
+
+# Debian and Ubuntu: AppArmor as shipped, php-fpm has no profile
+standard-web dns pass fail
+standard-web dnsproblem none dns_outside_aws
+standard-web connection pass fail
+standard-web connectionerror http_401 dns_outside_aws
+standard-web plugin-mac unknown unknown
+standard-web mac unconfined unconfined
+standard-web netdenials none none
+standard-web phpwarnings none none
+standard-cli dns pass fail
+standard-cli connection pass fail
+standard-cli mac unconfined unconfined
+standard-cli netdenials none none
+
+# Debian and Ubuntu: the php-fpm profile of the distribution (apparmor-profiles) in enforce mode
+confined-web-allow dns pass fail
+confined-web-allow dnsproblem none dns_outside_aws
+confined-web-allow connection pass fail
+confined-web-allow connectionerror http_401 dns_outside_aws
+confined-web-allow plugin-mac unknown unknown
+confined-web-allow mac php-fpm_(enforce) php-fpm_(enforce)
+confined-web-allow netdenials none none
+confined-web-allow phpwarnings none none
+confined-cli dns pass fail
+confined-cli connection pass fail
+confined-cli mac unconfined unconfined
+confined-cli netdenials none none
+confined-web-deny dns fail fail
+confined-web-deny dnsproblem dns_doh_unavailable dns_doh_unavailable
+confined-web-deny connection fail fail
+confined-web-deny connectionerror dns_doh_unavailable dns_doh_unavailable
+confined-web-deny plugin-mac unknown unknown
+confined-web-deny mac php-fpm_(enforce) php-fpm_(enforce)
+confined-web-deny netdenials none none
+confined-web-deny phpwarnings none none
+confined-web-restored dns pass fail
+confined-web-restored dnsproblem none dns_outside_aws
+confined-web-restored connection pass fail
+confined-web-restored connectionerror http_401 dns_outside_aws
+confined-web-restored plugin-mac unknown unknown
+confined-web-restored mac php-fpm_(enforce) php-fpm_(enforce)
+confined-web-restored netdenials none none
+confined-web-restored phpwarnings none none
+confined-web-denylog dns fail fail
+confined-web-denylog dnsproblem dns_doh_unavailable dns_doh_unavailable
+confined-web-denylog connection fail fail
+confined-web-denylog connectionerror dns_doh_unavailable dns_doh_unavailable
+confined-web-denylog plugin-mac unknown unknown
+confined-web-denylog mac php-fpm_(enforce) php-fpm_(enforce)
+confined-web-denylog netdenials present present
+confined-web-denylog phpwarnings none none
+
+# A test-only copy of the profile without any network rule; the rules are added one kind at a time.
+nonet-web-none dns fail fail
+nonet-web-none dnsproblem dns_doh_unavailable dns_doh_unavailable
+nonet-web-none connection fail fail
+nonet-web-none connectionerror dns_doh_unavailable dns_doh_unavailable
+nonet-web-none plugin-mac unknown unknown
+nonet-web-none mac php-fpm_(enforce) php-fpm_(enforce)
+nonet-web-none netdenials present present
+nonet-web-none phpwarnings none none
+nonet-web-stream dns fail fail
+nonet-web-stream dnsproblem dns_os_failed dns_outside_aws
+nonet-web-stream connection fail fail
+nonet-web-stream connectionerror dns_os_failed dns_outside_aws
+nonet-web-stream plugin-mac unknown unknown
+nonet-web-stream mac php-fpm_(enforce) php-fpm_(enforce)
+nonet-web-stream netdenials present present
+nonet-web-stream phpwarnings none none
+nonet-web-inet dns pass fail
+nonet-web-inet dnsproblem none dns_outside_aws
+nonet-web-inet connection pass fail
+nonet-web-inet connectionerror http_401 dns_outside_aws
+nonet-web-inet plugin-mac unknown unknown
+nonet-web-inet mac php-fpm_(enforce) php-fpm_(enforce)
+nonet-web-inet netdenials none none
+nonet-web-inet phpwarnings none none
+
+# Debian 13 resolves names without a UDP socket of its own, so the stream rule alone is enough there.
+nonet-web-stream@debian13 dns pass fail
+nonet-web-stream@debian13 dnsproblem none dns_outside_aws
+nonet-web-stream@debian13 connection pass fail
+nonet-web-stream@debian13 connectionerror http_401 dns_outside_aws
+nonet-web-stream@debian13 netdenials none none
+# Ubuntu 22.04 also tries an IPv6 UDP socket for the name lookup; the lookup works, but the attempt is denied and logged.
+nonet-web-inet@ubuntu22 netdenials present present
