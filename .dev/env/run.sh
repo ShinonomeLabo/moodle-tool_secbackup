@@ -9,8 +9,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=env.sh
 source "$here/env.sh" "${1:?ver}" "${2:?db}"
 shift 2
+# SECBK_EXEC_ENV="NAME=value NAME=value" sets environment variables for the command (values without spaces).
+envargs=()
+for assignment in ${SECBK_EXEC_ENV:-}; do envargs+=(-e "$assignment"); done
 # Only the first line of standard output is looked at, and only that notice is removed; every other byte is
 # passed on as it came, and standard error is not touched. pipefail makes the status of the pipeline the status
 # of the command, because the filter itself ends with 0.
-"$SECBK_DOCKER/bin/moodle-docker-compose" exec -T webserver "$@" |
+"$SECBK_DOCKER/bin/moodle-docker-compose" exec -T ${envargs[@]+"${envargs[@]}"} webserver "$@" |
     perl -pe 'BEGIN { $| = 1 } $_ = "" if $. == 1 && m{\AIncluding local options from .*/local\.yml\n\z}'
