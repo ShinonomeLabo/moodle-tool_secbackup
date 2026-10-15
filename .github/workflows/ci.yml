@@ -248,9 +248,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci phpunit --fail-on-warning --coverage-pcov --coverage-clover
 
+      # The Behat site is served by the web server of PHP, which has one worker unless it is told otherwise, and a page of
+      # Moodle asks for many files and AJAX calls at once, so the server gets several workers.
       - name: Behat features
         id: behat
         if: ${{ !cancelled() }}
+        env:
+          PHP_CLI_SERVER_WORKERS: '4'
         run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
 
       # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL). Any other code, 255
@@ -399,6 +403,8 @@ jobs:
 
       - name: Behat features
         id: behat
+        env:
+          PHP_CLI_SERVER_WORKERS: '4'
         run: moodle-plugin-ci behat --profile ${{ matrix.browser }} --selenium selenium/standalone-${{ matrix.browser }}:4 --auto-rerun 0
 
       - name: Upload Behat Faildump
