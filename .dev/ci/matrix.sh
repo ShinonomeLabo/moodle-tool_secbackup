@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs .dev/ci/run.sh for every combination of the `test` job of .github/workflows/ci.yml, one environment at a time.
 # The list is read from ci.yml, so that the workflow and this script cannot drift apart.
-# Usage: .dev/ci/matrix.sh [filter]    only the combinations whose text ("<ver> <db> <php>") contains the filter, such as 503 or mysqli
+# Usage: .dev/ci/matrix.sh [filter]    only the combinations whose text ("<ver> <db> <php>") matches the regular expression, such as 503 or mysqli
 #        .dev/ci/matrix.sh --list      print the combinations and stop
 # An environment that this script installs is removed with its data when its combination is done, so that the disk holds
 # one site at a time; one that was installed before (a marker file made by install.sh) is only stopped. SECBK_MATRIX_KEEP is a
@@ -49,7 +49,7 @@ log="$repo/.dev/ci/out/matrix.log"
 : > "$log"
 status=0
 while read -r ver db php; do
-    if [ -n "${1:-}" ] && [[ "$ver $db $php" != *"$1"* ]]; then
+    if [ -n "${1:-}" ] && ! [[ "$ver $db $php" =~ $1 ]]; then
         continue
     fi
     # The default PHP of the version is the one env.sh chooses; another one is SECBK_PHP.
