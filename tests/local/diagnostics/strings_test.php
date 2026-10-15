@@ -81,7 +81,7 @@ final class strings_test extends \advanced_testcase {
     }
 
     public function test_the_apparmor_advice_names_the_same_four_rules_in_both_languages(): void {
-        // check.sh of .dev/secureos takes the rules from the English text and loads them into a profile; it needs four.
+        // The check.sh of .dev/secureos takes the rules from the English text and loads them into a profile; it needs four.
         $dir = \core_component::get_component_directory('tool_secbackup');
         $rules = [];
         foreach (['en', 'ja'] as $lang) {
