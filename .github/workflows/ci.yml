@@ -604,3 +604,53 @@ jobs:
         env:
           MERGE_STATUS: ${{ steps.merge.outputs.status }}
         run: exit "$MERGE_STATUS"
+
+  # The access control that the OS ships, tested in real virtual machines (Lima with QEMU and KVM, on the x86_64 runner):
+  # SELinux on Rocky Linux and AlmaLinux, AppArmor on Debian and Ubuntu. Each job builds one machine from the distribution's
+  # own packages, copies the plugin in, runs the connection diagnostics from the web server and from the command line in each
+  # state of the access control, and compares the results with .dev/secureos/expect.txt. The same script runs on a Mac
+  # (.dev/secureos/README.md). The secret SECBK_SECUREOS_ENDPOINT holds the connection URL of a real service. Without it (a
+  # fork, or until a maintainer sets it) the stand-in expectations are checked. The log has the summary lines (case, check,
+  # result), never the URL or any detail text, and the job uploads no artifact.
+  secureos:
+    name: Secure OS ${{ matrix.template }} ${{ matrix.state }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {template: rocky-9, state: selinux}
+          - {template: rocky-10, state: selinux}
+          - {template: almalinux-9, state: selinux}
+          - {template: almalinux-10, state: selinux}
+          - {template: debian-12, state: standard}
+          - {template: debian-12, state: confined}
+          - {template: debian-13, state: standard}
+          - {template: debian-13, state: confined}
+          - {template: ubuntu-22.04, state: standard}
+          - {template: ubuntu-22.04, state: confined}
+          - {template: ubuntu-24.04, state: standard}
+          - {template: ubuntu-24.04, state: confined}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Installs QEMU and Lima. The download of Lima is verified with `gh attestation verify` and the token of this job.
+      - name: Set up Lima
+        uses: lima-vm/lima-actions/setup@55627e31b78637bf254a8b2a14da8ea7d12564e5 # v1.1.0
+        with:
+          version: v2.2.1
+          ssh: false
+
+      # No set -x here: the connection URL is in the environment of this step.
+      - name: Test the access control of ${{ matrix.template }} (${{ matrix.state }})
+        env:
+          SECBK_SECUREOS_ENDPOINT: ${{ secrets.SECBK_SECUREOS_ENDPOINT }}
+          TEMPLATE: ${{ matrix.template }}
+          STATE: ${{ matrix.state }}
+        run: bash .dev/secureos/run-template.sh -s "$STATE" "$TEMPLATE"
