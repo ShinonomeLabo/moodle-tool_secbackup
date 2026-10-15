@@ -216,8 +216,10 @@ class behat_tool_secbackup extends behat_base {
             $click();
             return true;
         }, false, self::get_extended_timeout());
+        // A page can be slow to load (an emulated browser on a slow machine took more than the usual 10 seconds), so the wait
+        // is six times the extended time of Behat; it ends as soon as the new page is there.
         $arrived = $this->getSession()->wait(
-            self::get_extended_timeout() * 1000,
+            self::get_extended_timeout() * 6 * 1000,
             '(typeof window.tool_secbackup_old_page === "undefined" && document.readyState === "complete")'
         );
         if (!$arrived) {
