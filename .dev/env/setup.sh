@@ -17,6 +17,11 @@ fi
 if [ ! -d "$SECBK_ENV_ROOT/moodle-plugin-ci" ]; then
     composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci "$SECBK_ENV_ROOT/moodle-plugin-ci" ^4
 fi
+# Infection (mutation testing, .dev/infection). 0.29.14 is the newest 0.29: it needs PHP 8.2 or later and drives PHPUnit 9.6
+# and 11. The 0.30 and later releases need PHP 8.3, which the 4.5 containers on PHP 8.1 lack, and Infection only runs in 5.3.
+if [ ! -d "$SECBK_ENV_ROOT/infection" ]; then
+    composer create-project -n --no-dev --prefer-dist infection/infection:0.29.14 "$SECBK_ENV_ROOT/infection"
+fi
 if [ ! -d "$SECBK_MOODLE/${SECBK_PLUGIN_PATH%admin/tool/secbackup}local/moodlecheck" ]; then
     git clone --depth 1 https://github.com/moodlehq/moodle-local_moodlecheck.git \
         "$SECBK_MOODLE/${SECBK_PLUGIN_PATH%admin/tool/secbackup}local/moodlecheck"
@@ -34,6 +39,7 @@ services:
     volumes:
       - "$SECBK_REPO:/var/www/html/$SECBK_PLUGIN_PATH"
       - "$SECBK_ENV_ROOT/moodle-plugin-ci:/opt/moodle-plugin-ci"
+      - "$SECBK_ENV_ROOT/infection:/opt/infection"
 YAML
 mkdir -p "$SECBK_MOODLE/$SECBK_PLUGIN_PATH"
 echo "ready: $SECBK_MOODLE ($SECBK_BRANCH), plugin at $SECBK_PLUGIN_PATH"
