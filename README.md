@@ -42,6 +42,14 @@ Behat (every page and every operation of the plugin, see `tests/behat/inventory.
 combination above, and in Firefox, Edge and Safari on every Moodle version with PostgreSQL and MariaDB (the newest PHP of
 the version; Safari on a macOS runner, with the databases of Homebrew).
 
+The access control that the operating system ships is tested in real virtual machines (the job `Secure OS ...`): SELinux
+on Rocky Linux 9 and 10 and AlmaLinux 9 and 10, and AppArmor on Debian 12 and 13 and Ubuntu 22.04 and 24.04 (as shipped, and
+with the `php-fpm` profile of the distribution in enforce mode). Each job runs the plugin's connection diagnostics from the
+web server and from the command line, and checks that the diagnostics tell a closed network from an open one and name the
+right advice. The job reads the connection URL of a real service from the secret `SECBK_SECUREOS_ENDPOINT`; where that is
+not set (a fork) it checks against a stand-in. `.dev/secureos/README.md` has the details and how to run the same thing on
+your machine.
+
 ## Privacy
 
 The plugin sends backups of the whole site, including the personal data of all users,
