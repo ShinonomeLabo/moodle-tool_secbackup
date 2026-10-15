@@ -443,6 +443,11 @@ expect_check ng "the dev guard rule refuses a guard that is not the first statem
 expect_check ok "the dev guard rule accepts the command line guard" dev_guards_pass_for cli "if (PHP_SAPI !== 'cli') {"
 expect_check ok "the dev guard rule accepts the built-in server guard" dev_guards_pass_for server "if (PHP_SAPI !== 'cli-server') {"
 expect_check ok "the dev guard rule accepts CLI_SCRIPT" dev_guards_pass_for moodle "define('CLI_SCRIPT', true);"
+expect_check ok "the dev guard rule accepts the marker file guard under /etc" dev_guards_pass_for marker "if (!is_file('/etc/secbk-secureos-probe')) {"
+expect_check ng "the dev guard rule refuses a marker file guard that is not the first statement" dev_guards_pass_for markerlate 'require "x.php";
+if (!is_file('"'"'/etc/secbk-secureos-probe'"'"')) {'
+expect_check ng "the dev guard rule refuses a marker file outside /etc/secbk-" dev_guards_pass_for markertmp "if (!is_file('/tmp/secbk-secureos-probe')) {"
+expect_check ng "the dev guard rule refuses a marker file whose name is not secbk-" dev_guards_pass_for markername "if (!is_file('/etc/passwd')) {"
 dev_guards_skip_the_named_exceptions() {
     local dir="$work/devguards-exceptions"
     mkdir -p "$dir/coverage/tests/fixtures/source" "$dir/tools" || return 1

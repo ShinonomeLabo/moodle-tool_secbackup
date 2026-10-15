@@ -6,6 +6,10 @@
 #   if (PHP_SAPI !== 'cli') {            command line scripts
 #   if (PHP_SAPI !== 'cli-server') {     the development server (php -S) of .dev/fakesec
 #   define('CLI_SCRIPT', true);          Moodle scripts: Moodle refuses to run them from the web
+#   if (!is_file('/etc/secbk-NAME')) {   scripts that a test machine's web server must run (secureos/probe.php): they
+#                                        answer 404 unless a marker file under /etc exists. Only root can create a file
+#                                        there and a production site never has one, so a clone under a web root is inert.
+#                                        The marker check must be the first code line, and the path must be /etc/secbk-...
 # Two places are not checked, for these reasons:
 #   coverage/collector.php            is loaded into web requests by design (auto_prepend_file) and does nothing unless
 #                                     coverage/out/raw/ENABLED exists, which only the coverage run makes.
@@ -40,6 +44,9 @@ while IFS= read -r -d '' file; do
     case "$line" in
         "if (PHP_SAPI !== 'cli') {" | "if (PHP_SAPI !== 'cli-server') {" | "define('CLI_SCRIPT', true);") ;;
         *)
+            if [[ "$line" =~ ^if\ \(!is_file\(\'/etc/secbk-[a-z0-9-]+\'\)\)\ \{$ ]]; then
+                continue
+            fi
             echo "no guard at the top of .dev/$relative (first code line: ${line:-none})" >&2
             status=1
             ;;
