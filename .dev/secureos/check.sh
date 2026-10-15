@@ -184,8 +184,8 @@ case_web() {
         printf '%s\n' "$ours"
         echo "--- new PHP log lines of other code (not counted): $others"
     } | redact > "$file"
-    field() { printf '%s\n' "$body" | sed -n "s/^\[\([a-z]*\)\] $1: .*/\1/p" | head -n 1; }
-    dev() { printf '%s\n' "$body" | sed -n "s/^\[dev\] $1: //p" | head -n 1; }
+    field() { printf '%s\n' "$body" | sed -n "s/^\[\([a-z]*\)\] $1: .*/\1/p" | sed -n 1p; }
+    dev() { printf '%s\n' "$body" | sed -n "s/^\[dev\] $1: //p" | sed -n 1p; }
     emit "$name" dns "$(field dns)"
     emit "$name" dnsproblem "$(dev dnsproblem)"
     emit "$name" connection "$(field connection)"
@@ -220,7 +220,7 @@ case_cli() {
         printf '%s\n' "$ours"
     } | redact > "$file"
     cli_field() {
-        printf '%s\n' "$body" | sed -n "s/^\[\([A-Za-z]*\)\] $1: .*/\1/p" | head -n 1 | tr 'A-Z' 'a-z' \
+        printf '%s\n' "$body" | sed -n "s/^\[\([A-Za-z]*\)\] $1: .*/\1/p" | sed -n 1p | tr 'A-Z' 'a-z' \
             | sed 's/^ok$/pass/; s/^problem$/fail/; s/^warning$/warn/; s/^information$/info/'
     }
     emit "$name" dns "$(cli_field 'Name resolution')"
@@ -300,7 +300,8 @@ state_confined() {
         apparmor net
         exit 1
     fi
-    apparmor local "${base[@]}" "${advice_rules[@]}"
+    # Only what the advice says: the rules go into the local file and the profile is loaded again; php-fpm is not restarted.
+    apparmor reload "${base[@]}" "${advice_rules[@]}"
     case_web nonet-web-advice
     apparmor net
 }

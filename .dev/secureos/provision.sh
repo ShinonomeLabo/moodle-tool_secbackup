@@ -38,10 +38,12 @@ newest_stream() {
 # The source repository is the one that belongs to the repository PHP comes from; the source package must be signed by the
 # distribution and must be the version that is installed; and the result must load in php-fpm and in the command line.
 build_sodium() {
-    local work repo installed modules
+    local work repos repo installed modules
     work="$(mktemp -d)"
     dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
-    repo="$(dnf -q repoquery --qf '%{repoid}\n' php-common | head -n 1)"
+    # The whole output is read first: a pipe into head can fail when head ends before dnf does (SIGPIPE under pipefail).
+    repos="$(dnf -q repoquery --qf '%{repoid}\n' php-common)"
+    repo="${repos%%$'\n'*}"
     [ -n "$repo" ] || { echo "cannot tell which repository PHP comes from" >&2; exit 1; }
     installed="$(php-config --version)"
     (

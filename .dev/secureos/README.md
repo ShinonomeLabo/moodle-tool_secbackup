@@ -28,7 +28,7 @@ It creates the machine, provisions it, copies the plugin in, runs `check.sh`, co
 
 | Option | Meaning |
 |---|---|
-| `-u <URL>` | The connection URL of a real service, given as an argument only. Without it the environment variable `SECBK_SECUREOS_ENDPOINT` is used; when that is empty too, the stand-in is used. The URL is handed to `check.sh` and is never printed or written (the case files hold `<endpoint>`). |
+| `-u <URL>` | The connection URL of a real service, given as an argument only. Without it the environment variable `SECBK_SECUREOS_ENDPOINT` is used; when that is empty too, the stand-in is used. The URL is handed to `check.sh` as an argument. These scripts do not print it, and the case files hold `<endpoint>` instead. It cannot be kept out of the machine: it is in the access log of Apache (the probe's query string), in the journal of sudo (the command-line cases) and in the arguments of `limactl`, `curl` and `php` there. The machine is deleted at the end, so it goes with it, but a machine kept with `-k` holds the URL. |
 | `-m` | Which expectations are checked: `standin`, `real` (needs a URL) or `both`. The default is `real` when there is a URL, otherwise `standin`. |
 | `-s` | The state to test: `selinux` (Rocky Linux, AlmaLinux), `standard` or `confined` (Debian, Ubuntu); the default `all` runs every state that fits. The CI job runs one state in each machine. |
 | `-p` | Host port forwarded to the web server of the machine (default 18200). |
@@ -131,9 +131,11 @@ and that the four AppArmor rules named by the plugin's advice let the plugin con
 **The endpoint.** The secret `SECBK_SECUREOS_ENDPOINT` holds the connection URL of a real service (the base URL of its API).
 It is not registered yet: a maintainer sets it when the repository is on GitHub. A pull request from a fork gets no secret.
 Without it the job runs the stand-in mode and its column of `expect.txt`; with it, the real mode and its column. The log
-shows the mode (`template ..., mode standin|real`), the progress, the summary lines and the result of `assert.sh`, never the
-URL and never a detail text. The URL is only an argument of `check.sh`; `check.sh` writes the case files with the URL
-replaced by `<endpoint>`, and nothing prints them. No step uses `set -x` where the URL is in scope. The setup action's own
+shows the mode (`template ..., mode standin|real`), the progress, the output of `provision.sh` and `limactl` (checked: it
+holds no URL and no detail text), the summary lines and the result of `assert.sh`; no script prints the URL or a detail
+text, and GitHub masks the secret in the log as well. The URL is an argument of `check.sh`; `check.sh` writes the case files
+with the URL replaced by `<endpoint>`, and nothing prints them. Inside the machine the URL is in the access log of Apache and
+in the journal of sudo; the machine is deleted when the job ends, and the runner is not reused. No step uses `set -x` where the URL is in scope. The setup action's own
 steps run with `set -x` but do not see the secret: it is in the environment of the last step only.
 
 **The same thing on the Mac.**
@@ -251,7 +253,7 @@ network of the machines has no IPv6 route.
 
 **The profile.** `apparmor-profiles` ships `/etc/apparmor.d/php-fpm`, attached to `/usr/sbin/php-fpm*` (Debian 13:
 `/usr/{bin,sbin}/php-fpm*`). Debian 12, Debian 13 and Ubuntu 22.04 ship it with `flags=(complain,...)`; Ubuntu 24.04 ships
-it enforcing. The tests put it in enforce mode with `aa-enforce php-fpm` and restart php-fpm. php-fpm and all its workers,
+it enforcing. The tests put it in enforce mode with `aa-enforce php-fpm` and restart php-fpm (except in the case `nonet-web-advice`, which only loads the profile again, as the plugin's advice says). php-fpm and all its workers,
 that is all of Moodle, run under the profile `php-fpm`. Nothing is confined without the package: in the standard state php-fpm
 is `unconfined`.
 
@@ -296,7 +298,7 @@ Both for IPv4. The advice of the plugin names four rules, the two above and thei
 `network inet6 dgram,`), because a server with an IPv6 route connects over it (CloudFront answers AAAA too). What was
 verified, on all four AppArmor templates (the case `nonet-web-advice`): the four rules, taken from the plugin's English text,
 are loaded by `apparmor_parser -r` into the kernel, and with them the plugin connects over IPv4 with nothing denied and
-nothing logged. What was verified **only by the parser** (on Ubuntu 24.04, `apparmor_parser -QT` accepts the four rules, also on one line; it rejects
+nothing logged, after a reload of the profile alone (`apparmor_parser -r`; php-fpm is not restarted). What was verified **only by the parser** (on Ubuntu 24.04, `apparmor_parser -QT` accepts the four rules, also on one line; it rejects
 `network bogus stream,`, so it does check): that the IPv6 rules are valid syntax. Not verified by any connection: that a
 connection over IPv6 passes, because the network of the machines has no IPv6 route. Ubuntu 22.04 tries an IPv6 UDP socket during the lookup; the lookup still works, but the attempt is
 logged. The stream-only test carried `inet stream` and `inet6 stream` together, so "Debian 13 needs no UDP rule" is shown for

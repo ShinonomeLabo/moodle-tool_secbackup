@@ -7,6 +7,8 @@
 #   reset          remove the package and everything this script made, so that AppArmor is as shipped
 #   install        install the package, print the profile's first line as shipped, put the profile in enforce mode
 #   local <lines>  write the lines as /etc/apparmor.d/local/php-fpm, load the profile again and restart php-fpm
+#   reload <lines> write the lines as /etc/apparmor.d/local/php-fpm and load the profile again, nothing else: php-fpm is not
+#                  restarted (this is what the plugin's advice tells an administrator to do)
 #   nonet          make the profile a test-only copy that has no network rule (the name-service abstraction without them)
 #   net            make it include the unchanged name-service abstraction again
 set -euo pipefail
@@ -74,6 +76,11 @@ case "${1:?command}" in
         apparmor_parser -r "$profile"
         # php-fpm that was started under another profile (or none), or that could not start under this one, starts again.
         restart_fpm
+        ;;
+    reload)
+        shift
+        printf '%s\n' "$@" > "$localfile"
+        apparmor_parser -r "$profile"
         ;;
     nonet)
         sed -E '/^[[:space:]]*network[[:space:]]+(inet|inet6)[[:space:]]/d' /etc/apparmor.d/abstractions/nameservice > "$nonet"

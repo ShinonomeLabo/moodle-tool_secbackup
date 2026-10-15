@@ -5,15 +5,17 @@
 # script, so that the local run and the CI run are the same code. Development only.
 # Usage: .dev/secureos/run-template.sh [-p <host port>] [-u <connection URL>] [-m standin|real|both] [-s <state>] [-k] [-r] <template>
 #   -u   the connection URL of a real service. Without it the environment variable SECBK_SECUREOS_ENDPOINT is used, and when
-#        that is empty too, the stand-in is used. The URL is handed to check.sh as an argument and never printed or written.
+#        that is empty too, the stand-in is used. The URL is handed to check.sh as an argument and is not
+#        printed by these scripts. Inside the machine it is in the access log of Apache, in the journal of sudo and in the
+#        arguments of limactl, curl and php; the machine is deleted at the end, but a machine kept with -k holds it.
 #   -m   which expectations to check: standin, real (needs a URL) or both. Default: real when there is a URL, else standin.
 #   -s   the state of the access control to test: selinux (Rocky Linux, AlmaLinux), standard or confined (Debian, Ubuntu), or
 #        all (default: every state that fits the machine). The job in CI runs one state in each machine.
 #   -p   host port forwarded to the web server of the VM (default 18200).
 #   -k   keep the VM at the end. -r   replace a VM of the same name; without it the script stops, so that it never deletes a
 #        VM that someone else made.
-# The output is the progress of the steps, the summary lines of check.sh (case, check, result; no detail text), the result of
-# assert.sh, the time of each step and a last line "result: <template> <ok|failed|mismatch>". The exit status is 0 only for ok.
+# The output is the progress of the steps (with the output of provision.sh and limactl, which holds no URL and no detail
+# text), the summary lines of check.sh (case, check, result; no detail text), the result of assert.sh, the time of each step and a last line "result: <template> <ok|failed|mismatch>". The exit status is 0 only for ok.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -92,8 +94,9 @@ cleanup() {
     [ "$status" = ok ] || exit 1
 }
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# An interrupted run is not a finished one: the status says so, and cleanup prints it.
+trap 'status=interrupted; exit 130' INT
+trap 'status=interrupted; exit 143' TERM
 
 echo "template $template, mode $mode"
 step "create and start the machine"

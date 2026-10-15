@@ -47,13 +47,16 @@ fi
 mkdir -p "$out"
 
 run_one() {
-    local template="$1" port="$2" log="$out/$1.log" status
+    local template="$1" port="$2" log="$out/$1.log" status rc
     local options=(-p "$port")
     [ -z "$realurl" ] || options+=(-u "$realurl" -m both)
     [ "$keep" = no ] || options+=(-k)
     [ "$replace" = no ] || options+=(-r)
     "$here/run-template.sh" "${options[@]}" "$template" > "$log" 2>&1
+    rc=$?
     status="$(sed -n 's/^result: [^ ]* //p' "$log" | tail -n 1)"
+    # The exit status counts first: only a run that ended with 0 can be ok.
+    if [ "$rc" -ne 0 ] && { [ -z "$status" ] || [ "$status" = ok ]; }; then status=failed; fi
     echo "${status:-failed}" > "$out/$template.status"
 }
 

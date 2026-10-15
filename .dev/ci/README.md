@@ -23,7 +23,7 @@ The default branch of the repository is `main`.
 | `coverage` | Merges the coverage of all combinations (the artifacts `coverage-run-<Moodle>-<PHP>-<database>`; no other artifact name may start with `coverage-run-`), writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
 
 Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 40, `test` 60,
-`behat-safari` 60 and the badge job 10. They sit above the longest time measured under act, which is slower than a GitHub runner
+`behat-safari` 60, `secureos` 45 and the badge job 10. They sit above the longest time measured under act, which is slower than a GitHub runner
 (amd64 emulated on Apple silicon): the `test` job took 44 minutes (the install 7 minutes, PHPUnit 14, Behat 12), a `behat` job 22 minutes
 (Firefox) or 26 (Edge, with Behat 14 of them), `inventory` 2 minutes. `rules` and `coverage` take a few minutes at most. A hung
 job is stopped, and a slow day does not fail a job. `behat-safari` has no measurement (it cannot run here), so its limit is a
