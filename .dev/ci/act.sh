@@ -37,7 +37,9 @@ trap cleanup EXIT
 rm -rf "${work:?}/clone"
 git clone -q "$repo" "$work/clone"
 cd "$work/clone"
-args=("${SECBK_ACT_EVENT:+pull_request}" -j "$job" --bind --pull=false --container-architecture linux/amd64 -P "ubuntu-24.04=$image"
+# act skips every step of actions/checkout unless it is told not to (the step ran in 2 milliseconds and copied nothing), and
+# then the local action below would not run: --no-skip-checkout makes the step run the local action.
+args=("${SECBK_ACT_EVENT:+pull_request}" -j "$job" --bind --no-skip-checkout --pull=false --container-architecture linux/amd64 -P "ubuntu-24.04=$image"
     --local-repository "actions/checkout@$checkout=$repo/.dev/ci/act/local-checkout")
 if [ -n "${SECBK_ACT_EVENT:-}" ]; then
     args+=(-e "$SECBK_ACT_EVENT")
