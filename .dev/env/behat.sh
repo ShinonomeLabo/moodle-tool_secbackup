@@ -6,7 +6,8 @@
 #   safari         runs Safari on this Mac through safaridriver, which opens an automation window on the desktop. The Behat
 #                  site is then reached as http://localhost:<port of the environment> (the Mac cannot resolve http://webserver),
 #                  and two relays (relay.php) let the container reach safaridriver and that address. Safari must be allowed to be
-#                  automated once (sudo safaridriver --enable); this script changes no setting of Safari or of the system.
+#                  automated once (sudo safaridriver --enable); this script changes no setting of Safari or of the system (it
+#                  only keeps the display awake while it runs, as Safari does not load pages while the display sleeps).
 # It enables the Behat test site first. That rebuilds the list of features and steps, so a feature or a step file added since
 # the site was initialised is not skipped without a word. When the site was initialised for other versions of Moodle or of
 # its plugins, it must be initialised again: the script stops and shows the command.
@@ -61,6 +62,10 @@ case "$browser" in
         export SECBK_EXEC_ENV="${SECBK_EXEC_ENV:-} MOODLE_DOCKER_TIMEOUT_FACTOR=8"
         ;;
     safari)
+        # Safari does not draw, and its pages do not load, while the display sleeps: keep it awake for as long as this script
+        # runs. caffeinate sets no setting; its hold ends with the script (-w).
+        caffeinate -d -i -w $$ &
+        pids+=("$!")
         if ! curl -fs --max-time 3 http://localhost:4445/status > /dev/null; then
             safaridriver -p 4445 > /dev/null 2>&1 &
             pids+=("$!")

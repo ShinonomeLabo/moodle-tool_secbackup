@@ -156,16 +156,9 @@ class behat_tool_secbackup extends behat_base {
         $link = array_pop($nodes);
 
         // The click may meet a page that the step before has not finished leaving, so it is tried again.
-        $this->spin(
-            function (): bool {
-                $this->wait_for_new_page(function (): void {
-                    $this->execute('behat_navigation::i_select_from_primary_navigation', [get_string('administrationsite')]);
-                });
-                return true;
-            },
-            false,
-            self::get_extended_timeout()
-        );
+        $this->click_and_wait_for_new_page(function (): void {
+            $this->execute('behat_navigation::i_select_from_primary_navigation', [get_string('administrationsite')]);
+        });
 
         $tabxpath = '//ul[@role="tablist"]/li/a[contains(normalize-space(.), ' . behat_context_helper::escape($tab) . ')]';
         $this->click_when_present($tabxpath, 'The tab "' . $tab . '" is not on the page.', false);
@@ -182,41 +175,45 @@ class behat_tool_secbackup extends behat_base {
      * Clicks the element that an XPath finds, trying again until it is there and can be clicked.
      *
      * The page that holds the element may still be loading: safaridriver gives the control back before a page has changed,
-     * so an element can be missing at first, or can be gone from the old page when it is clicked.
+     * so an element can be missing at first, or can be gone from the old page when it is clicked. The attempt starts again
+     * with a new search, until the time of Behat for slow steps is over.
      *
      * @param string $xpath The element.
      * @param string $message What to say when the element did not come.
      * @param bool $loadspage Whether the click loads a new page, which is then waited for.
      */
     private function click_when_present(string $xpath, string $message, bool $loadspage): void {
-        $node = $this->spin(
-            function () use ($xpath) {
-                return $this->getSession()->getPage()->find('xpath', $xpath);
-            },
-            false,
-            self::get_extended_timeout(),
-            new ExpectationException($message, $this->getSession())
-        );
-        $click = function () use ($node): void {
+        $attempt = function () use ($xpath, $message): void {
+            $node = $this->getSession()->getPage()->find('xpath', $xpath);
+            if ($node === null) {
+                throw new ExpectationException($message, $this->getSession());
+            }
             $this->execute('behat_general::i_click_on', [$node, 'NodeElement']);
         };
         if ($loadspage) {
-            $this->wait_for_new_page($click);
+            $this->click_and_wait_for_new_page($attempt);
         } else {
-            $click();
+            $this->spin(function () use ($attempt): bool {
+                $attempt();
+                return true;
+            }, false, self::get_extended_timeout());
         }
     }
 
     /**
-     * Runs an action that loads a new page, and returns when the new page has replaced the old one.
+     * Runs a click that loads a new page, again and again until it could be done, and returns when the new page has
+     * replaced the old one.
      *
-     * A marker is put on the old page; the new page does not have it.
+     * A marker is put on the old page before each attempt; the new page does not have it.
      *
-     * @param callable $action The action.
+     * @param callable $click The click; it throws when it cannot be done (yet).
      */
-    private function wait_for_new_page(callable $action): void {
-        $this->getSession()->executeScript('window.tool_secbackup_old_page = true;');
-        $action();
+    private function click_and_wait_for_new_page(callable $click): void {
+        $this->spin(function () use ($click): bool {
+            $this->getSession()->executeScript('window.tool_secbackup_old_page = true;');
+            $click();
+            return true;
+        }, false, self::get_extended_timeout());
         $this->getSession()->wait(
             self::get_extended_timeout() * 1000,
             '(typeof window.tool_secbackup_old_page === "undefined" && document.readyState === "complete")'
