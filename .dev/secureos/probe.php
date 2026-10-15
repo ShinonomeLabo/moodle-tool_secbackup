@@ -23,10 +23,6 @@ require($dir . '/config.php');
 
 use tool_secbackup\local\diagnostics\runner;
 use tool_secbackup\local\endpoint\endpoint;
-use tool_secbackup\local\net\aws_ranges;
-use tool_secbackup\local\net\dns_guard;
-use tool_secbackup\local\net\proxy_settings;
-use tool_secbackup\local\net\transport;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
 
@@ -48,17 +44,13 @@ foreach (runner::create()->run($endpoint) as $result) {
     if ($result->advice !== '') {
         echo "    {$result->advice}\n";
     }
-}
-
-// The error codes behind the two network checks, which the check results do not show.
-$guard = dns_guard::create();
-$report = $guard->inspect($endpoint->host(), proxy_settings::resolves_names($endpoint->join('status')));
-echo '[dev] dnsproblem: ' . ($guard->problem($report, aws_ranges::SERVICE_CLOUDFRONT) ?? 'none') . "\n";
-try {
-    $response = transport::create()->send('GET', $endpoint, 'status', ['Accept' => 'application/json'], '');
-    echo "[dev] connectionerror: none (HTTP {$response->status})\n";
-} catch (plugin_exception $e) {
-    echo "[dev] connectionerror: {$e->errorcode}\n";
+    // The codes behind the two network checks, which the texts of the results do not show.
+    if ($result->check === 'dns') {
+        echo '[dev] dnsproblem: ' . ($result->code === '' ? 'none' : $result->code) . "\n";
+    }
+    if ($result->check === 'connection') {
+        echo '[dev] connectionerror: ' . ($result->code === '' ? 'none' : $result->code) . "\n";
+    }
 }
 
 // What this process can read of the access control of the OS.

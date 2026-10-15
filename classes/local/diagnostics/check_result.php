@@ -51,6 +51,9 @@ final class check_result {
     /** @var string What to do, or empty. */
     public readonly string $advice;
 
+    /** @var string Code of the outcome of a network check: a problem of the name check, an error, or http_<status>; or empty. */
+    public readonly string $code;
+
     /**
      * Constructor.
      *
@@ -58,11 +61,13 @@ final class check_result {
      * @param string $result One of the constants.
      * @param string $detail What was found.
      * @param string $advice What to do.
+     * @param string $code The code of the outcome of a network check.
      */
-    public function __construct(string $check, string $result, string $detail, string $advice = '') {
+    public function __construct(string $check, string $result, string $detail, string $advice = '', string $code = '') {
         $this->check = $check;
         $this->result = $result;
         $this->detail = $detail;
         $this->advice = $advice;
+        $this->code = $code;
     }
 }

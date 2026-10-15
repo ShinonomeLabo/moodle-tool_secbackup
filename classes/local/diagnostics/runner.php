@@ -209,7 +209,8 @@ final class runner {
                 get_string($problem, 'tool_secbackup'),
                 $enforcing && $problem === 'dns_doh_unavailable',
                 $confining && in_array($problem, self::APPARMOR_PROBLEMS, true)
-            )
+            ),
+            $problem
         );
     }
 
@@ -265,7 +266,8 @@ final class runner {
                 'connection',
                 check_result::FAIL,
                 $e->message(),
-                self::with_access_control_advice('', $selinux, $apparmor)
+                self::with_access_control_advice('', $selinux, $apparmor),
+                $e->errorcode
             );
         }
         $data = json_decode($response->body, true);
@@ -274,13 +276,17 @@ final class runner {
             return new check_result(
                 'connection',
                 check_result::PASS,
-                get_string('diag_connection_ok', 'tool_secbackup', $response->status)
+                get_string('diag_connection_ok', 'tool_secbackup', $response->status),
+                '',
+                'http_' . $response->status
             );
         }
         return new check_result(
             'connection',
             check_result::WARN,
-            get_string('diag_connection_other', 'tool_secbackup', $response->status)
+            get_string('diag_connection_other', 'tool_secbackup', $response->status),
+            '',
+            'http_' . $response->status
         );
     }
 

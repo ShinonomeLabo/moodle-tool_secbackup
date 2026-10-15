@@ -144,6 +144,29 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(check_result::UNKNOWN, $named['moodledata']->result);
     }
 
+    public function test_the_network_checks_carry_the_code_of_their_outcome(): void {
+        $named = self::by_name(self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint()));
+        $this->assertSame('', $named['dns']->code);
+        $this->assertSame('http_401', $named['connection']->code);
+        $this->assertSame('', $named['proxy']->code);
+
+        $named = self::by_name(self::runner([new Response(404, [], '')], make_request_directory())->run(self::endpoint()));
+        $this->assertSame('http_404', $named['connection']->code);
+
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $named = self::by_name(self::runner([], make_request_directory(), [], $guard)->run(self::endpoint()));
+        $this->assertSame('dns_doh_unavailable', $named['dns']->code);
+        $this->assertSame('dns_doh_unavailable', $named['connection']->code);
+
+        $named = self::by_name(self::runner([self::failure(7)], make_request_directory())->run(self::endpoint()));
+        $this->assertSame('', $named['dns']->code);
+        $this->assertSame('transport_connect', $named['connection']->code);
+
+        $named = self::by_name(self::runner([], make_request_directory())->run(null));
+        $this->assertSame('', $named['dns']->code);
+        $this->assertSame('', $named['connection']->code);
+    }
+
     public function test_the_name_check_lists_every_source_with_its_label(): void {
         $named = self::by_name(self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint()));
         $this->assertSame(
