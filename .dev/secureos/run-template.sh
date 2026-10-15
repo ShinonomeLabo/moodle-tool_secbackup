@@ -67,13 +67,19 @@ fi
 
 started="$(date +%s)"
 step_started="$started"
+current=
 created=no
 status=failed
+# Ends the step that was running (printing how long it took) and starts the next one; without a name it only ends.
 step() {
     local now
     now="$(date +%s)"
-    echo "== $1 (the step before took $((now - step_started)) s, $((now - started)) s in all)"
+    if [ -n "$current" ]; then
+        echo "-- $current: $((now - step_started)) s ($((now - started)) s in all)"
+    fi
+    current="${1:-}"
     step_started="$now"
+    if [ -n "$current" ]; then echo "== $current"; fi
 }
 cleanup() {
     trap - EXIT INT TERM
@@ -81,7 +87,7 @@ cleanup() {
         step "delete the machine"
         limactl delete -f "$SECBK_VM" > /dev/null 2>&1 || true
     fi
-    step "end"
+    step
     echo "result: $template $status"
     [ "$status" = ok ] || exit 1
 }
