@@ -7,3 +7,4 @@
 /tests/**/phpunit.xml
 /.phpunit.cache/
 /.dev/secureos/out/
+/.dev/infection/out/

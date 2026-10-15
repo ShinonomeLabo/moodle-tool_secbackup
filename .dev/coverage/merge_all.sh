@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Merges the coverage of every combination of the `test` job of ci.yml (the ones .dev/coverage/run.sh left in
 # .dev/coverage/out/<ver>-<db>[-php<version>]/) and requires every statement of every shipped file to have run.
-# Fails when a combination is missing, or when a run was made on a commit whose release files differ from HEAD's.
+# Fails when a combination is missing, or when a run was made on a commit in which a shipped PHP file differs from HEAD's.
 # Usage: .dev/coverage/merge_all.sh        Report: .dev/coverage/out/merge-all.txt, summary: .dev/coverage/out/summary-all.json
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 out="$repo/.dev/coverage/out"
+"$repo/.dev/coverage/shipped_files.sh" > "$out/shipped-all.txt"
+shipped=()
+while IFS= read -r file; do shipped+=("$file"); done < "$out/shipped-all.txt"
 combos="$("$repo/.dev/ci/matrix.sh" --list)"
 reports=()
 count=0
@@ -21,8 +24,8 @@ while read -r ver db php; do
         continue
     fi
     commit="$(cat "$dir/commit")"
-    if ! git -C "$repo" diff --quiet "$commit" HEAD -- . ':!.dev' ':!tests'; then
-        echo "stale: $name ran on $commit, and the release files of HEAD differ from that commit" >&2
+    if ! git -C "$repo" diff --quiet "$commit" HEAD -- "${shipped[@]}"; then
+        echo "stale: $name ran on $commit, and a shipped PHP file of HEAD differs from that commit" >&2
         problems=1
         continue
     fi
@@ -34,6 +37,5 @@ while read -r ver db php; do
 done <<< "$combos"
 echo "combinations: $count of $(printf '%s\n' "$combos" | wc -l | tr -d ' ')"
 [ "$problems" -eq 0 ] || exit 1
-"$repo/.dev/coverage/shipped_files.sh" > "$out/shipped-all.txt"
 php "$repo/.dev/coverage/merge.php" --shipped="$out/shipped-all.txt" --report="$out/merge-all.txt" \
     --summary="$out/summary-all.json" "${reports[@]}"
