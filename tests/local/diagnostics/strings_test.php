@@ -61,7 +61,8 @@ final class strings_test extends \advanced_testcase {
 
     public function test_every_string_the_diagnostics_build_exists(): void {
         $ids = [];
-        foreach (['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'] as $check) {
+        $checks = ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'];
+        foreach ($checks as $check) {
             $ids[] = 'check_' . $check;
         }
         foreach (['pass', 'warn', 'fail', 'info', 'unknown'] as $result) {

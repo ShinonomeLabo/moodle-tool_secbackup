@@ -128,7 +128,8 @@ final class diagnostics_page_test extends \advanced_testcase {
         $page = new diagnostics_page(self::runner(new MockHandler([])));
         $page->handle();
         $html = $page->render();
-        foreach (['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'] as $check) {
+        $checks = ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'];
+        foreach ($checks as $check) {
             $this->assertStringContainsString(get_string('check_' . $check, 'tool_secbackup'), $html, $check);
         }
         foreach (['check', 'result', 'detail', 'advice'] as $heading) {
