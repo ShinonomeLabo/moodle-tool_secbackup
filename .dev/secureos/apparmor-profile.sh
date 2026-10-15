@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Runs in a Debian or Ubuntu VM as root: manages the php-fpm AppArmor profile of the distribution (package
 # apparmor-profiles) for check.sh. Development only. Usage: sudo bash -s -- <command> [lines...] < apparmor-profile.sh
+#   snapshot       keep whether apparmor-profiles is installed, and the profile and its local rules (once; an older
+#                  snapshot of an interrupted run is the one that counts)
+#   restore        put back what snapshot kept (when the package was not installed: remove it), and delete the snapshot
 #   reset          remove the package and everything this script made, so that AppArmor is as shipped
 #   install        install the package, print the profile's first line as shipped, put the profile in enforce mode
 #   local <lines>  write the lines as /etc/apparmor.d/local/php-fpm, load the profile again and restart php-fpm
@@ -11,19 +14,52 @@ set -euo pipefail
 profile=/etc/apparmor.d/php-fpm
 localfile=/etc/apparmor.d/local/php-fpm
 nonet=/etc/apparmor.d/abstractions/secbk-nameservice-nonet
+snapshot=/var/lib/secbk-secureos-snapshot
 
 restart_fpm() {
     systemctl restart $(systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1}')
 }
 
+do_reset() {
+    if dpkg -s apparmor-profiles > /dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get -y purge apparmor-profiles > /dev/null
+    fi
+    rm -f "$nonet" "$localfile" "$profile"
+    aa-remove-unknown > /dev/null 2>&1 || true
+    restart_fpm
+}
+
 case "${1:?command}" in
-    reset)
-        if dpkg -s apparmor-profiles > /dev/null 2>&1; then
-            DEBIAN_FRONTEND=noninteractive apt-get -y purge apparmor-profiles > /dev/null
+    snapshot)
+        if [ ! -d "$snapshot" ]; then
+            mkdir -p "$snapshot"
+            if dpkg -s apparmor-profiles > /dev/null 2>&1; then
+                echo yes > "$snapshot/installed"
+                [ ! -f "$profile" ] || cp -p "$profile" "$snapshot/profile"
+                [ ! -f "$localfile" ] || cp -p "$localfile" "$snapshot/local"
+            else
+                echo no > "$snapshot/installed"
+            fi
         fi
-        rm -f "$nonet" "$localfile" "$profile"
-        aa-remove-unknown > /dev/null 2>&1 || true
-        restart_fpm
+        ;;
+    restore)
+        [ -d "$snapshot" ] || exit 0
+        if [ "$(cat "$snapshot/installed")" = yes ]; then
+            if ! dpkg -s apparmor-profiles > /dev/null 2>&1; then
+                DEBIAN_FRONTEND=noninteractive apt-get -y install apparmor-profiles > /dev/null
+            fi
+            [ ! -f "$snapshot/profile" ] || cp -p "$snapshot/profile" "$profile"
+            if [ -f "$snapshot/local" ]; then cp -p "$snapshot/local" "$localfile"; else rm -f "$localfile"; fi
+            rm -f "$nonet"
+            apparmor_parser -r "$profile"
+            restart_fpm
+        else
+            do_reset
+        fi
+        rm -rf "$snapshot"
+        ;;
+    reset)
+        do_reset
         ;;
     install)
         DEBIAN_FRONTEND=noninteractive apt-get -y install apparmor-profiles > /dev/null

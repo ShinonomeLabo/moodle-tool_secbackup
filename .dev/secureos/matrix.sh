@@ -2,22 +2,26 @@
 # The matrix: for each Lima template, creates a VM, provisions it, copies the plugin in, runs check.sh with the stand-in URL
 # (and with a real URL when one is given), compares the summaries with expect.txt, and deletes the VM.
 # Development only. Usage (on the Mac):
-#   .dev/secureos/matrix.sh [-j <machines at once, 1 or 2>] [-u <connection URL of a real service>] [-k] [template...]
-# -k keeps the VMs. Without templates, all eight run. More than two VMs would fill the disk, so -j is limited to 2.
+#   .dev/secureos/matrix.sh [-j <machines at once, 1 or 2>] [-u <connection URL of a real service>] [-k] [-r] [template...]
+# -k keeps the VMs (at most two templates, because more than two VMs would fill the disk). -r replaces a VM that already
+# has the name of a template's machine; without it the script stops, so it never deletes a VM that someone else made.
+# Without templates, all eight run. -j is limited to 2, for the same reason. The exit status is 0 only when every template
+# is ok.
 # Results: .dev/secureos/out/matrix/<template>.log and .status, and out/secbk-<template>/{standin,real}/summary.txt.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-repo="$(cd "$here/../.." && pwd)"
 out="$here/out/matrix"
 
 jobs_at_once=1
 realurl=
 keep=no
-while getopts "j:u:k" opt; do
+replace=no
+while getopts "j:u:kr" opt; do
     case "$opt" in
         j) jobs_at_once="$OPTARG" ;;
         u) realurl="$OPTARG" ;;
         k) keep=yes ;;
+        r) replace=yes ;;
         *) exit 2 ;;
     esac
 done
@@ -26,6 +30,18 @@ shift $((OPTIND - 1))
 templates=("$@")
 if [ "${#templates[@]}" -eq 0 ]; then
     templates=(rocky-9 rocky-10 almalinux-9 almalinux-10 debian-12 debian-13 ubuntu-22.04 ubuntu-24.04)
+fi
+if [ "$keep" = yes ] && [ "${#templates[@]}" -gt 2 ]; then
+    echo "matrix.sh: -k keeps the machines, and more than two would fill the disk" >&2
+    exit 2
+fi
+if [ "$replace" = no ]; then
+    for template in "${templates[@]}"; do
+        if limactl list -q 2> /dev/null | grep -qx "secbk-$template"; then
+            echo "matrix.sh: the machine secbk-$template exists; delete it, or use -r to replace it" >&2
+            exit 2
+        fi
+    done
 fi
 mkdir -p "$out"
 
@@ -60,15 +76,19 @@ run_one() {
     export SECBK_VM="$name"
     echo "== $template on port $port"
     status=failed
+    case "$template" in
+        rocky* | almalinux*) states=selinux ;;
+        *) states="standard confined" ;;
+    esac
     if start_vm "$name" "$port" "$template" \
         && limactl shell "$name" sudo bash -s -- "$port" < "$here/provision.sh" \
         && "$here/sync-plugin.sh" \
         && "$here/check.sh" all > /dev/null; then
         status=ok
-        "$here/assert.sh" standin "$here/out/$name/standin/summary.txt" || status=mismatch
+        "$here/assert.sh" standin "$here/out/$name/standin/summary.txt" $states || status=mismatch
         if [ -n "$realurl" ]; then
             "$here/check.sh" all "$realurl" > /dev/null || status=failed
-            "$here/assert.sh" real "$here/out/$name/real/summary.txt" || status=mismatch
+            "$here/assert.sh" real "$here/out/$name/real/summary.txt" $states || status=mismatch
         fi
     fi
     echo "$status" > "$out/$template.status"
@@ -99,6 +119,10 @@ done
 wait
 
 echo "matrix finished in $(( ($(date +%s) - start_time) / 60 )) minutes"
+failures=0
 for template in "${templates[@]}"; do
-    echo "$template $(cat "$out/$template.status" 2> /dev/null || echo unknown)"
+    result="$(cat "$out/$template.status" 2> /dev/null || echo unknown)"
+    echo "$template $result"
+    [ "$result" = ok ] || failures=$((failures + 1))
 done
+[ "$failures" -eq 0 ]

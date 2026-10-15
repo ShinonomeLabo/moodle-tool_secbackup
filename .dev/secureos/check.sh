@@ -30,78 +30,93 @@ case "$state:$mac" in
     selinux:selinux | standard:apparmor | confined:apparmor) states="$state" ;;
     *) echo "check.sh: the state $state does not fit a machine with $mac" >&2; exit 1 ;;
 esac
+
+# --- the access control of the OS: what is found is put back -----------------------------------------------------------
+# The trap is set before the first change, and it runs on an interrupt as well as on the end of the script.
+
+apparmor() { vm_stdin sudo bash -s -- "$@" < "$(dirname "$0")/apparmor-profile.sh"; }
+
+orig_connect=off
+orig_relay=off
+orig_ratelimit=
+snapshot_taken=no
+
+restore() {
+    trap - EXIT INT TERM
+    if [ -n "$orig_ratelimit" ]; then
+        vm sudo sysctl -w "kernel.printk_ratelimit=$orig_ratelimit" > /dev/null
+    fi
+    if [ "$mac" = selinux ]; then
+        vm sudo setsebool httpd_can_network_connect "$orig_connect"
+        vm sudo setsebool httpd_can_network_relay "$orig_relay"
+    elif [ "$snapshot_taken" = yes ]; then
+        apparmor restore
+    fi
+}
+trap restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 if [ "$mac" = selinux ]; then
+    orig_connect="$(vm getsebool httpd_can_network_connect | awk '{ print $3 }')"
+    orig_relay="$(vm getsebool httpd_can_network_relay | awk '{ print $3 }')"
     vm sudo setenforce 1
     [ "$(vm getenforce)" = Enforcing ] || { echo "check.sh: SELinux is not enforcing on $SECBK_VM" >&2; exit 1; }
+else
+    # Whether apparmor-profiles was installed, and the profile and its local rules, are kept to put back.
+    apparmor snapshot
+    snapshot_taken=yes
+    # The kernel drops denial messages when many come in a few seconds; the case after a busy one would miss its own.
+    orig_ratelimit="$(vm sysctl -n kernel.printk_ratelimit)"
+    vm sudo sysctl -w kernel.printk_ratelimit=0 > /dev/null
 fi
 webuser="$(guest_info web_user)"
 port="$(guest_info port)"
 root="$(guest_info root)"
 template="$(guest_info template_id)"
-plugin="$root/admin/tool/secbackup"
-vm test -d "$root/public" && plugin="$root/public/admin/tool/secbackup"
+plugin="$(guest_info plugin_dir)"
+errorlog="$(guest_info php_error_log)"
 vm sudo cat /etc/secbk-secureos-info > "$out/machine.txt"
 
 n=0
-touched=no
 summary="$out/summary.txt"
 : > "$summary"
 
-# --- the access control of the OS -------------------------------------------------------------------------------------
-
-orig_connect=off
-orig_relay=off
-if [ "$mac" = selinux ]; then
-    orig_connect="$(vm getsebool httpd_can_network_connect | awk '{ print $3 }')"
-    orig_relay="$(vm getsebool httpd_can_network_relay | awk '{ print $3 }')"
-fi
-
-# The kernel drops denial messages when many come in a few seconds; the case after a busy one would miss its own.
-orig_ratelimit=
-if [ "$mac" = apparmor ]; then
-    orig_ratelimit="$(vm sysctl -n kernel.printk_ratelimit)"
-    vm sudo sysctl -w kernel.printk_ratelimit=0 > /dev/null
-fi
-
-restore() {
-    if [ -n "$orig_ratelimit" ]; then
-        vm sudo sysctl -w "kernel.printk_ratelimit=$orig_ratelimit" > /dev/null
-    fi
-    [ "$touched" = yes ] || return 0
-    if [ "$mac" = selinux ]; then
-        vm sudo setsebool httpd_can_network_connect "$orig_connect"
-        vm sudo setsebool httpd_can_network_relay "$orig_relay"
-    else
-        apparmor reset
-    fi
-}
-trap restore EXIT
-
-apparmor() { vm_stdin sudo bash -s -- "$@" < "$(dirname "$0")/apparmor-profile.sh"; }
+# The connection URL is not written to the case files (they may be kept as an artifact; GitHub masks the exact secret only).
+encoded="$(python3 -I -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url")"
+redact() { python3 -I -c 'import sys; t = sys.stdin.read(); [t := t.replace(a, "<endpoint>") for a in sys.argv[1:]]; sys.stdout.write(t)' "$url" "$encoded"; }
 
 # --- measuring ---------------------------------------------------------------------------------------------------------
 
-# The error logs of the web server and of php-fpm; the sizes mark where a case starts.
+# The error logs of the web server, of php-fpm and of PHP itself (provision.sh sends PHP's errors to a file of the data
+# directory); the sizes mark where a case starts.
 marks() {
-    vm_stdin sudo sh -s << 'EOS'
-for f in /var/log/httpd/error_log /var/log/php-fpm/*.log /var/log/apache2/error.log /var/log/php*-fpm.log; do
+    vm_stdin sudo sh -s -- "$errorlog" << 'EOS'
+for f in "$1" /var/log/httpd/error_log /var/log/php-fpm/*.log /var/log/apache2/error.log /var/log/php*-fpm.log; do
     if [ -f "$f" ]; then echo "$f $(wc -c < "$f")"; fi
 done
 EOS
 }
 
-new_warnings() {
+# The PHP warnings, notices, deprecations and Moodle debugging messages that were logged since the marks.
+new_log_lines() {
     printf '%s\n' "$1" | vm_stdin sudo sh -c 'while read -r f n; do tail -c +$((n + 1)) "$f"; done' \
-        | grep -E 'PHP (Warning|Notice|Deprecated|Fatal error|Parse error)'
+        | grep -E 'PHP (Warning|Notice|Deprecated|Fatal error|Parse error)|Debugging:'
 }
 
-# Denied network connections since the start of the case (SELinux: name_connect on a TCP socket; AppArmor: a socket
-# creation, which newer kernels log with class net and older ones with the address family).
+# Denied network connections since the start of the case, of the process that is tested: "web" is php-fpm, "cli" is php.
+# SELinux: an AVC of that command on a TCP or UDP socket. AppArmor: a socket creation of an inet family by the php-fpm
+# profile (the command line is not confined, so there the command name is used). Newer kernels log class="net", older ones
+# only the address family.
 network_denials() {
     if [ "$mac" = selinux ]; then
-        vm sudo ausearch --input-logs -m avc -ts $audit_since 2> /dev/null | grep 'tclass=tcp_socket'
+        vm sudo ausearch --input-logs -m avc -ts $audit_since 2> /dev/null | grep "comm=\"$1\"" | grep -E 'tclass=(tcp|udp)_socket'
+    elif [ "$1" = php-fpm ]; then
+        vm sudo journalctl --no-pager --since "$journal_since" -o cat | grep 'apparmor="DENIED"' | grep 'profile="php-fpm"' \
+            | grep -E 'family="inet6?"'
     else
-        vm sudo journalctl --no-pager --since "$journal_since" -o cat | grep 'apparmor="DENIED"' | grep -E 'class="net"|family="'
+        vm sudo journalctl --no-pager --since "$journal_since" -o cat | grep 'apparmor="DENIED"' | grep "comm=\"$1\"" \
+            | grep -E 'family="inet6?"'
     fi
 }
 
@@ -132,22 +147,27 @@ start_case() {
     marks_before="$(marks)"
 }
 
-# The page of probe.php, which runs the diagnostics inside the web server.
+# The page of probe.php, which runs the diagnostics inside the web server. The second argument "control" asks the probe to
+# raise one warning in the plugin's directory (the positive control of the warning count).
 case_web() {
-    local name="$1" body file="$out/$((++n))-$1.txt" denials warnings
+    local name="$1" extra="${2:-}" body file="$out/$((++n))-$1.txt" denials lines ours others
     start_case
     body="$(vm curl -s -m 180 -G -H "Host: localhost:$port" --data-urlencode "endpoint=$url" \
-        http://127.0.0.1/admin/tool/secbackup/.dev/secureos/probe.php)"
+        ${extra:+--data-urlencode "control=1"} http://127.0.0.1/admin/tool/secbackup/.dev/secureos/probe.php)"
     sleep 1
-    denials="$(network_denials)"
-    warnings="$(new_warnings "$marks_before")"
+    denials="$(network_denials php-fpm)"
+    lines="$(new_log_lines "$marks_before")"
+    # Only what names the plugin's directory counts; the rest (Moodle's own messages on a new PHP) is written down.
+    ours="$(printf '%s\n' "$lines" | grep '/admin/tool/secbackup/')"
+    others="$(printf '%s\n' "$lines" | grep -v '/admin/tool/secbackup/' | grep -c .)"
     {
         printf '%s\n' "$body"
         echo '--- all denials'
         all_denials
-        echo '--- new PHP warnings'
-        printf '%s\n' "$warnings"
-    } > "$file"
+        echo '--- new PHP log lines naming the plugin'
+        printf '%s\n' "$ours"
+        echo "--- new PHP log lines of other code (not counted): $others"
+    } | redact > "$file"
     field() { printf '%s\n' "$body" | sed -n "s/^\[\([a-z]*\)\] $1: .*/\1/p" | head -n 1; }
     dev() { printf '%s\n' "$body" | sed -n "s/^\[dev\] $1: //p" | head -n 1; }
     emit "$name" dns "$(field dns)"
@@ -157,23 +177,23 @@ case_web() {
     emit "$name" plugin-mac "$(field selinux)"
     emit "$name" mac "$(mac_token "$(dev attr-current)")"
     emit "$name" netdenials "$(present "$denials")"
-    emit "$name" phpwarnings "$(present "$(printf '%s\n' "$body" | grep -E '^(Warning|Notice|Deprecated):')$warnings")"
+    emit "$name" phpwarnings "$(present "$(printf '%s\n' "$body" | grep -E '^(Warning|Notice|Deprecated):')$ours")"
 }
 
 # The command line, as the user of the web server (the user of cron on most sites).
 case_cli() {
-    local name="$1" body label file="$out/$((++n))-$1.txt" denials context
+    local name="$1" body file="$out/$((++n))-$1.txt" denials context
     start_case
     body="$(vm sudo -u "$webuser" php "$plugin/cli/diagnose.php" "--endpoint=$url" 2>&1)"
     context="$(vm sudo -u "$webuser" php -r 'echo trim(@file_get_contents("/proc/self/attr/current"));')"
     sleep 1
-    denials="$(network_denials)"
+    denials="$(network_denials php)"
     {
         printf '%s\n' "$body"
         echo "--- process label: $context"
         echo '--- all denials'
         all_denials
-    } > "$file"
+    } | redact > "$file"
     cli_field() {
         printf '%s\n' "$body" | sed -n "s/^\[\([A-Za-z]*\)\] $1: .*/\1/p" | head -n 1 | tr 'A-Z' 'a-z' \
             | sed 's/^ok$/pass/; s/^problem$/fail/; s/^warning$/warn/; s/^information$/info/'
@@ -186,7 +206,7 @@ case_cli() {
 
 # --- the states --------------------------------------------------------------------------------------------------------
 
-# The smallest local rules that Moodle itself needs under the php-fpm profile: read the code, write the data directory.
+# A sufficient set of local rules, found from the DENIED lines, for Moodle under the php-fpm profile: read the code, write the data directory.
 # Ubuntu also needs to tell systemd that php-fpm has started, and to reach the PostgreSQL socket.
 override() {
     printf '%s\n' "$root/** r," '/var/moodledata/** rwk,'
@@ -196,7 +216,6 @@ override() {
 }
 
 state_selinux() {
-    touched=yes
     local combos=("off:off:off" "relay:off:on" "connect:on:off") combo name connect relay
     for combo in "${combos[@]}"; do
         IFS=: read -r name connect relay <<< "$combo"
@@ -205,17 +224,18 @@ state_selinux() {
         case_web "selinux-web-$name"
         case_cli "selinux-cli-$name"
     done
+    # The last combination leaves the network open; the control shows that a warning of the plugin's directory is counted.
+    case_web selinux-web-control control
 }
 
 state_standard() {
-    touched=yes
     apparmor reset
     case_web standard-web
     case_cli standard-cli
+    case_web standard-web-control control
 }
 
 state_confined() {
-    touched=yes
     apparmor reset
     # Prints the first line of the profile as shipped, which says whether it comes in complain mode (flags).
     apparmor install > "$out/profile-header.txt"
@@ -224,6 +244,7 @@ state_confined() {
     apparmor local "${base[@]}"
     case_web confined-web-allow
     case_cli confined-cli
+    case_web confined-web-control control
     apparmor local "${base[@]}" 'deny network inet stream,' 'deny network inet6 stream,'
     case_web confined-web-deny
     apparmor local "${base[@]}"

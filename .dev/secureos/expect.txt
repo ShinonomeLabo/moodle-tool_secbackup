@@ -12,10 +12,12 @@ selinux-web-off plugin-mac info info
 selinux-web-off mac httpd_t httpd_t
 selinux-web-off netdenials present present
 selinux-web-off phpwarnings none none
+# selinux-cli-off: real column: needs the live service to answer HTTP 401 and to be reachable.
 selinux-cli-off dns pass fail
 selinux-cli-off connection pass fail
 selinux-cli-off mac unconfined_t unconfined_t
 selinux-cli-off netdenials none none
+# selinux-web-relay: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 selinux-web-relay dns pass fail
 selinux-web-relay dnsproblem none dns_outside_aws
 selinux-web-relay connection pass fail
@@ -24,10 +26,12 @@ selinux-web-relay plugin-mac info info
 selinux-web-relay mac httpd_t httpd_t
 selinux-web-relay netdenials none none
 selinux-web-relay phpwarnings none none
+# selinux-cli-relay: real column: needs the live service to answer HTTP 401 and to be reachable.
 selinux-cli-relay dns pass fail
 selinux-cli-relay connection pass fail
 selinux-cli-relay mac unconfined_t unconfined_t
 selinux-cli-relay netdenials none none
+# selinux-web-connect: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 selinux-web-connect dns pass fail
 selinux-web-connect dnsproblem none dns_outside_aws
 selinux-web-connect connection pass fail
@@ -36,12 +40,14 @@ selinux-web-connect plugin-mac info info
 selinux-web-connect mac httpd_t httpd_t
 selinux-web-connect netdenials none none
 selinux-web-connect phpwarnings none none
+# selinux-cli-connect: real column: needs the live service to answer HTTP 401 and to be reachable.
 selinux-cli-connect dns pass fail
 selinux-cli-connect connection pass fail
 selinux-cli-connect mac unconfined_t unconfined_t
 selinux-cli-connect netdenials none none
 
 # Debian and Ubuntu: AppArmor as shipped, php-fpm has no profile
+# standard-web: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 standard-web dns pass fail
 standard-web dnsproblem none dns_outside_aws
 standard-web connection pass fail
@@ -50,12 +56,14 @@ standard-web plugin-mac unknown unknown
 standard-web mac unconfined unconfined
 standard-web netdenials none none
 standard-web phpwarnings none none
+# standard-cli: real column: needs the live service to answer HTTP 401 and to be reachable.
 standard-cli dns pass fail
 standard-cli connection pass fail
 standard-cli mac unconfined unconfined
 standard-cli netdenials none none
 
 # Debian and Ubuntu: the php-fpm profile of the distribution (apparmor-profiles) in enforce mode
+# confined-web-allow: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 confined-web-allow dns pass fail
 confined-web-allow dnsproblem none dns_outside_aws
 confined-web-allow connection pass fail
@@ -64,6 +72,7 @@ confined-web-allow plugin-mac unknown unknown
 confined-web-allow mac php-fpm_(enforce) php-fpm_(enforce)
 confined-web-allow netdenials none none
 confined-web-allow phpwarnings none none
+# confined-cli: real column: needs the live service to answer HTTP 401 and to be reachable.
 confined-cli dns pass fail
 confined-cli connection pass fail
 confined-cli mac unconfined unconfined
@@ -76,6 +85,7 @@ confined-web-deny plugin-mac unknown unknown
 confined-web-deny mac php-fpm_(enforce) php-fpm_(enforce)
 confined-web-deny netdenials none none
 confined-web-deny phpwarnings none none
+# confined-web-restored: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 confined-web-restored dns pass fail
 confined-web-restored dnsproblem none dns_outside_aws
 confined-web-restored connection pass fail
@@ -102,6 +112,7 @@ nonet-web-none plugin-mac unknown unknown
 nonet-web-none mac php-fpm_(enforce) php-fpm_(enforce)
 nonet-web-none netdenials present present
 nonet-web-none phpwarnings none none
+# nonet-web-stream: stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 nonet-web-stream dns fail fail
 nonet-web-stream dnsproblem dns_os_failed dns_outside_aws
 nonet-web-stream connection fail fail
@@ -110,6 +121,7 @@ nonet-web-stream plugin-mac unknown unknown
 nonet-web-stream mac php-fpm_(enforce) php-fpm_(enforce)
 nonet-web-stream netdenials present present
 nonet-web-stream phpwarnings none none
+# nonet-web-inet: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 nonet-web-inet dns pass fail
 nonet-web-inet dnsproblem none dns_outside_aws
 nonet-web-inet connection pass fail
@@ -120,10 +132,39 @@ nonet-web-inet netdenials none none
 nonet-web-inet phpwarnings none none
 
 # Debian 13 resolves names without a UDP socket of its own, so the stream rule alone is enough there.
+# nonet-web-stream@debian13: real column: needs the live service to answer HTTP 401 and to be reachable; stand-in column: needs the stand-in's address to stay outside the AWS ranges.
 nonet-web-stream@debian13 dns pass fail
 nonet-web-stream@debian13 dnsproblem none dns_outside_aws
 nonet-web-stream@debian13 connection pass fail
 nonet-web-stream@debian13 connectionerror http_401 dns_outside_aws
 nonet-web-stream@debian13 netdenials none none
+# External dependency (not the plugin): glibc and the kernel of Ubuntu 22.04 try
 # Ubuntu 22.04 also tries an IPv6 UDP socket for the name lookup; the lookup works, but the attempt is denied and logged.
 nonet-web-inet@ubuntu22 netdenials present present
+
+# The positive control of the PHP warning count: probe.php raises one warning from a file in the plugin's directory when it
+# is asked to. The count must see it; a count that always says none would pass the rows above without measuring anything.
+selinux-web-control dns pass fail
+selinux-web-control dnsproblem none dns_outside_aws
+selinux-web-control connection pass fail
+selinux-web-control connectionerror http_401 dns_outside_aws
+selinux-web-control plugin-mac info info
+selinux-web-control mac httpd_t httpd_t
+selinux-web-control netdenials none none
+selinux-web-control phpwarnings present present
+standard-web-control dns pass fail
+standard-web-control dnsproblem none dns_outside_aws
+standard-web-control connection pass fail
+standard-web-control connectionerror http_401 dns_outside_aws
+standard-web-control plugin-mac unknown unknown
+standard-web-control mac unconfined unconfined
+standard-web-control netdenials none none
+standard-web-control phpwarnings present present
+confined-web-control dns pass fail
+confined-web-control dnsproblem none dns_outside_aws
+confined-web-control connection pass fail
+confined-web-control connectionerror http_401 dns_outside_aws
+confined-web-control plugin-mac unknown unknown
+confined-web-control mac php-fpm_(enforce) php-fpm_(enforce)
+confined-web-control netdenials none none
+confined-web-control phpwarnings present present
