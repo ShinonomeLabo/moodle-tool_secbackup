@@ -38,7 +38,7 @@ newest_stream() {
 # The source repository is the one that belongs to the repository PHP comes from; the source package must be signed by the
 # distribution and must be the version that is installed; and the result must load in php-fpm and in the command line.
 build_sodium() {
-    local work repo installed
+    local work repo installed modules
     work="$(mktemp -d)"
     dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
     repo="$(dnf -q repoquery --qf '%{repoid}\n' php-common | head -n 1)"
@@ -50,7 +50,7 @@ build_sodium() {
         dnf -y --enablerepo="$repo-source" download --source php
         signature="$(rpm -K ./php-*.src.rpm)"
         echo "$signature" >&2
-        if ! echo "$signature" | grep -q 'signatures OK' || echo "$signature" | grep -q -E 'NOKEY|BAD|NOT OK'; then
+        if [[ "$signature" != *'signatures OK'* || "$signature" =~ NOKEY|BAD|'NOT OK' ]]; then
             echo "the source package is not signed by the distribution" >&2
             exit 1
         fi
@@ -65,8 +65,11 @@ build_sodium() {
     )
     echo 'extension=sodium' > /etc/php.d/20-sodium.ini
     restorecon -R /usr/lib64/php/modules /etc/php.d
-    php -m | grep -qx sodium || { echo "sodium does not load in the command line" >&2; exit 1; }
-    php-fpm -m | grep -qx sodium || { echo "sodium does not load in php-fpm" >&2; exit 1; }
+    # The modules are read into variables: a pipe into grep -q can fail when grep ends first (SIGPIPE under pipefail).
+    modules="$(php -m)"
+    [[ $'\n'"$modules"$'\n' == *$'\nsodium\n'* ]] || { echo "sodium does not load in the command line" >&2; exit 1; }
+    modules="$(php-fpm -m)"
+    [[ $'\n'"$modules"$'\n' == *$'\nsodium\n'* ]] || { echo "sodium does not load in php-fpm" >&2; exit 1; }
     extrarepos="$extrarepos; sodium built from the source package of the distribution's PHP (ext/sodium)"
     rm -rf "$work"
 }

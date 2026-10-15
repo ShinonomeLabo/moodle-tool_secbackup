@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The matrix: for each Lima template, creates a VM, provisions it, copies the plugin in, runs check.sh with the stand-in URL
-# (and with a real URL when one is given), compares the summaries with expect.txt, and deletes the VM.
-# Development only. Usage (on the Mac):
+# The matrix: runs run-template.sh (which creates a VM, provisions it, copies the plugin in, runs check.sh with the stand-in
+# URL, and with a real URL when one is given, compares the summaries with expect.txt and deletes the VM) for each Lima
+# template, one or two at a time. Development only. Usage (on the Mac):
 #   .dev/secureos/matrix.sh [-j <machines at once, 1 or 2>] [-u <connection URL of a real service>] [-k] [-r] [template...]
 # -k keeps the VMs (at most two templates, because more than two VMs would fill the disk). -r replaces a VM that already
 # has the name of a template's machine; without it the script stops, so it never deletes a VM that someone else made.
@@ -11,6 +11,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 out="$here/out/matrix"
+. "$here/lib.sh"
 
 jobs_at_once=1
 realurl=
@@ -37,7 +38,7 @@ if [ "$keep" = yes ] && [ "${#templates[@]}" -gt 2 ]; then
 fi
 if [ "$replace" = no ]; then
     for template in "${templates[@]}"; do
-        if limactl list -q 2> /dev/null | grep -qx "secbk-$template"; then
+        if vm_exists "secbk-$template"; then
             echo "matrix.sh: the machine secbk-$template exists; delete it, or use -r to replace it" >&2
             exit 2
         fi
@@ -45,56 +46,14 @@ if [ "$replace" = no ]; then
 fi
 mkdir -p "$out"
 
-# A host port of its own: from 18200 by the template's place in the list, and on past any port that is in use.
-free_port() {
-    local p=$((18200 + $1))
-    while [ -n "$(lsof -nP -iTCP:"$p" -sTCP:LISTEN -t 2> /dev/null)" ]; do
-        p=$((p + 20))
-    done
-    echo "$p"
-}
-
-# Creates and starts the VM. A machine sometimes does not come up in time (the image boots slowly while another VM starts),
-# so a failed start is tried once more with a new machine.
-start_vm() {
-    local name="$1" port="$2" template="$3" attempt
-    for attempt in 1 2; do
-        limactl delete -f "$name" > /dev/null 2>&1 || true
-        if limactl create --tty=false --name="$name" --cpus=2 --memory=4 --disk=20 --mount-none \
-            --set ".portForwards=[{\"guestPort\":80,\"hostPort\":$port,\"hostIP\":\"127.0.0.1\"}]" "template:$template" \
-            && limactl start --tty=false "$name"; then
-            return 0
-        fi
-        echo "start of $name failed (attempt $attempt)"
-    done
-    return 1
-}
-
 run_one() {
-    local template="$1" port="$2" name="secbk-$1" log="$out/$1.log"
-    exec > "$log" 2>&1
-    export SECBK_VM="$name"
-    echo "== $template on port $port"
-    status=failed
-    case "$template" in
-        rocky* | almalinux*) states=selinux ;;
-        *) states="standard confined" ;;
-    esac
-    if start_vm "$name" "$port" "$template" \
-        && limactl shell "$name" sudo bash -s -- "$port" < "$here/provision.sh" \
-        && "$here/sync-plugin.sh" \
-        && "$here/check.sh" all > /dev/null; then
-        status=ok
-        "$here/assert.sh" standin "$here/out/$name/standin/summary.txt" $states || status=mismatch
-        if [ -n "$realurl" ]; then
-            "$here/check.sh" all "$realurl" > /dev/null || status=failed
-            "$here/assert.sh" real "$here/out/$name/real/summary.txt" $states || status=mismatch
-        fi
-    fi
-    echo "$status" > "$out/$template.status"
-    if [ "$keep" = no ]; then
-        limactl delete -f "$name" > /dev/null 2>&1 || true
-    fi
+    local template="$1" port="$2" log="$out/$1.log" options=(-p "$port") status
+    [ -z "$realurl" ] || options+=(-u "$realurl" -m both)
+    [ "$keep" = no ] || options+=(-k)
+    [ "$replace" = no ] || options+=(-r)
+    "$here/run-template.sh" "${options[@]}" "$template" > "$log" 2>&1
+    status="$(sed -n 's/^result: [^ ]* //p' "$log" | tail -n 1)"
+    echo "${status:-failed}" > "$out/$template.status"
 }
 
 running=()

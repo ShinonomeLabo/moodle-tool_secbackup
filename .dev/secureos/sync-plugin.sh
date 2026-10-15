@@ -8,8 +8,15 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
+# The tar of macOS (bsdtar) stores extended attributes and resource forks unless it is told not to; GNU tar (a CI runner) has no
+# such option for the second and does not store them.
+tar_options=()
+case "$(tar --version 2>&1)" in
+    *bsdtar*) tar_options=(--no-xattrs --no-mac-metadata) ;;
+esac
+
 git -C "$repo" ls-files -z --cached --others --exclude-standard \
-    | tar -C "$repo" --no-xattrs --no-mac-metadata --null -T - -cf - \
+    | tar -C "$repo" ${tar_options[@]+"${tar_options[@]}"} --null -T - -cf - \
     | vm_stdin sudo sh -c '
         . /etc/secbk-secureos-info
         plugin="$plugin_dir"

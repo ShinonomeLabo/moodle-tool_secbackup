@@ -132,6 +132,22 @@ emit() { echo "$1 $2 ${3:-missing}" >> "$summary"; }
 
 present() { if [ -n "$1" ]; then echo present; else echo none; fi; }
 
+# Which advice the dns result and the connection result of a case carry: selinux (the text names setsebool), apparmor
+# (the text names apparmor_parser), both or none. The body is the output of probe.php or of the command line script; the
+# labels are the names of the two checks in that output. Printed as "<dns>:<connection>".
+advice_kinds() {
+    local body="$1" dns="$2" connection="$3" label
+    for label in "$dns" "$connection"; do
+        printf '%s\n' "$body" | awk -v want="$label" '
+            /^\[/ { inblock = ($0 ~ ("^\\[[A-Za-z]+\\] " want ": ")); next }
+            inblock && /^    / { text = text $0 }
+            END {
+                selinux = (text ~ /setsebool/); apparmor = (text ~ /apparmor_parser/)
+                print (selinux && apparmor) ? "both" : selinux ? "selinux" : apparmor ? "apparmor" : "none"
+            }'
+    done | paste -sd: -
+}
+
 mac_token() {
     case "$1" in
         '') echo missing ;;
@@ -173,26 +189,35 @@ case_web() {
     emit "$name" dns "$(field dns)"
     emit "$name" dnsproblem "$(dev dnsproblem)"
     emit "$name" connection "$(field connection)"
-    emit "$name" connectionerror "$(dev connectionerror | sed -E 's/^none \(HTTP ([0-9]+)\)$/http_\1/')"
+    emit "$name" connectionerror "$(dev connectionerror)"
     emit "$name" plugin-mac "$(field selinux)"
+    emit "$name" plugin-apparmor "$(field apparmor)"
+    emit "$name" advice "$(advice_kinds "$body" dns connection)"
     emit "$name" mac "$(mac_token "$(dev attr-current)")"
     emit "$name" netdenials "$(present "$denials")"
     emit "$name" phpwarnings "$(present "$(printf '%s\n' "$body" | grep -E '^(Warning|Notice|Deprecated):')$ours")"
 }
 
-# The command line, as the user of the web server (the user of cron on most sites).
+# The command line, as the user of the web server (the user of cron on most sites). The second argument "control" runs a file
+# that raises one warning from the plugin's directory before the script (the positive control of the warning count).
 case_cli() {
-    local name="$1" body file="$out/$((++n))-$1.txt" denials context
+    local name="$1" extra="${2:-}" body file="$out/$((++n))-$1.txt" denials context lines ours
+    local prepend=()
     start_case
-    body="$(vm sudo -u "$webuser" php "$plugin/cli/diagnose.php" "--endpoint=$url" 2>&1)"
+    if [ -n "$extra" ]; then prepend=(-d "auto_prepend_file=$plugin/.dev/secureos/control-warning.php"); fi
+    body="$(vm sudo -u "$webuser" php ${prepend[@]+"${prepend[@]}"} "$plugin/cli/diagnose.php" "--endpoint=$url" 2>&1)"
     context="$(vm sudo -u "$webuser" php -r 'echo trim(@file_get_contents("/proc/self/attr/current"));')"
     sleep 1
     denials="$(network_denials php)"
+    lines="$(new_log_lines "$marks_before")"
+    ours="$(printf '%s\n' "$lines" | grep '/admin/tool/secbackup/')"
     {
         printf '%s\n' "$body"
         echo "--- process label: $context"
         echo '--- all denials'
         all_denials
+        echo '--- new PHP log lines naming the plugin'
+        printf '%s\n' "$ours"
     } | redact > "$file"
     cli_field() {
         printf '%s\n' "$body" | sed -n "s/^\[\([A-Za-z]*\)\] $1: .*/\1/p" | head -n 1 | tr 'A-Z' 'a-z' \
@@ -200,8 +225,11 @@ case_cli() {
     }
     emit "$name" dns "$(cli_field 'Name resolution')"
     emit "$name" connection "$(cli_field 'Connection to the service')"
+    emit "$name" plugin-apparmor "$(cli_field 'AppArmor')"
+    emit "$name" advice "$(advice_kinds "$body" 'Name resolution' 'Connection to the service')"
     emit "$name" mac "$(mac_token "$context")"
     emit "$name" netdenials "$(present "$denials")"
+    emit "$name" phpwarnings "$(present "$(printf '%s\n' "$body" | grep -E '^(Warning|Notice|Deprecated):')$ours")"
 }
 
 # --- the states --------------------------------------------------------------------------------------------------------
@@ -226,6 +254,7 @@ state_selinux() {
     done
     # The last combination leaves the network open; the control shows that a warning of the plugin's directory is counted.
     case_web selinux-web-control control
+    case_cli selinux-cli-control control
 }
 
 state_standard() {
@@ -233,6 +262,7 @@ state_standard() {
     case_web standard-web
     case_cli standard-cli
     case_web standard-web-control control
+    case_cli standard-cli-control control
 }
 
 state_confined() {
@@ -245,6 +275,7 @@ state_confined() {
     case_web confined-web-allow
     case_cli confined-cli
     case_web confined-web-control control
+    case_cli confined-cli-control control
     apparmor local "${base[@]}" 'deny network inet stream,' 'deny network inet6 stream,'
     case_web confined-web-deny
     apparmor local "${base[@]}"
@@ -259,6 +290,18 @@ state_confined() {
     case_web nonet-web-stream
     apparmor local "${base[@]}" 'network inet stream,' 'network inet dgram,'
     case_web nonet-web-inet
+    # The rules that the advice of the plugin names, taken from its English text, so that the advice is what is tested.
+    advice_rules=()
+    while IFS= read -r line; do
+        advice_rules+=("$line")
+    done < <(grep -F "\$string['diag_apparmor_advice']" "$repo/lang/en/tool_secbackup.php" | grep -oE 'network inet6? (stream|dgram),')
+    if [ "${#advice_rules[@]}" -ne 4 ]; then
+        echo "check.sh: the advice of the plugin does not name four network rules" >&2
+        apparmor net
+        exit 1
+    fi
+    apparmor local "${base[@]}" "${advice_rules[@]}"
+    case_web nonet-web-advice
     apparmor net
 }
 
