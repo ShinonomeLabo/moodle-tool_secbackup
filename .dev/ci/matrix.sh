@@ -48,7 +48,8 @@ mkdir -p "$repo/.dev/ci/out"
 log="$repo/.dev/ci/out/matrix.log"
 : > "$log"
 status=0
-while read -r ver db php; do
+# The list comes on file descriptor 3: docker and Moodle scripts read standard input and would swallow the other rows.
+while read -r ver db php <&3; do
     if [ -n "${1:-}" ] && ! [[ "$ver $db $php" =~ $1 ]]; then
         continue
     fi
@@ -78,6 +79,6 @@ while read -r ver db php; do
     else
         "$repo/.dev/env/down.sh" "$ver" "$db"
     fi
-done <<< "$combos"
+done 3<<< "$combos"
 cat "$log"
 exit "$status"
