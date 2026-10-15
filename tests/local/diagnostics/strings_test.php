@@ -80,6 +80,28 @@ final class strings_test extends \advanced_testcase {
         }
     }
 
+    public function test_the_apparmor_advice_names_the_same_four_rules_in_both_languages(): void {
+        // check.sh of .dev/secureos takes the rules from the English text and loads them into a profile; it needs four.
+        $dir = \core_component::get_component_directory('tool_secbackup');
+        $rules = [];
+        foreach (['en', 'ja'] as $lang) {
+            $string = [];
+            include($dir . '/lang/' . $lang . '/tool_secbackup.php');
+            $advice = $string['diag_apparmor_advice'];
+            preg_match_all('/network inet6? (?:stream|dgram),/', $advice, $matches);
+            $rules[$lang] = $matches[0];
+            $this->assertStringContainsString('apparmor_parser -r /etc/apparmor.d/php-fpm', $advice, $lang);
+            $this->assertStringContainsString('/etc/apparmor.d/local/php-fpm', $advice, $lang);
+            $this->assertStringContainsString('root', $advice, $lang);
+            $this->assertStringContainsString('journalctl --no-pager | grep DENIED', $advice, $lang);
+        }
+        $this->assertSame(
+            ['network inet stream,', 'network inet dgram,', 'network inet6 stream,', 'network inet6 dgram,'],
+            $rules['en']
+        );
+        $this->assertSame($rules['en'], $rules['ja']);
+    }
+
     public function test_the_names_of_the_name_sources_are_the_ones_the_guard_has(): void {
         $this->assertSame(['cloudflare', 'google'], \tool_secbackup\local\net\dns_guard::create()->resolver_names());
     }
