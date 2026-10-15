@@ -38,6 +38,11 @@ try {
     exit;
 }
 
+// A positive control for the count of PHP warnings: one warning from a file in this directory.
+if (optional_param('control', 0, PARAM_INT) === 1) {
+    require(__DIR__ . '/control-warning.php');
+}
+
 foreach (runner::create()->run($endpoint) as $result) {
     echo "[{$result->result}] {$result->check}: {$result->detail}\n";
     if ($result->advice !== '') {

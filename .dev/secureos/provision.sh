@@ -23,6 +23,8 @@ case "$ID$major" in
 esac
 root=/var/www/html/moodle
 dataroot=/var/moodledata
+# PHP writes its errors here, in the one place the web server and the command line may write to under SELinux and AppArmor.
+errorlog="$dataroot/secbk-php-errors.log"
 extrarepos=none
 extensions="curl dom gd iconv intl json mbstring openssl pgsql simplexml soap sodium xml zip zlib ctype"
 
@@ -33,15 +35,28 @@ newest_stream() {
 
 # Rocky Linux 9 and AlmaLinux 9 have no php-sodium for PHP 8.1 and later: EPEL's package is for PHP 8.0. The extension is
 # part of PHP, so it is built from the source package of the distribution's own PHP, with libsodium-devel from EPEL.
+# The source repository is the one that belongs to the repository PHP comes from; the source package must be signed by the
+# distribution and must be the version that is installed; and the result must load in php-fpm and in the command line.
 build_sodium() {
-    local work
+    local work repo installed
     work="$(mktemp -d)"
     dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
+    repo="$(dnf -q repoquery --qf '%{repoid}\n' php-common | head -n 1)"
+    [ -n "$repo" ] || { echo "cannot tell which repository PHP comes from" >&2; exit 1; }
+    installed="$(php-config --version)"
     (
+        set -e
         cd "$work"
-        dnf -y --enablerepo='*-source' download --source php
+        dnf -y --enablerepo="$repo-source" download --source php
+        signature="$(rpm -K ./php-*.src.rpm)"
+        echo "$signature" >&2
+        if ! echo "$signature" | grep -q 'signatures OK' || echo "$signature" | grep -q -E 'NOKEY|BAD|NOT OK'; then
+            echo "the source package is not signed by the distribution" >&2
+            exit 1
+        fi
         rpm2cpio ./php-*.src.rpm | cpio -idm 'php-*.tar.xz'
-        tar -xf php-*.tar.xz --wildcards 'php-*/ext/sodium'
+        [ -f "php-$installed.tar.xz" ] || { echo "the source package is not PHP $installed" >&2; exit 1; }
+        tar -xf "php-$installed.tar.xz" --wildcards 'php-*/ext/sodium'
         cd php-*/ext/sodium
         phpize
         ./configure
@@ -50,6 +65,8 @@ build_sodium() {
     )
     echo 'extension=sodium' > /etc/php.d/20-sodium.ini
     restorecon -R /usr/lib64/php/modules /etc/php.d
+    php -m | grep -qx sodium || { echo "sodium does not load in the command line" >&2; exit 1; }
+    php-fpm -m | grep -qx sodium || { echo "sodium does not load in php-fpm" >&2; exit 1; }
     extrarepos="$extrarepos; sodium built from the source package of the distribution's PHP (ext/sodium)"
     rm -rf "$work"
 }
@@ -97,7 +114,8 @@ install_deb() {
         php -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$ext" || { echo "missing PHP extension: $ext" >&2; exit 1; }
     done
     for dir in fpm cli; do
-        echo 'max_input_vars = 5000' > "/etc/php/$phpver/$dir/conf.d/99-moodle.ini"
+        printf '%s\n' 'max_input_vars = 5000' 'log_errors = 1' "error_log = $errorlog" \
+            > "/etc/php/$phpver/$dir/conf.d/99-moodle.ini"
     done
     a2enmod proxy proxy_fcgi setenvif
     a2enconf "php$phpver-fpm"
@@ -152,9 +170,12 @@ if [ -d "$root/public" ]; then
     docroot="$root/public"
 fi
 mkdir -p "$dataroot"
+touch "$errorlog"
 chown -R "$webuser:$webuser" "$root" "$dataroot"
 if [ "$family" = el ]; then
-    echo 'max_input_vars = 5000' > /etc/php.d/99-moodle.ini
+    printf '%s\n' 'max_input_vars = 5000' 'log_errors = 1' "error_log = $errorlog" > /etc/php.d/99-moodle.ini
+    # The pool of the distribution sends the errors of the workers to a file of its own.
+    sed -i '/^php_admin_value\[error_log\]/d; /^php_admin_flag\[log_errors\]/d' /etc/php-fpm.d/www.conf
     sed -i "s|^DocumentRoot .*|DocumentRoot \"$docroot\"|" /etc/httpd/conf/httpd.conf
     echo 'AcceptPathInfo On' > /etc/httpd/conf.d/secbk-moodle.conf
     # Moodle's data directory is the only place the web server writes to.
@@ -176,6 +197,15 @@ sudo -u "$webuser" php "$installer" --non-interactive --agree-license \
     --dbuser="$webuser" --fullname="secbackup secure OS" --shortname=secureos --adminpass=test \
     --adminemail=admin@example.com
 
+# Report every PHP error and Moodle debugging message to the log, without showing it on a page (Moodle with debug 0 sets
+# error_reporting(0), so nothing would be logged at all).
+sed -i '/lib\/setup\.php/i $CFG->debug = (E_ALL | E_STRICT);\n$CFG->debugdisplay = 0;' "$root/config.php"
+chown "$webuser:$webuser" "$root/config.php"
+cli="$root/admin/cli"
+[ -d "$cli" ] || cli="$root/public/admin/cli"
+plugin="$root/admin/tool/secbackup"
+[ -d "$root/public" ] && plugin="$root/public/admin/tool/secbackup"
+
 versionfile="$root/version.php"
 [ -f "$versionfile" ] || versionfile="$root/public/version.php"
 {
@@ -188,6 +218,9 @@ versionfile="$root/version.php"
     echo "extra_repositories=\"$extrarepos\""
     echo "web_user=\"$webuser\""
     echo "root=\"$root\""
+    echo "admin_cli=\"$cli\""
+    echo "plugin_dir=\"$plugin\""
+    echo "php_error_log=\"$errorlog\""
     echo "port=\"$port\""
 } > /etc/secbk-secureos-info
 # Some images start with SELinux in permissive mode (a boot script of the VM manager turns it off for a while), and a test of
