@@ -28,7 +28,30 @@ extensions="curl dom gd iconv intl json mbstring openssl pgsql simplexml soap so
 
 # The newest stream of a dnf module, or nothing when the distribution has no such module.
 newest_stream() {
-    dnf -q module list "$1" 2> /dev/null | awk -v name="$1" '$1 == name { print $2 }' | sort -V | tail -n 1
+    { dnf -q module list "$1" 2> /dev/null || true; } | awk -v name="$1" '$1 == name { print $2 }' | sort -V | tail -n 1
+}
+
+# Rocky Linux 9 and AlmaLinux 9 have no php-sodium for PHP 8.1 and later: EPEL's package is for PHP 8.0. The extension is
+# part of PHP, so it is built from the source package of the distribution's own PHP, with libsodium-devel from EPEL.
+build_sodium() {
+    local work
+    work="$(mktemp -d)"
+    dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
+    (
+        cd "$work"
+        dnf -y --enablerepo='*-source' download --source php
+        rpm2cpio ./php-*.src.rpm | cpio -idm 'php-*.tar.xz'
+        tar -xf php-*.tar.xz --wildcards 'php-*/ext/sodium'
+        cd php-*/ext/sodium
+        phpize
+        ./configure
+        make -j2
+        make install
+    )
+    echo 'extension=sodium' > /etc/php.d/20-sodium.ini
+    restorecon -R /usr/lib64/php/modules /etc/php.d
+    extrarepos="$extrarepos; sodium built from the source package of the distribution's PHP (ext/sodium)"
+    rm -rf "$work"
 }
 
 install_el() {
@@ -42,16 +65,22 @@ install_el() {
     dnf -y install --setopt=strict=0 httpd git rsync curl php-cli php-fpm php-pgsql php-intl php-mbstring php-xml php-zip \
         php-gd php-soap php-opcache php-sodium postgresql-server policycoreutils-python-utils audit setroubleshoot-server
     # Whatever AppStream did not provide comes from EPEL and CRB, and only that.
-    local missing=()
+    local missing=() unbuilt=() ext
     for ext in $extensions; do
-        php -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$ext" || missing+=("php-$ext")
+        php -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$ext" || missing+=("$ext")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
         dnf -y install epel-release
         dnf config-manager --set-enabled crb epel
-        dnf -y install "${missing[@]}"
+        for ext in "${missing[@]}"; do
+            dnf -y install "php-$ext" || unbuilt+=("$ext")
+        done
         extrarepos="epel+crb for ${missing[*]}"
     fi
+    for ext in ${unbuilt[@]+"${unbuilt[@]}"}; do
+        [ "$ext" = sodium ] || { echo "no package for the PHP extension $ext" >&2; exit 1; }
+        build_sodium
+    done
     postgresql-setup --initdb
     systemctl enable --now postgresql
 }
@@ -161,6 +190,12 @@ versionfile="$root/version.php"
     echo "root=\"$root\""
     echo "port=\"$port\""
 } > /etc/secbk-secureos-info
+# Some images start with SELinux in permissive mode (a boot script of the VM manager turns it off for a while), and a test of
+# SELinux in permissive mode proves nothing.
+if [ "$family" = el ]; then
+    setenforce 1
+    [ "$(getenforce)" = Enforcing ] || { echo "SELinux is not enforcing" >&2; exit 1; }
+fi
 # Marks this machine as a test machine (probe.php refuses to run elsewhere).
 touch /etc/secbk-secureos-probe
 echo "provisioned"
