@@ -84,9 +84,10 @@ command line scripts (they do not depend on the browser).
 
 The Safari job (`behat-safari`) runs on `macos-26` (the newest macOS image of GitHub's runner list, Apple silicon, Safari 26).
 There is no Docker on macOS runners, so: PHP comes from setup-php; the databases come from Homebrew at the lowest version that
-Homebrew still has and the Moodle version supports (PostgreSQL 13 is no longer in Homebrew, so Moodle 4.5 uses 14 there, where
-`ci.yml`'s service uses 13; PostgreSQL 14, 15, 16 and 17 and MariaDB 10.11 and 11.4 are the same as in the other jobs, MariaDB 10.6
-for Moodle 4.5 is Homebrew's 10.6.x instead of 10.6.7); `sudo safaridriver --enable` allows the automation; `safaridriver -p 4444`
+Homebrew still has and the Moodle version supports (PostgreSQL 13 is no longer in Homebrew and PostgreSQL 14 is deprecated there and disabled on 2026-11-12, so Moodle 4.5 and 5.0 use
+PostgreSQL 15 there, where `ci.yml`'s services use 13 and 14; PostgreSQL 15, 16 and 17 and MariaDB 10.11 and 11.4 are the same as in
+the other jobs; MariaDB 10.6 for Moodle 4.5 is Homebrew's 10.6.x instead of 10.6.7, and the formula `mariadb@10.6` is deprecated since
+2026-06-01 (no disable date yet), so that row needs a look when Homebrew drops it); `sudo safaridriver --enable` allows the automation; `safaridriver -p 4444`
 and PHP's own web server (`php -S localhost:8000`, four workers) are started by the job, and `moodle-plugin-ci behat` is told
 not to start Selenium in Docker (`MOODLE_START_BEHAT_SERVERS=NO`). The Safari profile (`wd_host` without `/wd/hub`) is added to
 `config.php` by the job. This job cannot run outside GitHub: the local Safari run (`SECBK_BROWSER=safari`) uses another set-up

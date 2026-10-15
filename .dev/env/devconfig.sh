@@ -51,7 +51,7 @@ $CFG->behat_profiles['edge'] = [
     'wd_host' => 'http://selenium-edge:4444/wd/hub',
     'capabilities' => ['browserName' => 'MicrosoftEdge'],
 ];
-// safaridriver runs on the host; the container reaches it through host.docker.internal and .dev/env/safari-relay.php.
+// safaridriver runs on the host; the container reaches it through host.docker.internal and .dev/env/relay.php.
 $CFG->behat_profiles['safari'] = [
     'browser' => 'safari',
     'wd_host' => 'http://host.docker.internal:4446',

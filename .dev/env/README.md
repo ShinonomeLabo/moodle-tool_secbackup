@@ -60,5 +60,5 @@ reads (the Mac cannot resolve `http://webserver`), and enables the Behat site ag
 afterwards. (2) It starts `.dev/env/relay.php` in the web server container, so that the Behat command can reach that address from
 inside the container. (3) It starts `safaridriver` and a second relay on the Mac, which changes the Host header of each request
 to `localhost`, because safaridriver refuses every other Host and the container reaches the Mac as `host.docker.internal`.
-Both relays listen on `127.0.0.1` only and are stopped by the script. Safari is slower here than the other browsers: every page
+Both relays listen on `127.0.0.1` only and are stopped by the script. While the Safari run lasts, the relay on the Mac rewrites Host to `localhost`, so safaridriver's own Host check (a protection against web pages that reach it) does not protect `127.0.0.1:4446` from other local processes, containers and web pages: run Safari only while you use it. Safari is slower here than the other browsers: every page
 of the development site loads many files through Docker's port forwarding.

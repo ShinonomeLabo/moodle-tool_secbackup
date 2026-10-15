@@ -436,9 +436,9 @@ jobs:
         moodle: ['4.5', '5.0', '5.1', '5.2', '5.3']
         database: [pgsql, mariadb]
         include:
-          - {moodle: '4.5', database: pgsql, branch: MOODLE_405_STABLE, php: '8.3', formula: 'postgresql@14'}
+          - {moodle: '4.5', database: pgsql, branch: MOODLE_405_STABLE, php: '8.3', formula: 'postgresql@15'}
           - {moodle: '4.5', database: mariadb, branch: MOODLE_405_STABLE, php: '8.3', formula: 'mariadb@10.6'}
-          - {moodle: '5.0', database: pgsql, branch: MOODLE_500_STABLE, php: '8.4', formula: 'postgresql@14'}
+          - {moodle: '5.0', database: pgsql, branch: MOODLE_500_STABLE, php: '8.4', formula: 'postgresql@15'}
           - {moodle: '5.0', database: mariadb, branch: MOODLE_500_STABLE, php: '8.4', formula: 'mariadb@10.11'}
           - {moodle: '5.1', database: pgsql, branch: MOODLE_501_STABLE, php: '8.4', formula: 'postgresql@15'}
           - {moodle: '5.1', database: mariadb, branch: MOODLE_501_STABLE, php: '8.4', formula: 'mariadb@10.11'}
@@ -461,8 +461,10 @@ jobs:
           ini-values: max_input_vars=5000
           coverage: none
 
-      # PostgreSQL 13 is no longer in Homebrew (PostgreSQL 14 is the lowest), so Moodle 4.5 runs on 14 here, and MariaDB
-      # 10.6 and 11.4 are the versions of ci.yml's images.
+      # Homebrew has no PostgreSQL 13, and PostgreSQL 14 is deprecated there and is disabled on 2026-11-12, so Moodle 4.5
+      # and 5.0 run on PostgreSQL 15 here (their minimums are 13 and 14; ci.yml's services use those). MariaDB 10.6 (Moodle
+      # 4.5) is deprecated in Homebrew since 2026-06-01 and has no disable date yet; it is 10.6.x here, not 10.6.7. The
+      # other versions are the same as in the services of the other jobs.
       - name: Install and start the database
         env:
           FORMULA: ${{ matrix.formula }}
@@ -472,15 +474,21 @@ jobs:
           prefix="$(brew --prefix "$FORMULA")"
           echo "$prefix/bin" >> "$GITHUB_PATH"
           export PATH="$prefix/bin:$PATH"
+          brew services start "$FORMULA"
           if [ "$DATABASE" = pgsql ]; then
-            brew services start "$FORMULA"
             for _ in $(seq 1 30); do pg_isready -h 127.0.0.1 && break; sleep 2; done
+            pg_isready -h 127.0.0.1 || { echo "PostgreSQL did not answer on 127.0.0.1." >&2; exit 1; }
             createuser -h 127.0.0.1 -s postgres
           else
-            brew services start "$FORMULA"
             for _ in $(seq 1 30); do mariadb-admin ping -h 127.0.0.1 --silent && break; sleep 2; done
-            # Moodle connects as root without a password.
-            mariadb -u "$(whoami)" -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('');" || true
+            mariadb-admin ping -h 127.0.0.1 --silent || { echo "MariaDB did not answer on 127.0.0.1." >&2; exit 1; }
+            # Moodle connects as root without a password, over TCP. If root cannot do that yet, the account that Homebrew
+            # made for the runner (it logs in through the socket) gives root an empty password. A failure here stops the job.
+            if ! mariadb -u root -h 127.0.0.1 -e 'select 1' > /dev/null 2>&1; then
+              mariadb -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('');"
+            fi
+            mariadb -u root -h 127.0.0.1 -e 'select 1' > /dev/null \
+              || { echo "root cannot log in to MariaDB over TCP without a password." >&2; exit 1; }
           fi
 
       - name: Install moodle-plugin-ci
