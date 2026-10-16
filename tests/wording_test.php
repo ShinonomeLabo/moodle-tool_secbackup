@@ -179,8 +179,8 @@ final class wording_test extends \basic_testcase {
     }
 
     public function test_the_selinux_advice_says_what_the_narrow_switch_allows(): void {
-        // httpd_can_network_relay lets the web server connect to the ports of web servers (http_port_t and others), not only
-        // to HTTPS.
+        // The switch httpd_can_network_relay lets the web server connect to the ports of web servers (http_port_t and others),
+        // not only to HTTPS.
         $en = self::strings('en')['diag_selinux_advice'];
         $this->assertStringContainsString('only to web ports such as 443: setsebool -P httpd_can_network_relay on', $en);
         $this->assertStringNotContainsString('HTTPS', $en);
