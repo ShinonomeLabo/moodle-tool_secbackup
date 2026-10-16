@@ -156,6 +156,28 @@ final class wording_test extends \basic_testcase {
         }
     }
 
+    public function test_a_blocked_connection_names_the_settings_to_change(): void {
+        // Only a site administrator opens the pages of the plugin: the text names the page and its two settings, with the
+        // names that Moodle shows, instead of sending the reader to an administrator.
+        $page = implode(' > ', [
+            get_string('administrationsite'),
+            get_string('general'),
+            get_string('security', 'admin'),
+            get_string('httpsecurity', 'admin'),
+        ]);
+        $en = self::strings('en')['transport_blocked'];
+        $this->assertStringContainsString($page, $en);
+        $this->assertStringContainsString('"' . get_string('curlsecurityblockedhosts', 'admin') . '"', $en);
+        $this->assertStringContainsString('"' . get_string('curlsecurityallowedport', 'admin') . '"', $en);
+        $this->assertStringNotContainsString('administrator', $en);
+        // The names of Moodle's Japanese language pack, the same at 4.5 and at 5.3.
+        $ja = self::strings('ja')['transport_blocked'];
+        $this->assertStringContainsString('「サイト管理 > 一般 > セキュリティ > HTTPセキュリティ」', $ja);
+        $this->assertStringContainsString('「cURLブロック済みホスト一覧」', $ja);
+        $this->assertStringContainsString('「cURL許可済みポート一覧」', $ja);
+        $this->assertStringNotContainsString('管理者', $ja);
+    }
+
     public function test_the_trademark_notice_of_the_readme_is_the_one_of_the_plugin(): void {
         // The notice is a fixed text (Trademark Guidelines of Moodle Pty Ltd): the README says it word for word, as the pages do.
         $readme = file_get_contents(\core_component::get_component_directory('tool_secbackup') . '/README.md');
