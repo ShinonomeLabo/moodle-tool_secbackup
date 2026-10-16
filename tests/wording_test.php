@@ -178,6 +178,17 @@ final class wording_test extends \basic_testcase {
         $this->assertStringNotContainsString('管理者', $ja);
     }
 
+    public function test_the_selinux_advice_says_what_the_narrow_switch_allows(): void {
+        // httpd_can_network_relay lets the web server connect to the ports of web servers (http_port_t and others), not only
+        // to HTTPS.
+        $en = self::strings('en')['diag_selinux_advice'];
+        $this->assertStringContainsString('only to web ports such as 443: setsebool -P httpd_can_network_relay on', $en);
+        $this->assertStringNotContainsString('HTTPS', $en);
+        $ja = self::strings('ja')['diag_selinux_advice'];
+        $this->assertStringContainsString('443 などの Web のポートへの接続だけを許すには: setsebool -P httpd_can_network_relay on', $ja);
+        $this->assertStringNotContainsString('HTTPS', $ja);
+    }
+
     public function test_the_trademark_notice_of_the_readme_is_the_one_of_the_plugin(): void {
         // The notice is a fixed text (Trademark Guidelines of Moodle Pty Ltd): the README says it word for word, as the pages do.
         $readme = file_get_contents(\core_component::get_component_directory('tool_secbackup') . '/README.md');
