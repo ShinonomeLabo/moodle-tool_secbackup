@@ -19,6 +19,61 @@
     // A mutant whose covering tests take longer than this is skipped, not tested: it is 15 minutes here so that none is.
     "timeout": 900,
     "minCoveredMsi": 95,
+    "mutators": {
+        "@default": true,
+        // Mutants that do not change the behaviour. Each entry is one mutator on one line of one method, Class::method::line,
+        // and has its row in REVIEW.md, which says why. When the code moves, the line no longer matches and the mutant comes back.
+        "CastInt": {
+            "ignore": [
+                "tool_secbackup\\local\\net\\aws_ranges::network::113",
+                "tool_secbackup\\local\\net\\transport::retry_after::244"
+            ]
+        },
+        "CastString": {
+            "ignore": [
+                "tool_secbackup\\local\\api\\enrollment_request::for_this_site::78",
+                "tool_secbackup\\local\\api\\enrollment_request::release_text::90",
+                "tool_secbackup\\local\\api\\enrollment_request::release_text::91",
+                "tool_secbackup\\local\\api\\request_signer::headers::113",
+                "tool_secbackup\\local\\crypto\\fingerprint::normalize::57",
+                "tool_secbackup\\local\\net\\aws_ranges::bundled::64",
+                "tool_secbackup\\local\\net\\transport::send::133",
+                "tool_secbackup\\local\\trust\\sec_trust::current::67",
+                "tool_secbackup\\local\\trust\\sec_trust::key_ids::88"
+            ]
+        },
+        "DecrementInteger": {
+            "ignore": [
+                "tool_secbackup\\local\\net\\transport::failure::222",
+                "tool_secbackup\\local\\net\\transport::failure::224",
+                "tool_secbackup\\local\\trust\\sec_trust::open::102"
+            ]
+        },
+        "FalseValue": {
+            "ignore": [
+                "tool_secbackup\\local\\crypto\\signing_keys::load::70",
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::99",
+                "tool_secbackup\\local\\trust\\developer_settings::from_value::124",
+                "tool_secbackup\\local\\trust\\developer_settings::from_value::127"
+            ]
+        },
+        "IncrementInteger": {
+            "ignore": [
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
+                "tool_secbackup\\local\\net\\transport::send::201",
+                "tool_secbackup\\local\\trust\\sec_trust::open::102"
+            ]
+        },
+        "PregMatchRemoveCaret": {
+            "ignore": ["tool_secbackup\\local\\crypto\\base64url::decode::46"]
+        },
+        "UnwrapArrayMap": {
+            "ignore": ["tool_secbackup\\local\\trust\\sec_trust::current::67"]
+        },
+        "UnwrapTrim": {
+            "ignore": ["tool_secbackup\\local\\net\\transport::retry_after::244"]
+        }
+    },
     "logs": {
         // Relative to this folder.
         "text": "out/infection.log",
