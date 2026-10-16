@@ -28,11 +28,12 @@ failed=()
 # the one Grunt task that applies to this plugin, the Gherkin lint of tests/behat/*.feature, with Moodle's configuration
 # and the version of gherkin-lint that the Moodle branch pins. gherkin-lint is installed once under .dev/ci/out/tools.
 # The step fails when the plugin has a kind of file for which CI runs another Grunt task, so that this step never covers
-# less than CI does.
+# less than CI does. The files are those that git tracks and the new ones that it does not ignore: what CI checks out, and
+# what can be committed next. Folders that git ignores (the outputs of the tools, the work folders of a clone) are not seen.
 grunt_equivalent() {
-    local other
-    other="$(cd "$repo" && find . \( -path ./.git -o -path ./.dev -o -path ./tests \) -prune -o \
-        \( -path '*/amd/src/*' -o -path '*/yui/src/*' -o -name '*.css' -o -name '*.scss' -o -name '*.less' \) -print)"
+    local files other
+    files="$(git -C "$repo" ls-files -co --exclude-standard)" || return 1
+    other="$(printf '%s\n' "$files" | grep -vE '^(\.dev|tests)/' | grep -E '(^|/)(amd|yui)/src/|\.(css|scss|less)$' || true)"
     if [ -n "$other" ]; then
         echo "The plugin has files for Grunt tasks that this script does not run (amd, yui, css, scss, less):"
         echo "$other"
