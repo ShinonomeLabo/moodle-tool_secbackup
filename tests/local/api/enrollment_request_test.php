@@ -119,6 +119,18 @@ final class enrollment_request_test extends \advanced_testcase {
         $this->assertSame($sent, $body['site']['moodle_release']);
     }
 
+    public function test_a_release_and_a_version_that_config_php_leaves_empty_give_empty_values(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        // The file config.php can give $CFG any value. A request is still made, without a PHP error or notice.
+        $CFG->release = null;
+        $CFG->version = null;
+        $request = enrollment_request::for_this_site(self::CODE, str_repeat("\x01", 32));
+        $body = json_decode($request->body(signing_keypair::generate()), true);
+        $this->assertSame('', $body['site']['moodle_release']);
+        $this->assertSame('0.00', $body['site']['moodle_version']);
+    }
+
     public function test_the_plugin_version_has_ten_digits(): void {
         $this->resetAfterTest();
         set_config('version', '2026101200', 'tool_secbackup');
@@ -216,6 +228,8 @@ final class enrollment_request_test extends \advanced_testcase {
         var_dump($request);
         $dump = (string) ob_get_clean();
         $this->assertStringNotContainsString('AAAA', $dump);
+        // The field is there, so that a reader sees that a code exists and is hidden.
+        $this->assertStringContainsString('"[hidden]"', $dump);
         $this->assertStringContainsString('lms.example.ac.jp', $dump);
         $this->assertStringContainsString('2026101200', $dump);
     }

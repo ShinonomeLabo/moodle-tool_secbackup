@@ -198,6 +198,8 @@ final class client_test extends \advanced_testcase {
         $e = $this->expect_api_error('enroll_response_mismatch', fn() => self::client($service->handler())
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame($field, $e->debuginfo);
+        // The service answered 201: the refusal is the client's, and keeps the status of the answer it refused.
+        $this->assertSame(201, $e->httpstatus);
     }
 
     /**
@@ -262,6 +264,7 @@ final class client_test extends \advanced_testcase {
         $e = $this->expect_api_error('enroll_response_invalid', fn() => self::client($service->handler())
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
         $this->assertSame($field, $e->debuginfo);
+        $this->assertSame(201, $e->httpstatus);
     }
 
     public function test_a_site_id_with_lower_case_letters_is_taken(): void {
@@ -454,10 +457,32 @@ final class client_test extends \advanced_testcase {
         $this->assertSame('198.51.100.7', $e->a);
     }
 
-    public function test_ip_not_allowed_without_a_valid_address(): void {
-        $mock = new MockHandler([new Response(403, [], '{"error":{"code":"ip_not_allowed","ip":"<b>x</b>"}}')]);
-        $this->expect_api_error('api_ip_not_allowed', fn() => self::client($mock)
+    /**
+     * Answers of the error ip_not_allowed without an address that can be shown.
+     *
+     * @return array
+     */
+    public static function ip_not_allowed_without_address_provider(): array {
+        return [
+            'markup instead of an address' => ['{"error":{"code":"ip_not_allowed","ip":"<b>x</b>"}}'],
+            'no address' => ['{"error":{"code":"ip_not_allowed"}}'],
+            'a number instead of an address' => ['{"error":{"code":"ip_not_allowed","ip":5}}'],
+            'a list instead of an address' => ['{"error":{"code":"ip_not_allowed","ip":["198.51.100.7"]}}'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('ip_not_allowed_without_address_provider')]
+    /**
+     * Without an address that is text and an IP address, the message does not name one.
+     *
+     * @dataProvider ip_not_allowed_without_address_provider
+     * @param string $body The body of the answer.
+     */
+    public function test_ip_not_allowed_without_a_valid_address(string $body): void {
+        $mock = new MockHandler([new Response(403, [], $body)]);
+        $e = $this->expect_api_error('api_ip_not_allowed', fn() => self::client($mock)
             ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertNull($e->a);
     }
 
     public function test_an_address_with_a_trailing_line_feed_is_not_an_address(): void {
@@ -734,7 +759,19 @@ final class client_test extends \advanced_testcase {
             'more levels than the client reads' => [
                 '{"error":{"code":"invalid_request","more":' . str_repeat('[', 9) . str_repeat(']', 9) . '}}',
             ],
+            'one level more than the client reads' => [
+                '{"error":{"code":"invalid_request","more":' . str_repeat('[', 6) . str_repeat(']', 6) . '}}',
+            ],
         ];
+    }
+
+    public function test_an_error_answer_of_the_most_levels_that_the_client_reads_gives_its_code(): void {
+        // With a depth of 8, json_decode() reads at most 7 nested objects and lists: here the answer, the error and 5 lists.
+        $body = '{"error":{"code":"invalid_request","more":' . str_repeat('[', 5) . str_repeat(']', 5) . '}}';
+        $mock = new MockHandler([new Response(422, [], $body)]);
+        $e = $this->expect_api_error('api_invalid_request', fn() => self::client($mock)
+            ->enroll(self::endpoint(), signing_keypair::generate(), self::request()));
+        $this->assertSame('invalid_request', $e->servercode);
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('unreadable_error_provider')]
@@ -870,7 +907,15 @@ final class client_test extends \advanced_testcase {
             'no instructions' => [self::status_body(['instructions' => null])],
             'instructions as text' => [self::status_body(['instructions' => 'none'])],
             'more levels than the client reads' => [self::status_body(['instructions' => [[[[[[[[[]]]]]]]]]])],
+            'one level more than the client reads' => [self::status_body(['instructions' => [[[[[[[]]]]]]]])],
         ];
+    }
+
+    public function test_a_status_answer_of_the_most_levels_that_the_client_reads_is_taken(): void {
+        // With a depth of 8, json_decode() reads at most 7 nested objects and lists: here the answer and 6 lists.
+        $mock = new MockHandler([new Response(200, [], self::status_body(['instructions' => [[[[[[]]]]]]]))]);
+        $result = self::client($mock)->status(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID);
+        $this->assertSame(1, $result->instructions);
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('unreadable_status_provider')]
@@ -991,6 +1036,14 @@ final class client_test extends \advanced_testcase {
         foreach ($codes as $code) {
             $this->assertTrue(get_string_manager()->string_exists($code, 'tool_secbackup'), $code);
         }
+    }
+
+    public function test_an_exception_made_with_only_its_code_has_no_answer_details(): void {
+        $e = new api_exception('api_unexpected');
+        $this->assertSame(0, $e->httpstatus);
+        $this->assertSame('', $e->servercode);
+        $this->assertNull($e->retryafter);
+        $this->assertNull($e->servertime);
     }
 
     public function test_enroll_sends_one_signed_post_with_the_documented_headers_and_fields(): void {
