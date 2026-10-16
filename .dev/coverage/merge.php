@@ -1,4 +1,27 @@
 <?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+/**
+ * Merges the line coverage of the Clover reports (PHPUnit) and the JSON reports (collector.php) of all runs.
+ *
+ * @package    tool_secbackup
+ * @copyright  2026 Shinonome Laboratory LLC.
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
 // Merges line coverage from Clover reports (PHPUnit) and JSON reports (collector.php) across
 // Moodle versions and fails unless every statement of every shipped PHP file was executed.
 // Development only; not part of the plugin package.

@@ -1,4 +1,27 @@
 <?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+/**
+ * Tests for .dev/coverage/merge.php.
+ *
+ * @package    tool_secbackup
+ * @copyright  2026 Shinonome Laboratory LLC.
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
 // Tests for .dev/coverage/merge.php. Run: php .dev/coverage/tests/run.php
 // Development only; not part of the plugin package.
 
@@ -246,9 +269,9 @@ secbk_expect('counts the line that pcov counts', $code === 0 && str_contains($ou
 // Lines that php-code-coverage removes with an annotation never reach the Clover, so the source is searched.
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-ignore.txt $fixtures/phpunit-ignore.xml");
 secbk_expect('codeCoverageIgnore in a shipped file fails', $code === 1, $out);
-secbk_expect('names the line of the annotation', str_contains($out, 'db/ignored.php:3:'), $out);
-secbk_expect('finds the start of a block', str_contains($out, 'db/ignored-block.php:2:'), $out);
-secbk_expect('finds the end of a block in any case', str_contains($out, 'db/ignored-block.php:4:'), $out);
+secbk_expect('names the line of the annotation', str_contains($out, 'db/ignored.php:26:'), $out);
+secbk_expect('finds the start of a block', str_contains($out, 'db/ignored-block.php:25:'), $out);
+secbk_expect('finds the end of a block in any case', str_contains($out, 'db/ignored-block.php:27:'), $out);
 
 // The source of a shipped file is looked up in the plugin unless --root says otherwise.
 [$code, $out] = secbk_run_merge("--shipped=$fixtures/shipped-real.txt $fixtures/phpunit-real.xml", false);
