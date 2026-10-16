@@ -46,7 +46,17 @@ final class diagnose_command {
     }
 
     /**
-     * Runs the checks and writes one line per check.
+     * Writes the help of the command, under the heading and the trademark notice.
+     *
+     * @param callable $write Writes one line.
+     */
+    public function help(callable $write): void {
+        self::write_heading($write);
+        $write(get_string('cli_diagnose_help', 'tool_secbackup'));
+    }
+
+    /**
+     * Runs the checks and writes one line per check, under the heading and the trademark notice.
      *
      * @param string $endpointinput The --endpoint option; empty for the registered URL.
      * @param callable $write Writes one line.
@@ -61,7 +71,7 @@ final class diagnose_command {
             $write($e->message());
             return 1;
         }
-        $write(get_string('diag_cli_heading', 'tool_secbackup'));
+        self::write_heading($write);
         $write($endpoint === null ? get_string('diag_cli_noendpoint', 'tool_secbackup')
             : get_string('diag_cli_endpoint', 'tool_secbackup', $endpoint->url()));
         $code = 0;
@@ -76,5 +86,16 @@ final class diagnose_command {
             }
         }
         return $code;
+    }
+
+    /**
+     * Writes the heading and the trademark notice. The notice comes before any other line, so the first mention of Moodle in
+     * the output is the notice itself, as the pages show it with their introduction.
+     *
+     * @param callable $write Writes one line.
+     */
+    private static function write_heading(callable $write): void {
+        $write(get_string('diag_cli_heading', 'tool_secbackup'));
+        $write(get_string('trademark', 'tool_secbackup'));
     }
 }

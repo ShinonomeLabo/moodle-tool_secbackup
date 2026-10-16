@@ -31,8 +31,9 @@ require_once($CFG->libdir . '/clilib.php');
 if ($unrecognised) {
     cli_error(get_string('cliunknowoption', 'admin', implode("\n  ", $unrecognised)));
 }
+$command = new \tool_secbackup\local\cli\diagnose_command();
 if ($options['help']) {
-    cli_writeln(get_string('cli_diagnose_help', 'tool_secbackup'));
+    $command->help('cli_writeln');
     exit(0);
 }
-exit((new \tool_secbackup\local\cli\diagnose_command())->run((string) $options['endpoint'], 'cli_writeln'));
+exit($command->run((string) $options['endpoint'], 'cli_writeln'));

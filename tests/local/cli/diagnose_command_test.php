@@ -102,7 +102,8 @@ final class diagnose_command_test extends \advanced_testcase {
         [$code, $lines] = self::run_command(self::API, [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
         $this->assertSame(0, $code);
         $this->assertSame(get_string('diag_cli_heading', 'tool_secbackup'), $lines[0]);
-        $this->assertSame(get_string('diag_cli_endpoint', 'tool_secbackup', self::API), $lines[1]);
+        $this->assertSame(get_string('trademark', 'tool_secbackup'), $lines[1]);
+        $this->assertSame(get_string('diag_cli_endpoint', 'tool_secbackup', self::API), $lines[2]);
         $expected = '[' . get_string('result_pass', 'tool_secbackup') . '] ' . get_string('check_connection', 'tool_secbackup')
             . ': ' . get_string('diag_connection_ok', 'tool_secbackup', 401);
         $this->assertContains($expected, $lines);
@@ -115,7 +116,7 @@ final class diagnose_command_test extends \advanced_testcase {
             ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata']
         );
         $found = [];
-        foreach (array_slice($lines, 2) as $line) {
+        foreach (array_slice($lines, 3) as $line) {
             foreach ($checks as $check) {
                 if (str_contains($line, '] ' . $check . ': ')) {
                     $found[] = $check;
@@ -145,7 +146,7 @@ final class diagnose_command_test extends \advanced_testcase {
 
     public function test_a_check_without_advice_has_no_advice_line(): void {
         [, $lines] = self::run_command(self::API, [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
-        $this->assertCount(2 + 9, $lines, 'The heading, the connection URL and one line for each check.');
+        $this->assertCount(3 + 9, $lines, 'The heading, the trademark notice, the connection URL and one line for each check.');
         foreach ($lines as $line) {
             $this->assertStringStartsNotWith('    ', $line);
         }
@@ -192,20 +193,20 @@ final class diagnose_command_test extends \advanced_testcase {
         self::register();
         [$code, $lines] = self::run_command('', [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
         $this->assertSame(0, $code);
-        $this->assertSame(get_string('diag_cli_endpoint', 'tool_secbackup', self::API), $lines[1]);
+        $this->assertSame(get_string('diag_cli_endpoint', 'tool_secbackup', self::API), $lines[2]);
     }
 
     public function test_a_typed_url_wins_over_the_registered_one(): void {
         self::register();
         $other = 'https://other.example.test/api/lms-backup/v1';
         [$code, $lines] = self::run_command($other, [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
-        $this->assertSame(get_string('diag_cli_endpoint', 'tool_secbackup', $other), $lines[1]);
+        $this->assertSame(get_string('diag_cli_endpoint', 'tool_secbackup', $other), $lines[2]);
     }
 
     public function test_unregistered_site_without_a_url(): void {
         [$code, $lines] = self::run_command('', []);
         $this->assertSame(0, $code);
-        $this->assertSame(get_string('diag_cli_noendpoint', 'tool_secbackup'), $lines[1]);
+        $this->assertSame(get_string('diag_cli_noendpoint', 'tool_secbackup'), $lines[2]);
     }
 
     public function test_a_registered_url_that_no_longer_reads_is_a_problem(): void {
@@ -244,6 +245,59 @@ final class diagnose_command_test extends \advanced_testcase {
         $text = implode("\n", $lines);
         $this->assertStringContainsString(get_string('diag_apparmor_enforcing', 'tool_secbackup', '<u>C&D</u>'), $text);
         $this->assertStringNotContainsString('&lt;', $text);
+    }
+
+    /**
+     * Outputs of the command: the help, a run whose advice names Moodle, and a run without a problem.
+     *
+     * @return array
+     */
+    public static function output_provider(): array {
+        return [
+            'the help' => ['help'],
+            'a run where DNS over HTTPS does not answer (the advice names Moodle)' => ['nodoh'],
+            'a run without a problem' => ['plain'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('output_provider')]
+    /**
+     * The command prints its heading and the trademark notice first: the first line that mentions Moodle is the notice, as
+     * the pages show it with their introduction.
+     *
+     * @dataProvider output_provider
+     * @param string $output Which output.
+     */
+    public function test_the_first_mention_of_moodle_is_the_trademark_notice(string $output): void {
+        $lines = [];
+        $write = static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        };
+        if ($output === 'help') {
+            (new diagnose_command())->help($write);
+            $this->assertSame([
+                get_string('diag_cli_heading', 'tool_secbackup'),
+                get_string('trademark', 'tool_secbackup'),
+                get_string('cli_diagnose_help', 'tool_secbackup'),
+            ], $lines);
+        } else {
+            $guard = $output === 'nodoh' ? network_fakes::guard(null, null, ['13.225.9.9']) : network_fakes::passing_guard();
+            $settings = developer_settings::from_value(null);
+            $answers = [new Response(401, [], '{"error":{"code":"signature_required"}}')];
+            $runner = new runner(
+                $settings,
+                $guard,
+                new transport($settings, $guard, new MockHandler($answers)),
+                new system_files(make_request_directory())
+            );
+            (new diagnose_command($runner))->run(self::API, $write);
+            $advice = get_string('diag_cli_advice', 'tool_secbackup', get_string('dns_doh_unavailable', 'tool_secbackup'));
+            $this->assertSame($output === 'nodoh', in_array('    ' . $advice, $lines, true));
+        }
+        $this->assertSame(get_string('diag_cli_heading', 'tool_secbackup'), $lines[0]);
+        $mentions = array_keys(array_filter($lines, static fn(string $line): bool => str_contains($line, 'Moodle')));
+        $this->assertSame(1, $mentions[0] ?? null, 'The first line that mentions Moodle is the second one.');
+        $this->assertSame(get_string('trademark', 'tool_secbackup'), $lines[1]);
     }
 
     public function test_default_runner(): void {
