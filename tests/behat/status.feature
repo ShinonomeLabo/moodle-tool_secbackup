@@ -32,4 +32,4 @@ Feature: See the status of this site at the backup service
     When I open "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
     And I click on "Connection diagnostics" "link" in the "region-main" "region"
     Then I should see "Direct connection, without a proxy."
-    And I should see "The service's API answered (HTTP 401)."
+    And I should see "The service was reached. This check asks without a signature, so HTTP 401 (authentication required) is the expected answer."

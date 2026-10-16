@@ -12,14 +12,14 @@ Feature: Check the connection to the backup service
     Given the site is registered with the fake backup service
     When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection diagnostics" in site administration
     Then I should see "Skipped because of the developer settings."
-    And I should see "The service's API answered (HTTP 401)."
+    And I should see "The service was reached. This check asks without a signature, so HTTP 401 (authentication required) is the expected answer."
 
   Scenario: A typed connection URL is checked before registration
     When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection diagnostics" in site administration
     Then I should see "Register the site, or enter a connection URL, to check this."
     And I set the field "Connection URL" to "http://localhost:8099/api/lms-backup/v1"
     And I press "Check the connection"
-    And I should see "The service's API answered (HTTP 401)."
+    And I should see "The service was reached. This check asks without a signature, so HTTP 401 (authentication required) is the expected answer."
 
   Scenario: A registration that cannot reach the service points to the diagnostics
     When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection settings" in site administration
