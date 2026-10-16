@@ -124,6 +124,38 @@ final class wording_test extends \basic_testcase {
         $this->assertSame('対処', $strings['diag_heading_advice']);
     }
 
+    public function test_the_japanese_texts_call_one_thing_by_one_name(): void {
+        $strings = self::strings('ja');
+        foreach ($strings as $id => $text) {
+            // The data directory is named as the row of the diagnostics names it.
+            $this->assertStringNotContainsString('データディレクトリ', $text, $id);
+            $this->assertSame(
+                substr_count($text, 'データのフォルダ'),
+                substr_count($text, 'データのフォルダ (moodledata)'),
+                $id . ': the data directory is named with "(moodledata)".'
+            );
+            // An HTTP header is a ヘッダー: the administrator of a proxy would not know a 見出し.
+            $this->assertStringNotContainsString('見出し', $text, $id);
+        }
+        $this->assertStringContainsString('X-SecBackup で始まるヘッダー', $strings['api_signature_required']);
+        $this->assertStringContainsString('データのフォルダ (moodledata) にある暗号鍵のファイル', $strings['signingkey_savefailed']);
+        $this->assertStringContainsString('誤った接続先の URL に', $strings['enroll_reissue_advice']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('language_provider')]
+    /**
+     * The messages to the administrators name the connection URL as the screens do.
+     *
+     * @dataProvider language_provider
+     * @param string $lang The language.
+     */
+    public function test_the_messages_name_the_connection_url_as_the_screens_do(string $lang): void {
+        $strings = self::strings($lang);
+        foreach (['message_deregistered_body', 'message_enrolled_body', 'message_reenrolled_body'] as $id) {
+            $this->assertStringContainsString("\n" . $strings['field_endpoint'] . ': {$a->endpoint}' . "\n", $strings[$id], $id);
+        }
+    }
+
     public function test_the_trademark_notice_of_the_readme_is_the_one_of_the_plugin(): void {
         // The notice is a fixed text (Trademark Guidelines of Moodle Pty Ltd): the README says it word for word, as the pages do.
         $readme = file_get_contents(\core_component::get_component_directory('tool_secbackup') . '/README.md');

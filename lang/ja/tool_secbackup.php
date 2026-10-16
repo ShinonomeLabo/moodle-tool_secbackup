@@ -36,7 +36,7 @@ $string['api_ip_not_allowed_address'] = 'サービスには、このサーバの
 $string['api_nonce_reused'] = 'サービスに同じ要求が 2 度届きました。もう一度お試しください。';
 $string['api_rate_limited'] = 'サービスへの要求が多すぎます。しばらく待ってから、もう一度お試しください。';
 $string['api_signature_invalid'] = 'サービスが、このサイトの署名を確かめられませんでした。別のサーバからこのサイトを登録し直した場合は、ここでも登録し直してください。';
-$string['api_signature_required'] = '要求の署名がサービスに届きませんでした。プロキシやセキュリティの機器が見出しを消している可能性があります。X-SecBackup で始まる見出しを通すよう、その管理者に頼んでください。';
+$string['api_signature_required'] = '要求の署名がサービスに届きませんでした。プロキシやセキュリティの機器がヘッダーを消している可能性があります。X-SecBackup で始まるヘッダーを通すよう、その管理者に頼んでください。';
 $string['api_site_not_enrolled'] = 'サービスに、このサイトの登録が見つからないか、登録が無効になっています。プラットフォームの画面で登録コードを発行し、登録し直してください。';
 $string['api_timestamp_out_of_range'] = 'このサーバの時刻が、サービスの時刻と大きくずれています。NTP などでこのサーバの時刻を合わせてから、もう一度お試しください。';
 $string['api_timestamp_out_of_range_minutes'] = 'このサーバの時刻が、サービスの時刻と約 {$a} 分ずれています。NTP などでこのサーバの時刻を合わせてから、もう一度お試しください。';
@@ -103,7 +103,7 @@ $string['diag_heading_detail'] = '詳細';
 $string['diag_heading_result'] = '結果';
 $string['diag_hint'] = 'このサーバのネットワークを確かめるには、{$a}を開いてください。';
 $string['diag_moodledata'] = 'ファイルシステム: {$a->type} (マウント先: {$a->mount}、元: {$a->source})';
-$string['diag_moodledata_network'] = 'データのフォルダがネットワークのファイルシステムにあります。バックアップは中のファイルをすべて読むので、時間がかかり、そのファイルシステムにも負荷がかかります。';
+$string['diag_moodledata_network'] = 'データのフォルダ (moodledata) がネットワークのファイルシステムにあります。バックアップは中のファイルをすべて読むので、時間がかかり、そのファイルシステムにも負荷がかかります。';
 $string['diag_moodledata_unknown'] = '読み取れません。';
 $string['diag_no_endpoint'] = 'サイトを登録するか、接続先の URL を入れると確かめられます。';
 $string['diag_proxy_direct'] = 'プロキシを使わずに、直接つなぎます。';
@@ -130,7 +130,7 @@ $string['endpoint_scheme'] = '接続先の URL は https:// で始めてくだ�
 $string['endpoint_userinfo'] = '接続先の URL に、ユーザー名やパスワードは入れられません。';
 $string['enroll_code_used_advice'] = 'サービスは、この失敗の前に登録コードを受け付けています。同じ登録コードはもう使えません。原因を直してから、プラットフォームの画面で登録コードを発行し直し、もう一度登録してください。それまで、このサイトはサービスを使えません。';
 $string['enroll_done'] = 'このサイトを {$a} に登録しました。';
-$string['enroll_reissue_advice'] = '登録コードを誤った接続先に送った可能性があります。念のため、プラットフォームの画面で登録コードを発行し直してください。';
+$string['enroll_reissue_advice'] = '登録コードを誤った接続先の URL に送った可能性があります。念のため、プラットフォームの画面で登録コードを発行し直してください。';
 $string['enroll_response_invalid'] = 'サービスからの登録の応答を読めませんでした。何も保存していません。';
 $string['enroll_response_mismatch'] = 'サービスの署名付きの応答が、この登録の要求に対するものではありません。何も保存していません。接続先の URL を確かめ、念のため、プラットフォームの画面で登録コードを発行し直してください。';
 $string['envelope_malformed'] = '接続先のサービスからの応答を読めませんでした。接続先の URL が正しいか確かめてください。';
@@ -155,7 +155,7 @@ $string['field_publickey_help'] = 'プラットフォームの画面から、sec
 $string['intro'] = 'この連携ツールは、このサイト (Moodle™) をバックアップのサービスにつなぎ、暗号化したバックアップを預けられるようにします。';
 $string['message_deregistered_body'] = '{$a->user} が、このサイトの {$a->platform} との登録を解除しました。
 
-接続先: {$a->endpoint}
+接続先の URL: {$a->endpoint}
 プラットフォームでのサイト名: {$a->site}
 
 今後、バックアップは送られません。念のため、プラットフォームの画面でも、サイトの登録の削除か、登録コードの発行し直しを行ってください。
@@ -164,7 +164,7 @@ $string['message_deregistered_body'] = '{$a->user} が、このサイトの {$a-
 $string['message_deregistered_subject'] = '{$a->platform} との登録を解除しました';
 $string['message_enrolled_body'] = '{$a->user} が、このサイトを {$a->platform} に登録しました。
 
-接続先: {$a->endpoint}
+接続先の URL: {$a->endpoint}
 プラットフォームでのサイト名: {$a->site}
 
 心当たりが無い場合は、連携ツールの接続設定を確かめてください。
@@ -173,7 +173,7 @@ $string['message_enrolled_body'] = '{$a->user} が、このサイトを {$a->pla
 $string['message_enrolled_subject'] = 'このサイトを {$a->platform} に登録しました';
 $string['message_reenrolled_body'] = '{$a->user} が、新しい登録コードで、このサイトを {$a->platform} に登録し直しました。このサイトの前の鍵は使えなくなりました。
 
-接続先: {$a->endpoint}
+接続先の URL: {$a->endpoint}
 プラットフォームでのサイト名: {$a->site}
 
 心当たりが無い場合は、連携ツールの接続設定を確かめてください。
@@ -203,7 +203,7 @@ $string['service_status_awaiting_enrollment'] = '登録を待っています';
 $string['service_status_other'] = 'その他 ({$a})';
 $string['signingkey_corrupt'] = '保存した署名用の鍵を読めません。登録を解除してから、もう一度登録してください。';
 $string['signingkey_missing'] = 'このサイトの署名用の鍵が見つかりません。登録し直してください。';
-$string['signingkey_savefailed'] = '署名用の鍵を暗号化できなかったため、保存しませんでした。データディレクトリにある暗号鍵のファイルを確かめてから、もう一度試してください。';
+$string['signingkey_savefailed'] = '署名用の鍵を暗号化できなかったため、保存しませんでした。データのフォルダ (moodledata) にある暗号鍵のファイルを確かめてから、もう一度試してください。';
 $string['status_enrolled_at'] = '登録した日時';
 $string['status_last_error'] = '最後の状態の問い合わせに失敗しました。';
 $string['status_last_error_code'] = '最後の状態の問い合わせに失敗しました ({$a})。';
