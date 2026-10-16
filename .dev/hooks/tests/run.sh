@@ -671,5 +671,39 @@ matrix_real() {
 }
 expect_check ok "the matrix lists as many combinations as ci.yml has (the other jobs have rows of their own)" matrix_real
 
+# The matrix removes an environment with its data only when its own run installed it: no marker of install.sh before the
+# run and one after it. A copy of matrix.sh runs with stand-ins for the steps, and the stand-in of down.sh records how it
+# was called. Usage: matrix_down <marker before: yes|no> <install: fails|installs|skips> <down.sh arguments> <ok|failed>
+matrix_down() {
+    local before="$1" install="$2" expected="$3" result="$4" root status step
+    root="$work/matrix-down-$before-$install"
+    mkdir -p "$root/repo/.dev/ci" "$root/repo/.dev/env" "$root/env" || return 1
+    cp "$matrix" "$root/repo/.dev/ci/matrix.sh" || return 1
+    printf '%s\n' 'secbk_php=8.4' 'COMPOSE_PROJECT_NAME=secbkstub' "SECBK_ENV_ROOT=$root/env" > "$root/repo/.dev/env/env.sh"
+    for step in env/setup env/devconfig env/up ci/run; do
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$root/repo/.dev/$step.sh"
+    done
+    case $install in
+        fails) printf '#!/usr/bin/env bash\nexit 1\n' ;;
+        installs) printf '#!/usr/bin/env bash\ntouch "%s/env/installed-secbkstub"\n' "$root" ;;
+        skips) printf '#!/usr/bin/env bash\nexit 0\n' ;;
+    esac > "$root/repo/.dev/env/install.sh"
+    printf '#!/usr/bin/env bash\necho "$*" >> "%s/down.log"\n' "$root" > "$root/repo/.dev/env/down.sh"
+    chmod +x "$root"/repo/.dev/env/*.sh "$root"/repo/.dev/ci/*.sh || return 1
+    if [ "$before" = yes ]; then touch "$root/env/installed-secbkstub" || return 1; fi
+    printf '%s\n' 'jobs:' '  test:' \
+        "          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.4', database: pgsql, image: 'postgres:17'}" > "$root/ci.yml"
+    SECBK_CI_YML="$root/ci.yml" SECBK_MATRIX_KEEP='' bash "$root/repo/.dev/ci/matrix.sh" > "$root/out.log" 2>&1 < /dev/null
+    status=$?
+    [ "$(cat "$root/down.log")" = "$expected" ] || return 1
+    if [ "$result" = ok ]; then [ "$status" -eq 0 ]; else [ "$status" -ne 0 ]; fi
+}
+expect_check ok "the matrix keeps the data of an environment without a marker whose install fails, and reports the failure" \
+    matrix_down no fails '503 pgsql' failed
+expect_check ok "the matrix removes with its data an environment that its own run installed" \
+    matrix_down no installs '503 pgsql --volumes' ok
+expect_check ok "the matrix only stops an environment that was installed before (it has a marker)" \
+    matrix_down yes skips '503 pgsql' ok
+
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
