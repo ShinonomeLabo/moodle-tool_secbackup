@@ -173,6 +173,7 @@ final class endpoint_test extends \basic_testcase {
 
     public function test_join_refuses_unexpected_names(): void {
         $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage('Unexpected API path: ../admin');
         endpoint::parse(self::URL, self::production())->join('../admin');
     }
 
@@ -205,9 +206,12 @@ final class endpoint_test extends \basic_testcase {
             'other port' => ['https://lms-backup.example.com:8443/api', 'endpoint_port'],
             'empty port' => ['https://lms-backup.example.com:/api', 'endpoint_port'],
             'port with letters' => ['https://lms-backup.example.com:44a/api', 'endpoint_port'],
+            'port with letters before the default port' => ['https://lms-backup.example.com:443x443/api', 'endpoint_port'],
             'query' => ['https://lms-backup.example.com/api?x=1', 'endpoint_query'],
             'empty query' => ['https://lms-backup.example.com/api?', 'endpoint_query'],
+            'query without a path' => ['https://lms-backup.example.com?x=1', 'endpoint_query'],
             'fragment' => ['https://lms-backup.example.com/api#top', 'endpoint_query'],
+            'fragment with a line feed' => ["https://lms-backup.example.com/api#top\nend", 'endpoint_query'],
             'ipv4 address' => ['https://203.0.113.5/api', 'endpoint_host'],
             'ipv6 address' => ['https://[2001:db8::1]/api', 'endpoint_host'],
             'localhost' => ['https://localhost/api', 'endpoint_host'],
@@ -311,6 +315,8 @@ final class endpoint_test extends \basic_testcase {
             'https localhost' => ['https://localhost/api', 'https://localhost/api', 443],
             'fake service port' => ['http://localhost:8099/api/lms-backup/v1', 'http://localhost:8099/api/lms-backup/v1', 8099],
             'name under localhost' => ['http://fake.localhost:8099/api', 'http://fake.localhost:8099/api', 8099],
+            'the lowest port' => ['http://localhost:1/api', 'http://localhost:1/api', 1],
+            'the highest port' => ['http://localhost:65535/api', 'http://localhost:65535/api', 65535],
         ];
     }
 
