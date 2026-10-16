@@ -116,6 +116,15 @@ final class network_fakes {
     }
 
     /**
+     * The trusted keys of the clients made here: the test key of envelope_builder.
+     *
+     * @return sec_trust
+     */
+    public static function trust(): sec_trust {
+        return new sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]);
+    }
+
+    /**
      * A client that sends through a Guzzle handler, trusts the test key of envelope_builder and reads a fixed clock.
      *
      * @param callable $handler Guzzle handler, such as fake_service::handler().
@@ -127,7 +136,7 @@ final class network_fakes {
         $transport = new transport($settings, self::passing_guard(), $handler);
         return new client(
             $transport,
-            new sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]),
+            self::trust(),
             $settings,
             static fn(): int => $now
         );

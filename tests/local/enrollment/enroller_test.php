@@ -23,8 +23,11 @@ use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\endpoint\endpoint;
+use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\local\trust\envelope_exception;
+use tool_secbackup\local\trust\sec_trust;
+use tool_secbackup\tests\envelope_builder;
 use tool_secbackup\tests\fake_service;
 use tool_secbackup\tests\network_fakes;
 
@@ -79,7 +82,7 @@ final class enroller_test extends \advanced_testcase {
      * @return enroller
      */
     private static function enroller(fake_service $service, int $now = self::NOW): enroller {
-        return new enroller(network_fakes::client($service->handler(), $now), static fn(): int => $now);
+        return new enroller(network_fakes::client($service->handler(), $now), static fn(): int => $now, network_fakes::trust());
     }
 
     /**
@@ -128,6 +131,47 @@ final class enroller_test extends \advanced_testcase {
         $this->assertSame('connection', $sent[0]->eventtype);
         $this->assertStringContainsString(fake_service::PLATFORM_NAME, $sent[0]->subject);
         $this->assertStringContainsString(self::API, $sent[0]->fullmessage);
+    }
+
+    public function test_without_a_trusted_key_the_code_is_not_sent(): void {
+        global $CFG;
+        // A version of the plugin without an embedded key, on a site without developer keys: the answer of the service could
+        // not be checked, so sending the code would use it up for nothing. The developer keys of this site must not count.
+        unset($CFG->tool_secbackup_developer);
+        $events = $this->redirectEvents();
+        $messages = $this->redirectMessages();
+        $service = self::service();
+        $enroller = new enroller(network_fakes::client($service->handler(), self::NOW), static fn(): int => self::NOW);
+        try {
+            $enroller->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('enroll_no_trusted_key', $e->errorcode);
+        }
+        $this->assertSame([], $service->state['requests'], 'Nothing may be sent.');
+        $this->assertFalse($service->state['codeused']);
+        $this->assertFalse(state::load()->is_enrolled());
+        $this->assertNull(signing_keys::load());
+        $this->assertSame([], $events->get_events());
+        $this->assertSame([], $messages->get_messages());
+    }
+
+    public function test_the_keys_that_are_checked_are_given_or_those_of_the_site(): void {
+        global $CFG;
+        $service = self::service();
+        $client = network_fakes::client($service->handler(), self::NOW);
+        $clock = static fn(): int => self::NOW;
+        try {
+            (new enroller($client, $clock, new sec_trust([])))->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('enroll_no_trusted_key', $e->errorcode);
+        }
+        $this->assertSame([], $service->state['requests']);
+        // The keys of the site are the embedded keys and the developer keys of config.php (here: of $CFG).
+        $CFG->tool_secbackup_developer = ['trustedkeys' => [envelope_builder::PUBLIC_KEY]];
+        (new enroller($client, $clock))->enroll(self::endpoint(), self::key(), fake_service::CODE);
+        $this->assertTrue(state::load()->is_enrolled());
     }
 
     public function test_failed_verification_saves_nothing(): void {

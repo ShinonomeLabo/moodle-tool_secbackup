@@ -23,11 +23,14 @@ use tool_secbackup\local\api\enrollment_request;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\endpoint\endpoint;
+use tool_secbackup\local\plugin_exception;
+use tool_secbackup\local\trust\sec_trust;
 
 /**
  * Registers this site with the service, or registers it again with a new registration code.
  *
- * Nothing is saved unless the service's signed answer is verified.
+ * Nothing is sent unless a key to verify the service's answer is trusted, and nothing is saved unless the signed answer is
+ * verified.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -40,15 +43,20 @@ final class enroller {
     /** @var callable Returns the current UNIX time. */
     private $clock;
 
+    /** @var sec_trust The keys that the client verifies the answer with. */
+    private sec_trust $trust;
+
     /**
      * Constructor.
      *
      * @param client $client API client.
      * @param callable|null $clock Returns the current UNIX time; null for time().
+     * @param sec_trust|null $trust The keys that the client verifies the answer with; null for those of this site.
      */
-    public function __construct(client $client, ?callable $clock = null) {
+    public function __construct(client $client, ?callable $clock = null, ?sec_trust $trust = null) {
         $this->client = $client;
         $this->clock = $clock ?? static fn(): int => time();
+        $this->trust = $trust ?? sec_trust::current();
     }
 
     /**
@@ -68,11 +76,16 @@ final class enroller {
      * @param #[|\SensitiveParameter|]|string $code Registration code, normalised.
      * @return enroll_result The verified answer. Once the registration is saved, a failure to log it or to tell the
      *     administrators is reported with debugging() and does not leave this method.
+     * @throws plugin_exception enroll_no_trusted_key, before anything is sent, when no key can verify the answer.
      */
     public function enroll(endpoint $endpoint, string $encryptionkey, #[\SensitiveParameter] string $code): enroll_result {
         $previous = state::load();
         if ($previous->is_enrolled() && $previous->endpoint_url() !== $endpoint->url()) {
             throw new \coding_exception('The connection URL cannot change while the site is registered.');
+        }
+        // Without a trusted key the answer cannot be verified, and the service would use the code up for nothing.
+        if ($this->trust->key_ids() === []) {
+            throw new plugin_exception('enroll_no_trusted_key');
         }
         $pair = signing_keypair::generate();
         $result = $this->client->enroll($endpoint, $pair, enrollment_request::for_this_site($code, $encryptionkey));

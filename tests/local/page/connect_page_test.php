@@ -94,7 +94,9 @@ final class connect_page_test extends \advanced_testcase {
      * @return connect_page
      */
     private static function page(fake_service $service, int $now = self::NOW): connect_page {
-        return new connect_page(new enroller(network_fakes::client($service->handler(), $now), static fn(): int => $now));
+        return new connect_page(
+            new enroller(network_fakes::client($service->handler(), $now), static fn(): int => $now, network_fakes::trust())
+        );
     }
 
     /**
@@ -118,7 +120,7 @@ final class connect_page_test extends \advanced_testcase {
      * @param fake_service $service The fake service.
      */
     private static function register(fake_service $service): void {
-        (new enroller(network_fakes::client($service->handler(), self::NOW)))->enroll(
+        (new enroller(network_fakes::client($service->handler(), self::NOW), null, network_fakes::trust()))->enroll(
             endpoint::parse(self::API, developer_settings::from_value(null)),
             public_key_format::parse(fake_service::ENCRYPTION_KEY),
             fake_service::CODE
@@ -703,6 +705,20 @@ final class connect_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString(s(get_string('enroll_reissue_advice', 'tool_secbackup')), $html);
     }
 
+    public function test_without_a_trusted_key_the_page_says_that_the_code_was_not_used(): void {
+        self::submit_registration();
+        $service = self::service();
+        $page = new connect_page(new enroller(network_fakes::client($service->handler(), self::NOW), null, new sec_trust([])));
+        $this->assertNull($page->handle());
+        $html = $page->render();
+        $this->assertStringContainsString(s(get_string('enroll_no_trusted_key', 'tool_secbackup')), $html);
+        // The code was not sent, so neither "the code is used up" nor "issue a new code" applies.
+        $this->assertStringNotContainsString(s(get_string('enroll_code_used_advice', 'tool_secbackup')), $html);
+        $this->assertStringNotContainsString(s(get_string('enroll_reissue_advice', 'tool_secbackup')), $html);
+        $this->assertSame([], $service->state['requests']);
+        $this->assertFalse(state::load()->is_enrolled());
+    }
+
     /**
      * The page, registering through a network whose name check fails.
      *
@@ -718,7 +734,7 @@ final class connect_page_test extends \advanced_testcase {
             $settings,
             static fn(): int => self::NOW
         );
-        return new connect_page(new enroller($client));
+        return new connect_page(new enroller($client, null, network_fakes::trust()));
     }
 
     /**

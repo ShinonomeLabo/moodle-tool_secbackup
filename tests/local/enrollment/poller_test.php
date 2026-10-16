@@ -62,7 +62,7 @@ final class poller_test extends \advanced_testcase {
      * Registers the site with the fake service.
      */
     private function register(): void {
-        (new enroller(network_fakes::client($this->service->handler(), self::NOW)))->enroll(
+        (new enroller(network_fakes::client($this->service->handler(), self::NOW), null, network_fakes::trust()))->enroll(
             endpoint::parse(self::API, developer_settings::from_value(null)),
             public_key_format::parse(fake_service::ENCRYPTION_KEY),
             fake_service::CODE
