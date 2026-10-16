@@ -201,6 +201,18 @@ final class wording_test extends \basic_testcase {
         $this->assertStringContainsString('連携ツールを最新の版に更新してください。', $ja);
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('language_provider')]
+    /**
+     * The command line calls the advice by the heading of its column on the page.
+     *
+     * @dataProvider language_provider
+     * @param string $lang The language.
+     */
+    public function test_the_command_line_names_the_advice_as_the_page_does(string $lang): void {
+        $strings = self::strings($lang);
+        $this->assertSame($strings['diag_heading_advice'] . ': {$a}', $strings['diag_cli_advice']);
+    }
+
     public function test_the_trademark_notice_of_the_readme_is_the_one_of_the_plugin(): void {
         // The notice is a fixed text (Trademark Guidelines of Moodle Pty Ltd): the README says it word for word, as the pages do.
         $readme = file_get_contents(\core_component::get_component_directory('tool_secbackup') . '/README.md');
