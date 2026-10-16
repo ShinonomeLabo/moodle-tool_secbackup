@@ -120,4 +120,12 @@ final class wording_test extends \basic_testcase {
         $this->assertSame('詳細', $strings['diag_heading_detail']);
         $this->assertSame('対処', $strings['diag_heading_advice']);
     }
+
+    public function test_the_trademark_notice_of_the_readme_is_the_one_of_the_plugin(): void {
+        // The notice is a fixed text (Trademark Guidelines of Moodle Pty Ltd): the README says it word for word, as the pages do.
+        $readme = file_get_contents(\core_component::get_component_directory('tool_secbackup') . '/README.md');
+        $found = preg_match('/^## Trademark\n\n(.+?)\n*(?=^## |\z)/ms', $readme, $match);
+        $this->assertSame(1, $found, 'README.md has no Trademark section.');
+        $this->assertSame(self::strings('en')['trademark'], $match[1]);
+    }
 }

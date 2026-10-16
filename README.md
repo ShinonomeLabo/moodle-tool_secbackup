@@ -61,6 +61,4 @@ GNU GPL v3 or later. See `LICENSE`.
 
 ## Trademark
 
-The word Moodle and associated Moodle logos are trademarks or registered trademarks of
-Moodle Pty Ltd or its related affiliates. Shinonome LMS Backup is not affiliated with,
-endorsed by or sponsored by Moodle HQ.
+The word Moodle and associated Moodle logos are trademarks or registered trademarks of Moodle Pty Ltd or its related affiliates. Shinonome LMS Backup is not affiliated with, endorsed by or sponsored by Moodle Pty Ltd or its related affiliates.
