@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 0.1.0
 
 - Registration with the backup service in two steps: the connection URL and the public key of the site,
   then a check of the key's fingerprint and a one-time registration code. Registration again with a new

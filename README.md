@@ -4,10 +4,19 @@
 [![Coverage](https://shinonomelabo.github.io/moodle-tool_secbackup/coverage.svg)](https://github.com/ShinonomeLabo/moodle-tool_secbackup/actions/workflows/ci.yml?query=branch%3Amain)
 
 Shinonome LMS Backup is an admin tool plugin for Moodle™ that connects a site to the
-Shinonome LMS Backup service (あんしんLMSバックアップ). It sends encrypted backups of the
-site to the service and restores them.
+Shinonome LMS Backup service (あんしんLMSバックアップ).
 
 This repository is under development and is not ready for production use.
+
+## What this version does
+
+Version 0.1.0 registers the site with the service (the connection URL, the site's public key and a one-time registration
+code), asks the service for the status of the site every five minutes, and checks the connection from the server, on a page
+and on the command line. Sending backups to the service and restoring them come in later versions.
+
+This version contains no embedded key of the service yet, so it can be registered only on a site whose `config.php` names
+the service's key (the `trustedkeys` of the `TOOL_SECBACKUP_DEVELOPER` setting, see `.dev/env/README.md`). The key comes with
+the release that accompanies the launch of the service.
 
 ## Requirements
 
@@ -54,6 +63,12 @@ your machine.
 
 The plugin sends backups of the whole site, including the personal data of all users,
 to the Shinonome LMS Backup service. Backups are encrypted on the site before they are sent.
+Version 0.1.0 does not send backups yet.
+
+## Security
+
+The keys and the registration code are kept out of the stack traces of exceptions: on PHP 8.2 and later by
+`#[\SensitiveParameter]`, on PHP 8.1 only with `zend.exception_ignore_args = On`, which is PHP's production setting.
 
 ## License
 
