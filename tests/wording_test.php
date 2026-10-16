@@ -28,10 +28,13 @@ namespace tool_secbackup;
  * @coversNothing
  */
 final class wording_test extends \basic_testcase {
-    /** @var string[] What "the platform" is, said at its first mention on a screen, by language. */
+    /**
+     * @var string[] What "the platform" is, said at its first mention on a screen, by language. It names no brand: the name of
+     * the platform is the one the registration receives, and a reseller's platform has a brand of its own.
+     */
     private const PLATFORM = [
-        'en' => 'the platform (the service where the backups were ordered, such as Shinonome Education Cloud)',
-        'ja' => 'プラットフォーム (バックアップを申し込んだサービス。Shinonome Education Cloud など)',
+        'en' => 'the platform (the service where the backups were ordered)',
+        'ja' => 'プラットフォーム (バックアップを申し込んだサービス)',
     ];
 
     /**

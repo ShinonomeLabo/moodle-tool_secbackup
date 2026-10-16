@@ -115,5 +115,5 @@ Feature: Register this site with the backup service
     Given the Japanese language pack is installed
     When I visit "/admin/tool/secbackup/index.php?lang=ja"
     Then I should see "このサイトは、まだバックアップのサービスに登録されていません。"
-    And I should see "プラットフォーム (バックアップを申し込んだサービス。Shinonome Education Cloud など) の画面で発行した登録コード"
+    And I should see "プラットフォーム (バックアップを申し込んだサービス) の画面で発行した登録コード"
     And I should see "Moodle という語と関連する Moodle のロゴは、Moodle Pty Ltd またはその関連会社の商標または登録商標です。"
