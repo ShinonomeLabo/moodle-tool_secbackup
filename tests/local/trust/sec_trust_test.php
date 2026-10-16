@@ -94,7 +94,9 @@ final class sec_trust_test extends \advanced_testcase {
     public function test_no_production_key_is_embedded_yet(): void {
         global $CFG;
         // The release plan embeds the production keys. When it does, this test fails on purpose:
-        // replace it with a test of the embedded key IDs.
+        // replace it with a test of the embedded key IDs. Also remove the UnwrapArrayMap entry of sec_trust::current in
+        // .dev/infection/infection.json5 and its row in .dev/infection/REVIEW.md: with keys embedded, that mutant changes
+        // the behaviour, and the new test has to kill it (as the UnwrapArrayMerge mutant of current(), kept in REVIEW.md).
         // The developer keys that this site may have set in $CFG must not change the result.
         $this->resetAfterTest();
         unset($CFG->tool_secbackup_developer);
