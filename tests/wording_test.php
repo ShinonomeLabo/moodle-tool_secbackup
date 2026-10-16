@@ -189,6 +189,18 @@ final class wording_test extends \basic_testcase {
         $this->assertStringNotContainsString('HTTPS', $ja);
     }
 
+    public function test_an_address_outside_the_ranges_may_also_mean_an_old_list(): void {
+        // The ranges come with the plugin (data/aws-ranges.json): a newer address of the service fails the same way.
+        $en = self::strings('en')['dns_outside_aws'];
+        $this->assertStringContainsString('Check the connection URL.', $en);
+        $this->assertStringContainsString('the list of Amazon address ranges that comes with this plugin may be older', $en);
+        $this->assertStringContainsString('update the plugin', $en);
+        $ja = self::strings('ja')['dns_outside_aws'];
+        $this->assertStringContainsString('接続先の URL を確かめてください。', $ja);
+        $this->assertStringContainsString('連携ツールに入っている Amazon の IP アドレスの範囲の一覧が古く', $ja);
+        $this->assertStringContainsString('連携ツールを最新の版に更新してください。', $ja);
+    }
+
     public function test_the_trademark_notice_of_the_readme_is_the_one_of_the_plugin(): void {
         // The notice is a fixed text (Trademark Guidelines of Moodle Pty Ltd): the README says it word for word, as the pages do.
         $readme = file_get_contents(\core_component::get_component_directory('tool_secbackup') . '/README.md');
