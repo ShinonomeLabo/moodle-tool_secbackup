@@ -5,9 +5,11 @@
 #        .dev/ci/matrix.sh --list      print the combinations and stop
 # An environment that this script installs is removed with its data when its combination is done, so that the disk holds
 # one site at a time; any other one (installed before, with the marker file of install.sh, or one whose install fails) is
-# only stopped. SECBK_MATRIX_KEEP is a regular expression for "<ver> <db> <php>": the environments of the combinations it
-# matches are stopped, not removed (SECBK_MATRIX_KEEP=. keeps all of them). Moodle 5.0 runs in its own checkout (SECBK_SITE=matrix): devconfig.sh edits config.php,
-# and the plain 5.0 site may hold a registration made by hand that must stay as it is.
+# only stopped. An environment whose first install failed part-way is therefore left without a marker and with what the
+# install made: remove it with .dev/env/down.sh <ver> <db> --volumes before the next run (the FAILED line says so).
+# SECBK_MATRIX_KEEP is a regular expression for "<ver> <db> <php>": the environments of the combinations it matches are stopped,
+# not removed (SECBK_MATRIX_KEEP=. keeps all of them). Moodle 5.0 runs in its own checkout (SECBK_SITE=matrix): devconfig.sh
+# edits config.php, and the plain 5.0 site may hold a registration made by hand that must stay as it is.
 # One line per combination goes to .dev/ci/out/matrix.log: ok or FAILED, and the minutes. The logs of the steps are in
 # .dev/ci/out/<ver>-<db>[-php<version>]/. Exits non-zero when a combination failed.
 set -uo pipefail
@@ -73,11 +75,16 @@ while read -r ver db php <&3; do
     else
         status=1
     fi
-    printf '%-7s %s %s %s (%d min)\n' "$result" "$ver" "$db" "$php" $(((SECONDS - started + 59) / 60)) | tee -a "$log"
     # This run installed the environment only when there was no marker before it and there is one now. An install that fails
     # makes no marker, so an environment that was there before, even one without a marker, is only stopped and keeps its data.
     installed_now=0
     [ "$marker_before" -eq 0 ] && [ -f "$env_root/installed-$project" ] && installed_now=1
+    hint=""
+    if [ "$result" = FAILED ] && [ ! -f "$env_root/installed-$project" ]; then
+        hint=" - no marker of install.sh: if its first install failed part-way, run"
+        hint+=" .dev/env/down.sh $ver $db --volumes before the next run"
+    fi
+    printf '%-7s %s %s %s (%d min)%s\n' "$result" "$ver" "$db" "$php" $(((SECONDS - started + 59) / 60)) "$hint" | tee -a "$log"
     if [ "$installed_now" -eq 1 ] && ! { [ -n "${SECBK_MATRIX_KEEP:-}" ] && [[ "$ver $db $php" =~ $SECBK_MATRIX_KEEP ]]; }; then
         "$repo/.dev/env/down.sh" "$ver" "$db" --volumes
     else

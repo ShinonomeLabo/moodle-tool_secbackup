@@ -876,6 +876,22 @@ expect_check ok "the matrix removes with its data an environment that its own ru
     matrix_down no installs '503 pgsql --volumes' ok
 expect_check ok "the matrix only stops an environment that was installed before (it has a marker)" \
     matrix_down yes skips '503 pgsql' ok
+# An install that fails part-way leaves an environment without a marker and with what it made: the line of the result says
+# how to remove it before the next run. A run that fails after a good install, or one of an environment from before, does not.
+matrix_hint() {
+    local before="$1" install="$2" down="$3" result="$4" wanted="$5" line
+    # A fresh tree: matrix_down appends to the record of down.sh, and the tests above used the same names.
+    rm -rf "${work:?}/matrix-down-$before-$install"
+    matrix_down "$before" "$install" "$down" "$result" || return 1
+    line="$(grep -E '^(ok|FAILED) ' "$work/matrix-down-$before-$install/out.log")" || return 1
+    case "$line" in
+        *'.dev/env/down.sh 503 pgsql --volumes'*) [ "$wanted" = yes ] ;;
+        *) [ "$wanted" = no ] ;;
+    esac
+}
+expect_check ok "the line of an install that failed part-way says to remove the environment with down.sh --volumes" \
+    matrix_hint no fails '503 pgsql' failed yes
+expect_check ok "the line of an environment that was installed before does not say so" matrix_hint yes skips '503 pgsql' ok no
 
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
