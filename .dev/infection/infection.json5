@@ -1,0 +1,27 @@
+{
+    "$schema": "/opt/infection/resources/schema.json",
+    "source": {
+        "directories": [
+            "classes/local/crypto",
+            "classes/local/trust",
+            "classes/local/api",
+            "classes/local/net",
+            "classes/local/endpoint"
+        ]
+    },
+    "phpUnit": {
+        // The plugin's own phpunit.xml (the plugin root, seen from this folder), made by admin/tool/phpunit/cli/util.php --buildcomponentconfigs.
+        "configDir": "../..",
+        "customPath": "/var/www/html/vendor/bin/phpunit"
+    },
+    "bootstrap": "./.dev/infection/bootstrap.php",
+    "initialTestsPhpOptions": "-d pcov.enabled=1 -d pcov.directory=.",
+    // A mutant whose covering tests take longer than this is skipped, not tested: it is 15 minutes here so that none is.
+    "timeout": 900,
+    "minCoveredMsi": 95,
+    "logs": {
+        // Relative to this folder.
+        "text": "out/infection.log",
+        "summary": "out/summary.log"
+    }
+}
