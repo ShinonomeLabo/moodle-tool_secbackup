@@ -125,7 +125,13 @@ mkdir -p "$out" "$raw"
 git -C "$repo" rev-parse HEAD > "$out/commit"
 
 # PHPUnit with every shipped file in the denominator.
-SECBK_COVERAGE="$plugin/.dev/coverage/out/$name/phpunit.xml" "$repo/.dev/env/phpunit.sh" "$secbk_ver" "$secbk_db" --fail-on-warning
+# PHP 8.1 of the moodle-php-apache image (8.1.34 on arm64) crashes with a segmentation fault in the progress output of
+# PHPUnit 9.6 after about 180 tests when pcov collects (the same run passes without pcov, and with --debug, which prints one
+# line per test instead of dots). So PHP 8.1 runs with --debug; nothing else changes.
+phpunit_extra=()
+if [ "$secbk_php" = 8.1 ]; then phpunit_extra=(--debug); fi
+SECBK_COVERAGE="$plugin/.dev/coverage/out/$name/phpunit.xml" "$repo/.dev/env/phpunit.sh" "$secbk_ver" "$secbk_db" --fail-on-warning \
+    ${phpunit_extra[@]+"${phpunit_extra[@]}"}
 
 # Behat and CLI through the collector. OPcache is off, so that the web requests count the same lines as PHPUnit does.
 # The flag is set before anything is written, so that a failure half way still takes the settings away. ENABLED is made
