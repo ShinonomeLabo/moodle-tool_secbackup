@@ -586,6 +586,12 @@ jobs:
           pattern: coverage-run-*
           path: ${{ runner.temp }}/coverage
 
+      # One folder for each row of the matrix of the job test, with its PHPUnit report: a combination whose coverage is
+      # missing (an artifact that expired, this job run again alone) would be left out of the merge, which could still count
+      # 100%. Without them no summary is written, so the badge stays as it was.
+      - name: Check that every combination sent its coverage
+        run: bash .dev/ci/check-coverage-runs.sh "$RUNNER_TEMP/coverage"
+
       # The merge always writes the numbers it counted, also when it finds lines that no run executed. The step after
       # the upload fails the job in that case.
       - name: Merge the coverage

@@ -788,6 +788,61 @@ matrix_real() {
 }
 expect_check ok "the matrix lists as many combinations as ci.yml has (the other jobs have rows of their own)" matrix_real
 
+# The job `coverage` checks that the coverage of every combination arrived (.dev/ci/check-coverage-runs.sh): one folder for each
+# row of the job `test`, each with its PHPUnit report, and no other folder of that name.
+coverage_runs="$here/../../ci/check-coverage-runs.sh"
+coverage_yml="$work/coverage-ci.yml"
+printf '%s\n' 'jobs:' '  test:' '    strategy:' '      matrix:' '        include:' \
+    "          - {moodle: '4.5', branch: MOODLE_405_STABLE, php: '8.1', database: pgsql, image: 'postgres:13'}" \
+    "          - {moodle: '5.0', branch: MOODLE_500_STABLE, php: '8.4', database: mariadb, image: 'mariadb:10.11'}" \
+    "          - {moodle: '5.3', branch: MOODLE_503_STABLE, php: '8.4', database: mysqli, image: 'mysql:8.4'}" \
+    '    services:' > "$coverage_yml"
+coverage_planted=0
+coverage_runs_pass() {
+    # coverage_runs_pass <ci.yml> <folder names...>: plants the folders, each with its phpunit.xml unless the name ends with
+    # "!", and runs the check on them.
+    local yml="$1" dir name
+    shift
+    coverage_planted=$((coverage_planted + 1))
+    dir="$work/coverage-runs-$coverage_planted"
+    mkdir -p "$dir" || return 1
+    for name in "$@"; do
+        mkdir -p "$dir/${name%!}" || return 1
+        case $name in *!) ;; *) : > "$dir/$name/phpunit.xml" || return 1 ;; esac
+    done
+    SECBK_CI_YML="$yml" bash "$coverage_runs" "$dir"
+}
+expect_check ok "the coverage check accepts one report for each combination" coverage_runs_pass "$coverage_yml" \
+    coverage-run-4.5-8.1-pgsql coverage-run-5.0-8.4-mariadb coverage-run-5.3-8.4-mysqli
+expect_check ng "the coverage check refuses a missing combination" coverage_runs_pass "$coverage_yml" \
+    coverage-run-4.5-8.1-pgsql coverage-run-5.3-8.4-mysqli
+expect_check ng "the coverage check refuses a folder that is not a combination" coverage_runs_pass "$coverage_yml" \
+    coverage-run-4.5-8.1-pgsql coverage-run-5.0-8.4-mariadb coverage-run-5.3-8.4-mysqli coverage-run-5.3-8.3-mysqli
+expect_check ng "the coverage check refuses a combination without its PHPUnit report" coverage_runs_pass "$coverage_yml" \
+    coverage-run-4.5-8.1-pgsql 'coverage-run-5.0-8.4-mariadb!' coverage-run-5.3-8.4-mysqli
+expect_check ng "the coverage check refuses no report at all" coverage_runs_pass "$coverage_yml"
+printf '%s\n' 'jobs:' '  test:' '    services:' > "$work/coverage-empty.yml"
+expect_check ng "the coverage check fails when the job test has no combination" coverage_runs_pass "$work/coverage-empty.yml"
+# The names follow the step "Upload the coverage" of ci.yml; they are made here from the rows of ci.yml without matrix.sh.
+real_coverage_names() {
+    awk '/^  test:/ {in_test = 1} /^    services:/ {in_test = 0}
+        in_test && /- \{moodle: / {
+            match($0, /moodle: \047[0-9.]+\047/); moodle = substr($0, RSTART + 9, RLENGTH - 10)
+            match($0, /php: \047[0-9.]+\047/); php = substr($0, RSTART + 6, RLENGTH - 7)
+            match($0, /database: [a-z]+/); database = substr($0, RSTART + 10, RLENGTH - 10)
+            print "coverage-run-" moodle "-" php "-" database
+        }' "$here/../../../.github/workflows/ci.yml"
+}
+coverage_runs_of_this_repository_pass() {
+    local names
+    names="$(real_coverage_names)" && [ -n "$names" ] || return 1
+    grep -qF 'name: coverage-run-${{ matrix.moodle }}-${{ matrix.php }}-${{ matrix.database }}' \
+        "$here/../../../.github/workflows/ci.yml" || return 1
+    # shellcheck disable=SC2086
+    coverage_runs_pass "$here/../../../.github/workflows/ci.yml" $names
+}
+expect_check ok "the coverage check accepts the artifacts that the job test of this ci.yml uploads" coverage_runs_of_this_repository_pass
+
 # The matrix removes an environment with its data only when its own run installed it: no marker of install.sh before the
 # run and one after it. A copy of matrix.sh runs with stand-ins for the steps, and the stand-in of down.sh records how it
 # was called. Usage: matrix_down <marker before: yes|no> <install: fails|installs|skips> <down.sh arguments> <ok|failed>
