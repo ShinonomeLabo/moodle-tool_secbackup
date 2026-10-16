@@ -211,6 +211,11 @@ if [ "${1-}" = log ] && [ "${3-}" = '--format=%B' ] && [ -n "${FAKE_GIT_FAIL_ON-
         exit 1
     fi
 fi
+# FAKE_GIT_FAIL_GREP: "git grep" fails as git does on an error (128). FAKE_GIT_FAIL_LSTREE: the same for "git ls-tree".
+for argument in "$@"; do
+    [ -n "${FAKE_GIT_FAIL_GREP-}" ] && [ "$argument" = grep ] && exit 128
+    [ -n "${FAKE_GIT_FAIL_LSTREE-}" ] && [ "$argument" = ls-tree ] && exit 128
+done
 exec "$FAKE_REAL_GIT" "$@"
 EOF
 chmod +x "$work/fakebin/grep" "$work/fakebin/sed" "$work/fakebin/tr" "$work/fakebin/mktemp" "$work/fakebin/git"
@@ -250,6 +255,14 @@ expect_hook() {
     shift 2
     if run_hook "$@" >/dev/null 2>&1; then actual=ok; else actual=ng; fi
     if [ "$actual" = "$expected" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL hook: $label (expected $expected, got $actual)"; fi
+}
+
+# Runs a check function and compares its result (ok: it returned 0) with the expected one.
+expect_check() {
+    local expected="$1" label="$2"
+    shift 2
+    if "$@" >/dev/null 2>&1; then actual=ok; else actual=ng; fi
+    if [ "$actual" = "$expected" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL check: $label (expected $expected, got $actual)"; fi
 }
 
 # Runs a command with the repository identity as author and committer. Environment assignments passed before the
@@ -380,6 +393,115 @@ expect_hook ok "check-history when git says the history is complete" "$good" che
 expect_hook ng "check-history when git prints back the option (git before 2.15)" "$good" check-history.sh '' PATH="$work/fakebin:$PATH" FAKE_GIT_SHALLOW=--is-shallow-repository
 expect_hook ng "check-history when git cannot tell whether the history is shallow" "$good" check-history.sh '' PATH="$work/fakebin:$PATH" FAKE_GIT_SHALLOW=fail
 
+# The contents (check-contents.sh, and pre-push for what it sends): the files of every commit and their names, and the tags.
+# Each repository below has files; the words of the list are planted where each test says.
+file_commit() {
+    # file_commit <repo> <file> <content or - to remove it> <message>
+    local repo="$1" file="$2" content="$3" text="$4"
+    if [ "$content" = - ]; then
+        git -C "$repo" rm -q -- "$file" || return 1
+    else
+        mkdir -p "$(dirname "$repo/$file")" && printf '%s\n' "$content" > "$repo/$file" && git -C "$repo" add -- "$file" || return 1
+    fi
+    commit_in "$repo" "$text"
+}
+tag_in() {
+    # tag_in <repo> <name> <message> <object> [environment assignments]: an annotated tag, by the repository identity unless
+    # the assignments replace it.
+    local repo="$1" name="$2" text="$3" object="$4"
+    shift 4
+    as_owner "$@" git -C "$repo" -c tag.gpgSign=false tag -a --cleanup=verbatim -m "$text" "$name" "$object"
+}
+contents_repo() {
+    # contents_repo <name>: a new repository with one clean file and one commit; prints its path.
+    local repo="$work/contents-$1"
+    git init -q "$repo" 2>/dev/null && file_commit "$repo" docs/a.txt 'ordinary words' '最初の変更を足す' > /dev/null && printf '%s' "$repo"
+}
+c_clean="$(contents_repo clean)" || exit 2
+file_commit "$c_clean" docs/b.txt 'more ordinary words' '次の変更を足す' || exit 2
+tag_in "$c_clean" v1 '最初の版を出す' HEAD || exit 2
+c_head="$(contents_repo head)" || exit 2
+file_commit "$c_head" docs/a.txt 'a line with a FORBIDDENword in it' '次の変更を足す' || exit 2
+c_old="$(contents_repo old)" || exit 2
+file_commit "$c_old" notes/old.txt 'a Second Phrase here' '次の変更を足す' || exit 2
+c_old_hit="$(git -C "$c_old" rev-parse HEAD)"
+file_commit "$c_old" notes/old.txt - '三つ目の変更を足す' || exit 2
+c_name="$(contents_repo name)" || exit 2
+file_commit "$c_name" docs/forbiddenword-notes.txt 'ordinary words' '次の変更を足す' || exit 2
+c_tagword="$(contents_repo tagword)" || exit 2
+tag_in "$c_tagword" v1 $'最初の版を出す\n\nforbiddenword' HEAD || exit 2
+c_tagenglish="$(contents_repo tagenglish)" || exit 2
+tag_in "$c_tagenglish" v1 'Release the first version' HEAD || exit 2
+c_tagger="$(contents_repo tagger)" || exit 2
+tag_in "$c_tagger" v1 '最初の版を出す' HEAD GIT_COMMITTER_NAME='Someone Else' GIT_COMMITTER_EMAIL='someone@example.com' || exit 2
+c_tagname="$(contents_repo tagname)" || exit 2
+git -C "$c_tagname" tag forbiddenword HEAD || exit 2
+c_tagtree="$(contents_repo tagtree)" || exit 2
+tag_in "$c_tagtree" tree1 'ツリーに付けたタグ' 'HEAD^{tree}' || exit 2
+git -c protocol.file.allow=always -c core.hooksPath=/dev/null clone -q --depth 1 "file://$c_clean" "$work/contents-shallow" 2>/dev/null \
+    || exit 2
+printf -v push_c_clean 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$c_clean" rev-parse HEAD)" "$zeros"
+printf -v push_c_clean_tag 'refs/tags/v1 %s refs/tags/v1 %s\n' "$(git -C "$c_clean" rev-parse v1)" "$zeros"
+printf -v push_c_head 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$c_head" rev-parse HEAD)" "$zeros"
+printf -v push_c_old 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$c_old" rev-parse HEAD)" "$zeros"
+printf -v push_c_name 'refs/heads/main %s refs/heads/main %s\n' "$(git -C "$c_name" rev-parse HEAD)" "$zeros"
+printf -v push_c_tagword 'refs/tags/v1 %s refs/tags/v1 %s\n' "$(git -C "$c_tagword" rev-parse v1)" "$zeros"
+printf -v push_c_tagger 'refs/tags/v1 %s refs/tags/v1 %s\n' "$(git -C "$c_tagger" rev-parse v1)" "$zeros"
+printf -v push_c_tagname 'refs/tags/forbiddenword %s refs/tags/forbiddenword %s\n' "$(git -C "$c_tagname" rev-parse HEAD)" "$zeros"
+
+expect_hook ok "check-contents of a clean repository with an annotated tag" "$c_clean" check-contents.sh ''
+expect_hook ng "check-contents, a word in a file at HEAD" "$c_head" check-contents.sh ''
+expect_hook ng "check-contents, a word in a file of an older commit only" "$c_old" check-contents.sh ''
+expect_hook ng "check-contents, a word in the name of a file" "$c_name" check-contents.sh ''
+expect_hook ng "check-contents, a word in the message of an annotated tag" "$c_tagword" check-contents.sh ''
+expect_hook ng "check-contents, an annotated tag with an English message" "$c_tagenglish" check-contents.sh ''
+expect_hook ng "check-contents, an annotated tag by another tagger" "$c_tagger" check-contents.sh ''
+expect_hook ng "check-contents, a word in the name of a tag" "$c_tagname" check-contents.sh ''
+expect_hook ng "check-contents, a tag of a tree (its contents are not checked)" "$c_tagtree" check-contents.sh ''
+expect_hook ng "check-contents without the pattern list" "$c_clean" check-contents.sh '' SECBACKUP_PATTERNS_FILE="$patterns.missing"
+expect_hook ng "check-contents outside a repository" "$work/notrepo" check-contents.sh ''
+expect_hook ng "check-contents of a shallow clone" "$work/contents-shallow" check-contents.sh ''
+expect_hook ng "check-contents when git grep fails" "$c_clean" check-contents.sh '' PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_GREP=1
+expect_hook ng "check-contents when the names of the files cannot be listed" "$c_clean" check-contents.sh '' \
+    PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_LSTREE=1
+expect_hook ok "pre-push of a clean branch with files" "$c_clean" pre-push "$push_c_clean"
+expect_hook ok "pre-push of a clean annotated tag" "$c_clean" pre-push "$push_c_clean_tag"
+expect_hook ng "pre-push, a word in a file at the pushed commit" "$c_head" pre-push "$push_c_head"
+expect_hook ng "pre-push, a word in a file of an older commit only" "$c_old" pre-push "$push_c_old"
+expect_hook ng "pre-push, a word in the name of a file" "$c_name" pre-push "$push_c_name"
+expect_hook ng "pre-push, a word in the message of the pushed annotated tag" "$c_tagword" pre-push "$push_c_tagword"
+expect_hook ng "pre-push, the pushed annotated tag is by another tagger" "$c_tagger" pre-push "$push_c_tagger"
+expect_hook ng "pre-push, a word in the name of the pushed tag" "$c_tagname" pre-push "$push_c_tagname"
+expect_hook ng "pre-push without the pattern list" "$c_clean" pre-push "$push_c_clean" SECBACKUP_PATTERNS_FILE="$patterns.missing"
+expect_hook ng "pre-push when git grep fails" "$c_clean" pre-push "$push_c_clean" PATH="$work/fakebin:$PATH" FAKE_GIT_FAIL_GREP=1
+
+# What the content checks print: the commit, the file and the number of lines, never the line or a word (a word in the name of
+# a file or a tag is not printed either).
+# Usage: contents_output_says <repo> <script> <input> <text that must be in the output...>
+contents_output_says() {
+    local repo="$1" script="$2" input="$3" out wanted
+    shift 3
+    out="$(run_hook "$repo" "$script" "$input" 2>&1)" && return 1
+    if printf '%s\n' "$out" | LC_ALL=C grep -q -i -e forbiddenword -e 'second phrase'; then
+        return 1
+    fi
+    for wanted in "$@"; do
+        case "$out" in *"$wanted"*) ;; *) return 1 ;; esac
+    done
+}
+expect_check ok "check-contents names the file of HEAD and the number of lines, without the word" \
+    contents_output_says "$c_head" check-contents.sh '' 'HEAD docs/a.txt (1 行)'
+expect_check ok "check-contents names the older commit and its file, without the word" \
+    contents_output_says "$c_old" check-contents.sh '' "$c_old_hit notes/old.txt (1 行)"
+expect_check ok "check-contents does not print a file name that holds the word" \
+    contents_output_says "$c_name" check-contents.sh '' 'ファイルの名前に使えない言葉が入っています'
+expect_check ok "check-contents does not print a tag name that holds the word" \
+    contents_output_says "$c_tagname" check-contents.sh '' '(使えない言葉が入った名前)'
+expect_check ok "pre-push does not print the word of a tag message" \
+    contents_output_says "$c_tagword" pre-push "$push_c_tagword" 'コミットのメッセージに、使えない言葉が入っています。'
+expect_check ok "pre-push names the older commit and its file, without the word" \
+    contents_output_says "$c_old" pre-push "$push_c_old" "$c_old_hit (refs/heads/main -> refs/heads/main) notes/old.txt (1 行)"
+
 # install.sh needs perl (the hooks use it) and stops with a clear message when it is missing; with perl it
 # enables the hooks of the repository it lives in. Both run in a throw-away copy, never on this repository.
 mkdir "$work/empty" || exit 2
@@ -392,7 +514,8 @@ install_stops_without_perl() {
 install_enables_the_hooks() {
     local copy="$work/install" out
     mkdir -p "$copy/.dev/hooks/tests" && git init -q "$copy" 2>/dev/null || return 1
-    /bin/cp -f "$here/../install.sh" "$here/../commit-msg" "$here/../pre-push" "$here/../check-history.sh" "$copy/.dev/hooks/" || return 1
+    /bin/cp -f "$here/../install.sh" "$here/../commit-msg" "$here/../pre-push" "$here/../check-history.sh" "$here/../check-contents.sh" \
+        "$copy/.dev/hooks/" || return 1
     /bin/cp -f "$here/run.sh" "$copy/.dev/hooks/tests/" || return 1
     out="$(cd "$copy" && "$BASH" .dev/hooks/install.sh 2>&1)" || return 1
     case "$out" in *'hooks enabled: .dev/hooks'*) ;; *) return 1 ;; esac
@@ -400,12 +523,6 @@ install_enables_the_hooks() {
     [ "$(git -C "$copy" config --local core.hooksPath)" = '.dev/hooks' ] \
         && [ "$(git -C "$copy" config --local user.name)" = 'Takayuki Fuwa' ] \
         && [ "$(git -C "$copy" config --local user.email)" = 'fuwa@shinonome.co.jp' ]
-}
-expect_check() {
-    local expected="$1" label="$2"
-    shift 2
-    if "$@" >/dev/null 2>&1; then actual=ok; else actual=ng; fi
-    if [ "$actual" = "$expected" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL check: $label (expected $expected, got $actual)"; fi
 }
 expect_check ok "install.sh stops with a message about perl when perl is missing" install_stops_without_perl
 expect_check ok "install.sh enables the hooks of its repository" install_enables_the_hooks

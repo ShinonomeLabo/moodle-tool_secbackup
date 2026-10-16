@@ -158,3 +158,132 @@ secbackup_check_commit() {
     echo "  -> $label" >&2
     return 1
 }
+
+# Prints the words of the local pattern file, one per line, for a search of the contents. Fails with the reason when the list
+# cannot be read or holds no word, as secbackup_check_message does: a search without words would let everything through.
+secbackup_scan_patterns() {
+    local patterns
+    if ! patterns="$(secbackup_patterns)"; then
+        echo "拒む言葉の一覧 ($SECBACKUP_PATTERNS_FILE) を読めませんでした。権限と、言葉が ASCII の印字できる文字だけで書かれていること (全角の空白や NUL などの制御文字がないこと) を確かめてください。" >&2
+        return 1
+    fi
+    if [ -z "$patterns" ]; then
+        echo "拒む言葉の一覧 ($SECBACKUP_PATTERNS_FILE) がありません。用意するまで中身を確かめられません。" >&2
+        return 1
+    fi
+    printf '%s\n' "$patterns"
+}
+
+# Usage: printf '%s\n' <text> | secbackup_holds_word <words>. Returns 0 when a line of the text holds one of the words, 1 when
+# none does, and 2 or more when the search fails. Byte-wise and case-insensitive, like the search of the messages.
+secbackup_holds_word() {
+    LC_ALL=C grep -q -i -F -f <(printf '%s\n' "$1")
+}
+
+# Prints a name that may be shown: the name, or a stand-in when the name holds one of the words or cannot be searched. The log
+# of a public repository is public, and so would be a word printed into it.
+secbackup_shown_name() {
+    local found=0
+    printf '%s\n' "$1" | secbackup_holds_word "$2" || found=$?
+    if [ "$found" -eq 1 ]; then
+        printf '%s' "$1"
+    else
+        printf '%s' '(使えない言葉が入った名前)'
+    fi
+}
+
+# Usage: secbackup_check_tree <revision> <label> <words>. Searches the files of a revision, and the names of its files, for the
+# words. A hit prints the label, the name of the file and the number of its lines that hold a word, never a line: the line
+# holds the word. Returns 1 when a word is found, and when a search cannot run (fail closed). Binary files are not searched
+# (git grep -I). The settings of git that would change the output read here are given on the command line.
+secbackup_check_tree() {
+    local revision="$1" label="$2" words="$3" out names entry name found=0 result=0
+    out="$(LC_ALL=C git -c grep.lineNumber=false -c grep.column=false -c grep.fullName=true -c core.quotePath=true \
+        grep -I -i -F -c --no-color -f <(printf '%s\n' "$words") "$revision" --)" || found=$?
+    case $found in
+        0)
+            while IFS= read -r entry; do
+                entry="${entry#"$revision":}"
+                name="${entry%:*}"
+                echo "ファイルに使えない言葉が入っています: $label $(secbackup_shown_name "$name" "$words") (${entry##*:} 行)" >&2
+            done <<< "$out"
+            result=1
+            ;;
+        1) ;;
+        *)
+            echo "ファイルの中身を拒む言葉の一覧で探せませんでした: $label" >&2
+            return 1
+            ;;
+    esac
+    if ! names="$(git -c core.quotePath=true ls-tree -r --name-only "$revision")"; then
+        echo "ファイルの名前の一覧を取れませんでした: $label" >&2
+        return 1
+    fi
+    found=0
+    printf '%s\n' "$names" | secbackup_holds_word "$words" || found=$?
+    case $found in
+        0)
+            echo "ファイルの名前に使えない言葉が入っています: $label" >&2
+            result=1
+            ;;
+        1) ;;
+        *)
+            echo "ファイルの名前を拒む言葉の一覧で探せませんでした: $label" >&2
+            return 1
+            ;;
+    esac
+    return "$result"
+}
+
+# Usage: secbackup_check_tag <object> <ref name> <words>. Checks a tag: its name, and for an annotated tag its message and its
+# tagger by the rules of a commit (an annotated tag that points to another one is followed). The commits a tag points to are
+# not checked here; the callers check them with the other commits. A tag that leads to anything but a commit is refused: its
+# contents would not be checked. Returns 1 and prints the reasons when the tag breaks a rule or cannot be read. The caller has to
+# run "trap secbackup_remove_message_file EXIT" (see secbackup_check_commit).
+secbackup_check_tag() {
+    local object="$1" label words="$3" type text status=0 found=0
+    label="$(secbackup_shown_name "$2" "$words")"
+    printf '%s\n' "${2#refs/tags/}" | secbackup_holds_word "$words" || found=$?
+    if [ "$found" -ne 1 ]; then
+        echo "タグの名前に使えない言葉が入っているか、名前を探せませんでした: $label" >&2
+        status=1
+    fi
+    while :; do
+        if ! type="$(git cat-file -t "$object")"; then
+            echo "タグを読めませんでした: $label" >&2
+            return 1
+        fi
+        [ "$type" = tag ] || break
+        if ! text="$(git cat-file tag "$object")"; then
+            echo "タグを読めませんでした: $label" >&2
+            return 1
+        fi
+        # With a template, mktemp makes the file in TMPDIR on every system (as in secbackup_check_commit).
+        if ! SECBACKUP_MESSAGE_FILE="$(mktemp "${TMPDIR:-/tmp}/secbackup-message.XXXXXXXXXX")"; then
+            echo "一時ファイルを作れませんでした。" >&2
+            return 1
+        fi
+        # The message is everything after the first empty line of the tag object, a signature included.
+        if ! printf '%s\n' "$text" | LC_ALL=C sed -e '1,/^$/d' > "$SECBACKUP_MESSAGE_FILE"; then
+            echo "タグのメッセージを読めませんでした: $label" >&2
+            secbackup_remove_message_file
+            return 1
+        fi
+        secbackup_check_message "$SECBACKUP_MESSAGE_FILE" || status=1
+        secbackup_remove_message_file
+        secbackup_check_identity "$(printf '%s\n' "$text" \
+            | LC_ALL=C sed -n -e '/^$/q' -e 's/^tagger \(.*\) [0-9][0-9]* [-+][0-9][0-9][0-9][0-9]$/\1/p')" || status=1
+        object="$(printf '%s\n' "$text" | LC_ALL=C sed -n -e '/^$/q' -e 's/^object //p')"
+        if [ -z "$object" ]; then
+            echo "タグが指すものを読めませんでした: $label" >&2
+            return 1
+        fi
+    done
+    if [ "$type" != commit ]; then
+        echo "タグがコミット以外 ($type) を指しています。中身を確かめられないので、受け付けません: $label" >&2
+        status=1
+    fi
+    [ "$status" -eq 0 ] && return 0
+    echo "  -> $label" >&2
+    return 1
+}

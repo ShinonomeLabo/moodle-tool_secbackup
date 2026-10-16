@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks every commit that the pushed commits reach, not only the ones the remote lacks: a commit that came from
 # another remote, or from a clone without these hooks, is checked too. This also catches a commit made with
-# --no-verify, which skipped commit-msg.
+# --no-verify, which skipped commit-msg. Each commit is checked by its message and identity, and by its files and their
+# names (as check-contents.sh does); a pushed tag also by its name, and an annotated one by its message and tagger.
 # It fails closed: a list of commits or a commit that cannot be read rejects the push instead of being skipped.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -12,18 +13,25 @@ trap secbackup_remove_message_file EXIT
 
 zero='0000000000000000000000000000000000000000'
 status=0
+words="$(secbackup_scan_patterns)" || exit 1
 
 # git ends every line with a newline; a last line without one is still checked, not dropped.
 # The id of the remote ref (the fourth field) is not used: the whole history of the pushed commit is checked.
 while read -r localref localsha remoteref _ || [ -n "$localref" ]; do
     [ "$localsha" = "$zero" ] && continue
+    # The names of the refs are printed only when they hold no word.
+    refs="$(secbackup_shown_name "$localref -> $remoteref" "$words")"
+    case $remoteref in
+        refs/tags/*) secbackup_check_tag "$localsha" "$remoteref" "$words" || status=1 ;;
+    esac
     if ! commits="$(git rev-list "$localsha")"; then
-        echo "  -> $localref -> $remoteref: プッシュするコミットの一覧を取れませんでした。" >&2
+        echo "  -> $refs: プッシュするコミットの一覧を取れませんでした。" >&2
         status=1
         continue
     fi
     for commit in $commits; do
-        secbackup_check_commit "$commit" "$commit ($localref -> $remoteref)" || status=1
+        secbackup_check_commit "$commit" "$commit ($refs)" || status=1
+        secbackup_check_tree "$commit" "$commit ($refs)" "$words" || status=1
     done
 done
 exit $status

@@ -14,7 +14,7 @@ The default branch of the repository is `main`.
 
 | Job | What it does |
 |---|---|
-| `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the check that no development script can be run from the web, and the tests of the coverage tools and of the badge. |
+| `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the files of every commit, their names and the tags (`.dev/hooks/check-contents.sh`), the check that no development script can be run from the web, and the tests of the coverage tools and of the badge. |
 | `inventory` | `tests/behat/inventory.txt` against the code (below), and the tests of that check. It needs no secret, so a pull request from a fork gets it. |
 | `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination. Nothing in it is optional: Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
 | `behat` | Behat in Firefox and in Edge on Moodle 4.5, 5.0, 5.1, 5.2 and 5.3, each with PostgreSQL and MariaDB: 20 jobs, with the newest PHP of the Moodle version. The same install as `test`, without the coverage; `moodle-plugin-ci behat --profile <browser> --selenium selenium/standalone-<browser>:4 --auto-rerun 0`. The Edge profile is added to `config.php` by the job (moodle-plugin-ci knows only chrome and firefox). On failure the Behat dump is uploaded (`Behat Faildump <browser> ...`; no artifact name but the coverage ones starts with `coverage-run-`). |
@@ -48,7 +48,7 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 
 | Workflow step | Local step (`.dev/ci/run.sh` and friends) |
 |---|---|
-| Commit rules and development tools | `bash .dev/hooks/tests/run.sh`, `bash .dev/hooks/check-history.sh`, `bash .dev/hooks/check-dev-guards.sh`, `php .dev/coverage/tests/run.php`, `php .dev/coverage/tests/badge.php` |
+| Commit rules and development tools | `bash .dev/hooks/tests/run.sh`, `bash .dev/hooks/check-history.sh`, `bash .dev/hooks/check-contents.sh`, `bash .dev/hooks/check-dev-guards.sh`, `php .dev/coverage/tests/run.php`, `php .dev/coverage/tests/badge.php` |
 | Install Moodle with the plugin | `.dev/env/setup.sh`, `up.sh`, `install.sh`, `devconfig.sh` |
 | PHP Lint, Mess Detector, Code Checker, PHPDoc, Validating, Savepoints, Mustache, Grunt | moodle-plugin-ci in the web server container |
 | UI inventory | `php .dev/ci/check-ui-inventory.php` (inside `run.sh`, in the web server container) |

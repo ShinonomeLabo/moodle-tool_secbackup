@@ -38,6 +38,7 @@ jobs:
           coverage: none
 
       - name: Write the pattern list from the secret
+        id: patterns
         env:
           SECBACKUP_PATTERNS: ${{ secrets.SECBACKUP_PATTERNS }}
         run: |
@@ -57,6 +58,12 @@ jobs:
 
       - name: Check every commit
         run: bash .dev/hooks/check-history.sh
+
+      # The files of every commit, their names and the tags. It runs also when the step above failed, so that one run shows
+      # both results. The log names the commit, the file and the number of lines, never a line or a word of the list.
+      - name: Check the files of every commit and the tags
+        if: ${{ !cancelled() && steps.patterns.outcome == 'success' }}
+        run: bash .dev/hooks/check-contents.sh
 
       - name: Check the pull request title and description
         if: github.event_name == 'pull_request'
