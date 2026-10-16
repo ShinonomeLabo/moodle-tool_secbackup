@@ -17,8 +17,9 @@ fi
 if [ ! -d "$SECBK_ENV_ROOT/moodle-plugin-ci" ]; then
     composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci "$SECBK_ENV_ROOT/moodle-plugin-ci" ^4
 fi
-# Infection (mutation testing, .dev/infection). 0.29.14 is the newest 0.29: it needs PHP 8.2 or later and drives PHPUnit 9.6
-# and 11. The 0.30 and later releases need PHP 8.3, which the 4.5 containers on PHP 8.1 lack, and Infection only runs in 5.3.
+# Infection (mutation testing, .dev/infection), only in the 5.3 environment. The version is fixed because the results in
+# .dev/infection/REVIEW.md were made with it, on PHP 8.4 and PHPUnit 11.5, and the ignore entries there name mutants of
+# its mutators. Raising it means running .dev/infection/run.sh again and reviewing the escaped mutants again.
 if [ ! -d "$SECBK_ENV_ROOT/infection" ]; then
     composer create-project -n --no-dev --prefer-dist infection/infection:0.29.14 "$SECBK_ENV_ROOT/infection"
 fi
