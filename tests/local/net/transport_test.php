@@ -267,8 +267,9 @@ final class transport_test extends \advanced_testcase {
 
     #[\PHPUnit\Framework\Attributes\DataProvider('refused_call_provider')]
     /**
-     * The method is a line of the text that the caller signed, and curl sends it as it is. A GET request has no body: the
-     * caller signed the hash of a body that would not be the one that is sent.
+     * The method is a line of the text that the caller signed, so only GET and POST in upper case are sent: PSR-7 upper-cases
+     * a method itself, but it lets a line break through, and curl sends that as it is. A GET request has no body: the caller
+     * signed the hash of a body that would not be the one that is sent.
      *
      * @dataProvider refused_call_provider
      * @param string $method The method.
@@ -663,9 +664,29 @@ final class transport_test extends \advanced_testcase {
 
     #[\PHPUnit\Framework\Attributes\DataProvider('failing_send_provider')]
     /**
-     * An exception that send() throws keeps the signature and the body out of its message and out of the arguments of its
-     * trace, and has no previous exception, which would keep the trace of the call that made it. That holds for the Guzzle
-     * failure that send() turns into one, too: the failure holds the request.
+     * An exception that send() throws keeps the signature and the body out of its message, and has no previous exception,
+     * which would keep the trace of the call that made it. That holds for the Guzzle failure that send() turns into one, too:
+     * the failure holds the request.
+     *
+     * @dataProvider failing_send_provider
+     * @param array $queue What the mocked network answers.
+     * @param bool $namecheckfails Whether the name check fails.
+     * @param string $relative Name of the API call.
+     * @param string $method The method.
+     */
+    public function test_a_failure_does_not_leave_the_signature_or_the_body_in_the_message(
+        array $queue,
+        bool $namecheckfails,
+        string $relative,
+        string $method
+    ): void {
+        $e = $this->exception_from_failing_send($queue, $namecheckfails, $relative, $method);
+        $this->assert_no_secret_in_the_message($e);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_send_provider')]
+    /**
+     * An exception that send() throws keeps the signature and the body out of the arguments of its trace.
      *
      * @dataProvider failing_send_provider
      * @param array $queue What the mocked network answers.
@@ -679,12 +700,29 @@ final class transport_test extends \advanced_testcase {
         string $relative,
         string $method
     ): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the'
+                . ' arguments of the trace there.');
+        }
+        $e = $this->exception_from_failing_send($queue, $namecheckfails, $relative, $method);
+        $this->assertFalse(self::trace_leaks($e), 'The signature or the body is in the trace.');
+    }
+
+    /**
+     * Calls send() as a row of failing_send_provider says, and returns what it throws.
+     *
+     * @param array $queue What the mocked network answers.
+     * @param bool $namecheckfails Whether the name check fails.
+     * @param string $relative Name of the API call.
+     * @param string $method The method.
+     * @return \Throwable What send() throws.
+     */
+    private function exception_from_failing_send(array $queue, bool $namecheckfails, string $relative, string $method): \Throwable {
         $guard = $namecheckfails
             ? network_fakes::guard(['13.225.1.1'], null, ['203.0.113.7'])
             : network_fakes::passing_guard();
         $headers = ['Accept' => 'application/json', 'X-SecBackup-Signature' => self::SIGNATURE];
-        $e = $this->exception_from_send(new MockHandler($queue), $guard, $method, $relative, $headers);
-        $this->assert_nothing_secret_is_left($e);
+        return $this->exception_from_send(new MockHandler($queue), $guard, $method, $relative, $headers);
     }
 
     /**
@@ -734,7 +772,30 @@ final class transport_test extends \advanced_testcase {
         $this->assertInstanceOf(transport_exception::class, $e);
         $this->assertSame('transport_failed', $e->errorcode);
         $this->assertSame($class, $e->debuginfo);
-        $this->assert_nothing_secret_is_left($e);
+        $this->assert_no_secret_in_the_message($e);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('client_failure_provider')]
+    /**
+     * What replaces a failure inside the HTTP client keeps the signature and the body out of the arguments of its trace.
+     *
+     * @dataProvider client_failure_provider
+     * @param array $queue What the mocked network does.
+     * @param array $headers The headers of the call.
+     * @param string $class The class that the debug information names.
+     */
+    public function test_a_failure_inside_the_http_client_leaves_no_secret_in_the_trace(
+        array $queue,
+        array $headers,
+        string $class
+    ): void {
+        if (PHP_VERSION_ID < 80200) {
+            $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the'
+                . ' arguments of the trace there.');
+        }
+        $e = $this->exception_from_send(new MockHandler($queue), network_fakes::passing_guard(), 'POST', 'enroll', $headers);
+        $this->assertSame($class, $e->debuginfo);
+        $this->assertFalse(self::trace_leaks($e), 'The signature or the body is in the trace.');
     }
 
     /**
@@ -776,19 +837,15 @@ final class transport_test extends \advanced_testcase {
     }
 
     /**
-     * Asserts that an exception of send() keeps the signature and the body out of its message and out of the arguments of
-     * its trace, and has no previous exception.
+     * Asserts that an exception of send() keeps the signature and the body out of its message, and has no previous exception.
+     * The arguments of its trace have tests of their own, which are skipped before PHP 8.2.
      *
      * @param \Throwable $e The exception.
      */
-    private function assert_nothing_secret_is_left(\Throwable $e): void {
+    private function assert_no_secret_in_the_message(\Throwable $e): void {
         $this->assertNull($e->getPrevious(), 'A previous exception keeps the trace of the call that made it.');
         $this->assertStringNotContainsString(self::SIGNATURE, $e->getMessage());
         $this->assertStringNotContainsString(self::BODY, $e->getMessage());
-        // Before PHP 8.2 #[\SensitiveParameter] does nothing, so the headers and the body stay in the arguments of the trace.
-        if (PHP_VERSION_ID >= 80200) {
-            $this->assertFalse(self::trace_leaks($e), 'The signature or the body is in the trace.');
-        }
     }
 
     /**

@@ -106,8 +106,8 @@ final class transport {
      * @return response
      * @throws \coding_exception When the method is not GET or POST, a GET request has a body, or the name of the call is not
      *         allowed: that is a mistake of the caller.
-     * @throws transport_exception When the checks fail or the connection fails, and when anything else fails inside the HTTP
-     *         client (transport_failed, with the name of the class).
+     * @throws transport_exception When the checks or the connection fail, and when anything else fails in the HTTP client
+     *         (transport_failed, with the name of the class). A body that cannot be read afterwards throws \RuntimeException.
      */
     public function send(
         string $method,
@@ -183,8 +183,8 @@ final class transport {
         if ($this->settings->allow_private_hosts()) {
             $config['ignoresecurity'] = true;
         }
-        // Every exception that leaves this method is made here, where the headers and the body are hidden from its trace. One that
-        // was made inside the HTTP client holds the arguments of Guzzle's calls, the request among them.
+        // Every exception of the HTTP client is replaced here, where the headers and the body are hidden from its trace: one that
+        // was made inside the client holds the arguments of Guzzle's calls, the request among them.
         try {
             $response = (new \core\http_client($config))->request($method, $url, $options);
         } catch (GuzzleException $e) {
