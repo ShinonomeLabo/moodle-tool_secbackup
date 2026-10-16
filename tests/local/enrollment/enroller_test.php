@@ -189,6 +189,46 @@ final class enroller_test extends \advanced_testcase {
         $this->assertSame([], $messages->get_messages());
     }
 
+    /**
+     * Signed answers that do not belong to the request: one field differs from what was asked. Each row: the fields of the
+     * answer, the field that the refusal names.
+     *
+     * @return array
+     */
+    public static function mismatched_answer_provider(): array {
+        return [
+            'the nonce of another request' => [['request_nonce' => 'b3RoZXItbm9uY2UtMDEyMzQ1'], 'request_nonce'],
+            'another connection URL' => [['api_base' => 'https://other.example.test/api/lms-backup/v1'], 'api_base'],
+            'another encryption key' => [['encryption_key_fingerprint' => str_repeat('AB', 32)], 'encryption_key_fingerprint'],
+            'another signing key' => [['signing_key_fingerprint' => str_repeat('CD', 32)], 'signing_key_fingerprint'],
+            'another type of answer' => [['type' => 'status'], 'type'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('mismatched_answer_provider')]
+    /**
+     * A signed answer that does not belong to the request is refused, and nothing of the registration is kept.
+     *
+     * @dataProvider mismatched_answer_provider
+     * @param array $payload Fields of the answer.
+     * @param string $field The field that the refusal names.
+     */
+    public function test_a_signed_answer_that_does_not_belong_to_the_request_saves_nothing(array $payload, string $field): void {
+        $events = $this->redirectEvents();
+        $messages = $this->redirectMessages();
+        try {
+            self::enroller(self::service(['enrollpayload' => $payload]))->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('No exception');
+        } catch (api_exception $e) {
+            $this->assertSame('enroll_response_mismatch', $e->errorcode);
+            $this->assertSame($field, $e->debuginfo);
+        }
+        $this->assertFalse(state::load()->is_enrolled());
+        $this->assertNull(signing_keys::load());
+        $this->assertSame([], $events->get_events());
+        $this->assertSame([], $messages->get_messages());
+    }
+
     public function test_refused_code_saves_nothing(): void {
         $this->expectException(api_exception::class);
         try {
