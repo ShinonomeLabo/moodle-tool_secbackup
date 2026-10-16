@@ -266,6 +266,8 @@ jobs:
 
       # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL). Any other code, 255
       # above all, is a PHP fatal error, and it fails the step even when the lines were covered by another combination.
+      # The last run is under open_basedir, which hides /proc and /sys: the diagnostics have to say unknown, with no PHP message
+      # (.dev/ci/diagnose-open-basedir.sh says what it checks).
       - name: Command line scripts
         if: ${{ !cancelled() }}
         run: |
@@ -285,6 +287,7 @@ jobs:
           check 0 --endpoint=http://localhost:8099/api/lms-backup/v1
           check 1 --endpoint=ftp://example.org/api
           check 0
+          bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
           exit "$failed"
 
       - name: Keep the coverage of this combination

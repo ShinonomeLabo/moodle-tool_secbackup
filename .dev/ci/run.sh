@@ -77,6 +77,9 @@ if [ "$browser" = chrome ]; then
     # PHPUnit (--fail-on-warning), Behat and the command line scripts, with coverage; fails when a test fails.
     step tests-and-coverage "$repo/.dev/coverage/run.sh" "$secbk_ver" "$secbk_db"
     cp -R "$repo/.dev/coverage/out/$name" "$out/coverage" 2>/dev/null || true
+    # The last run of the step "Command line scripts": the diagnostics under open_basedir.
+    step open-basedir "$repo/.dev/ci/diagnose-open-basedir.sh" /var/www/html /var/www/moodledata "$plugin/cli/diagnose.php" \
+        "$repo/.dev/env/run.sh" "$secbk_ver" "$secbk_db" php
 else
     # The jobs `behat` (firefox, edge) and `behat-safari`.
     step "behat-$browser" "$repo/.dev/env/behat.sh" "$secbk_ver" "$secbk_db"

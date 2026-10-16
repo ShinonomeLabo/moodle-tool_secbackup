@@ -52,7 +52,7 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 | Install Moodle with the plugin | `.dev/env/setup.sh`, `up.sh`, `install.sh`, `devconfig.sh` |
 | PHP Lint, Mess Detector, Code Checker, PHPDoc, Validating, Savepoints, Mustache, Grunt | moodle-plugin-ci in the web server container |
 | UI inventory | `php .dev/ci/check-ui-inventory.php` (inside `run.sh`, in the web server container) |
-| PHPUnit tests, Behat features, command line scripts, coverage of this combination | `.dev/coverage/run.sh <ver> <db>` (PHPUnit with `--fail-on-warning`, Behat in Chrome with the fake service of `.dev/fakesec`) |
+| PHPUnit tests, Behat features, command line scripts, coverage of this combination | `.dev/coverage/run.sh <ver> <db>` (PHPUnit with `--fail-on-warning`, Behat in Chrome with the fake service of `.dev/fakesec`), then the run of the diagnostics under open_basedir (`.dev/ci/diagnose-open-basedir.sh`, the last run of "Command line scripts") |
 | Behat in Firefox, Edge, Safari | `SECBK_BROWSER=<browser> .dev/ci/run.sh <ver> <db>` (below) |
 | Line coverage of all combinations | `php .dev/coverage/merge.php --shipped=... .dev/coverage/out/*/*` |
 
