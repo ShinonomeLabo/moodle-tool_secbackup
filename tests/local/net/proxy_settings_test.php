@@ -43,6 +43,16 @@ final class proxy_settings_test extends \advanced_testcase {
         $this->assertSame('HTTP proxy.example.ac.jp:3128', proxy_settings::describe(self::URL));
     }
 
+    public function test_the_port_is_written_as_a_number(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        // The file config.php can give the port as any text, such as one with a blank that came with a copy and paste.
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '3128 ';
+        $this->assertSame('http://proxy.example.ac.jp:3128', proxy_settings::for_url(self::URL));
+        $this->assertSame('HTTP proxy.example.ac.jp:3128', proxy_settings::describe(self::URL));
+    }
+
     public function test_credentials_are_separated_and_encoded(): void {
         global $CFG;
         $this->resetAfterTest();

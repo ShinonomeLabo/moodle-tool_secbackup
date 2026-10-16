@@ -134,6 +134,16 @@ final class aws_ranges_test extends \basic_testcase {
         $this->assertFalse($ranges->contains('2600:9000::1', aws_ranges::SERVICE_CLOUDFRONT));
         $this->assertFalse($ranges->contains('not an address', aws_ranges::SERVICE_CLOUDFRONT));
         $this->assertFalse($ranges->contains("13.225.158.68\n", aws_ranges::SERVICE_CLOUDFRONT));
+        // The function ip2long() would throw a ValueError for a null byte; the address is refused before it.
+        $this->assertFalse($ranges->contains("13.225.158.68\0", aws_ranges::SERVICE_CLOUDFRONT));
+    }
+
+    public function test_text_that_is_not_an_address_is_in_no_range_even_one_that_starts_at_zero(): void {
+        // A range of network 0 would contain whatever number stood in for a refused address.
+        $ranges = aws_ranges::from_json(self::with_last_prefix('CLOUDFRONT', '0.0.0.0/8'));
+        $this->assertTrue($ranges->contains('0.1.2.3', aws_ranges::SERVICE_CLOUDFRONT));
+        $this->assertFalse($ranges->contains('not an address', aws_ranges::SERVICE_CLOUDFRONT));
+        $this->assertFalse($ranges->contains('2600:9000::1', aws_ranges::SERVICE_CLOUDFRONT));
     }
 
     public function test_metadata(): void {
@@ -146,6 +156,7 @@ final class aws_ranges_test extends \basic_testcase {
 
     public function test_unknown_service_is_a_coding_error(): void {
         $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage('Unknown AWS service: EC2');
         aws_ranges::from_json(self::sample())->contains('13.225.0.1', 'EC2');
     }
 
@@ -180,15 +191,19 @@ final class aws_ranges_test extends \basic_testcase {
             'CLOUDFRONT is a string' => [self::with_service('CLOUDFRONT', '13.225.0.0/16'), 'is not valid'],
             'S3 is a number' => [self::with_service('S3', 5), 'is not valid'],
             'CLOUDFRONT is an object' => [self::with_service('CLOUDFRONT', $objectoflist), 'is not valid'],
-            'four CLOUDFRONT prefixes' => [self::with_service('CLOUDFRONT', array_slice(self::CLOUDFRONT, 0, 4)), 'too few'],
-            'four S3 prefixes' => [self::with_service('S3', array_slice(self::S3, 0, 4)), 'too few'],
-            'no CLOUDFRONT prefixes' => [self::with_service('CLOUDFRONT', []), 'too few'],
-            'no S3 prefixes' => [self::with_service('S3', []), 'too few'],
+            'four CLOUDFRONT prefixes' => [
+                self::with_service('CLOUDFRONT', array_slice(self::CLOUDFRONT, 0, 4)),
+                'too few prefixes of CLOUDFRONT.',
+            ],
+            'four S3 prefixes' => [self::with_service('S3', array_slice(self::S3, 0, 4)), 'too few prefixes of S3.'],
+            'no CLOUDFRONT prefixes' => [self::with_service('CLOUDFRONT', []), 'too few prefixes of CLOUDFRONT.'],
+            'no S3 prefixes' => [self::with_service('S3', []), 'too few prefixes of S3.'],
             'prefix length 33' => [self::with_last_prefix('CLOUDFRONT', '13.225.0.0/33'), 'invalid prefix'],
             'prefix length 7' => [self::with_last_prefix('CLOUDFRONT', '10.0.0.0/7'), 'invalid prefix'],
             'prefix length 0' => [self::with_last_prefix('S3', '0.0.0.0/0'), 'invalid prefix'],
             'bad address' => [self::with_last_prefix('CLOUDFRONT', '300.1.1.1/8'), 'invalid prefix'],
             'no prefix length' => [self::with_last_prefix('CLOUDFRONT', '13.225.0.0'), 'invalid prefix'],
+            'letters before a prefix' => [self::with_last_prefix('CLOUDFRONT', 'x13.225.0.0/16'), 'invalid prefix'],
             'line feed after a CLOUDFRONT prefix' => [self::with_last_prefix('CLOUDFRONT', "13.225.0.0/16\n"), 'invalid prefix'],
             'line feed after an S3 prefix' => [self::with_last_prefix('S3', "3.5.152.0/21\n"), 'invalid prefix'],
             'a number as a prefix' => [self::with_last_prefix('CLOUDFRONT', 5), 'invalid prefix'],

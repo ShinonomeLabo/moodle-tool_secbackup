@@ -338,6 +338,11 @@ final class transport_test extends \advanced_testcase {
         $this->assertSame('{}', self::send(new MockHandler([new Response(200, $headers, '{}')]))->body);
     }
 
+    public function test_a_declared_length_that_is_not_a_number_does_not_stop_a_small_response(): void {
+        // As a number the header is 0; the body is still read only up to the limit.
+        $this->assertSame('{}', self::send(new MockHandler([new Response(200, ['Content-Length' => 'abc'], '{}')]))->body);
+    }
+
     public function test_a_body_that_does_not_end_is_read_only_up_to_the_limit(): void {
         $chunks = 0;
         $source = static function () use (&$chunks) {
@@ -437,6 +442,13 @@ final class transport_test extends \advanced_testcase {
             new ConnectException('cURL error 35', new Request('POST', 'https://app.example.test/'), null, ['errno' => 35]),
         ]));
         $this->assertSame('cURL error 35', $e->debuginfo);
+    }
+
+    public function test_an_error_number_given_as_text_is_read_as_a_number(): void {
+        $e = $this->expect_failure('transport_tls', new MockHandler([
+            new RequestException('cURL error 60', new Request('POST', 'https://app.example.test/'), null, null, ['errno' => '60']),
+        ]));
+        $this->assertSame('cURL error 60', $e->debuginfo);
     }
 
     public function test_a_connection_failure_without_an_error_number_names_the_class(): void {

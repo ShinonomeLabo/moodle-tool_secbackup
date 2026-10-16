@@ -101,6 +101,8 @@ final class doh_resolver_test extends \advanced_testcase {
 
     public function test_cloudflare_query_and_answer(): void {
         $mock = self::answer(0, [
+            // Only records of type 1 (A) give addresses, even when another record holds text that reads as one.
+            ['name' => 'app.example.test', 'type' => 5, 'TTL' => 60, 'data' => '13.225.1.9'],
             ['name' => 'app.example.test', 'type' => 5, 'TTL' => 60, 'data' => 'd111.cloudfront.net.'],
             ['name' => 'd111.cloudfront.net', 'type' => 1, 'TTL' => 60, 'data' => '13.225.1.1'],
             ['name' => 'd111.cloudfront.net', 'type' => 1, 'TTL' => 60, 'data' => '13.225.1.1'],
@@ -122,6 +124,8 @@ final class doh_resolver_test extends \advanced_testcase {
         $this->assertFalse($options['allow_redirects']);
         $this->assertFalse($options['decode_content'], 'A compressed answer would be opened to any size.');
         $this->assertSame('', $options['proxy']);
+        $this->assertSame(10, $options['timeout']);
+        $this->assertSame(5, $options['connect_timeout']);
     }
 
     public function test_google_query(): void {
@@ -190,6 +194,30 @@ final class doh_resolver_test extends \advanced_testcase {
         $this->expect_failure(new MockHandler([new Response(200, ['Content-Length' => '65537'], '{"Status":3}')]));
     }
 
+    public function test_a_declared_length_that_is_not_a_number_does_not_stop_a_small_answer(): void {
+        // As a number the header is 0; the body is still read only up to the limit.
+        $body = json_encode(['Status' => 0, 'Answer' => [['type' => 1, 'data' => '13.225.1.1']]]);
+        $mock = new MockHandler([new Response(200, ['Content-Length' => 'abc'], $body)]);
+        $this->assertSame(['13.225.1.1'], (new doh_resolver('cloudflare', $mock))->lookup('app.example.test'));
+    }
+
+    public function test_an_answer_of_the_most_levels_that_the_resolver_reads_is_read(): void {
+        // With a depth of 8, json_decode() reads at most 7 nested objects and lists: the answer, the records, a record and 4 lists.
+        $record = ['type' => 1, 'data' => '13.225.1.1', 'more' => [[[[]]]]];
+        $mock = new MockHandler([new Response(200, [], json_encode(['Status' => 0, 'Answer' => [$record]]))]);
+        $this->assertSame(['13.225.1.1'], (new doh_resolver('cloudflare', $mock))->lookup('app.example.test'));
+    }
+
+    public function test_an_answer_of_one_level_more_is_an_error(): void {
+        $record = ['type' => 1, 'data' => '13.225.1.1', 'more' => [[[[[]]]]]];
+        $this->expect_failure(new MockHandler([new Response(200, [], json_encode(['Status' => 0, 'Answer' => [$record]]))]));
+    }
+
+    public function test_an_http_error_with_a_readable_answer_is_an_error(): void {
+        $body = json_encode(['Status' => 0, 'Answer' => [['type' => 1, 'data' => '13.225.1.1']]]);
+        $this->expect_failure(new MockHandler([new Response(500, [], $body)]));
+    }
+
     public function test_the_progress_callback_cuts_a_transfer_over_the_limit(): void {
         $mock = self::answer(3, []);
         (new doh_resolver('cloudflare', $mock))->lookup('app.example.test');
@@ -251,6 +279,7 @@ final class doh_resolver_test extends \advanced_testcase {
 
     public function test_unknown_resolver_is_a_coding_error(): void {
         $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage('Unknown DNS over HTTPS resolver: quad9');
         new doh_resolver('quad9');
     }
 }

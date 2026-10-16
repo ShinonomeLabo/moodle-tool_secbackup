@@ -63,6 +63,15 @@ final class dns_guard_test extends \advanced_testcase {
             ->check(network_fakes::HOST, false, aws_ranges::SERVICE_CLOUDFRONT));
     }
 
+    public function test_the_problem_of_a_report_is_read_without_an_exception(): void {
+        // The diagnostics show a report and read its problem: problem() is public and does not throw.
+        $passing = network_fakes::passing_guard();
+        $this->assertNull($passing->problem($passing->inspect(network_fakes::HOST, false), aws_ranges::SERVICE_CLOUDFRONT));
+        $outside = network_fakes::guard(['203.0.113.1'], null, ['13.225.9.9']);
+        $report = $outside->inspect(network_fakes::HOST, false);
+        $this->assertSame('dns_outside_aws', $outside->problem($report, aws_ranges::SERVICE_CLOUDFRONT));
+    }
+
     public function test_inspect_reports_each_source(): void {
         $report = network_fakes::guard(['13.225.1.1'], null, ['13.225.9.9'])->inspect(network_fakes::HOST, false);
         $this->assertSame(['cloudflare' => ['13.225.1.1'], 'google' => null], $report->doh);
