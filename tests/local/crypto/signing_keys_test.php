@@ -14,7 +14,31 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
+/**
+ * Tests for the signing key pair and its storage, with a stand-in for sodium_memzero() in the namespace of the key pair.
+ *
+ * @package    tool_secbackup
+ * @copyright  2026 Shinonome Laboratory LLC.
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
 namespace tool_secbackup\local\crypto;
+
+defined('MOODLE_INTERNAL') || die();
+
+/**
+ * Wipes a buffer as libsodium does, and keeps a copy of it for the tests of signing_keys_test.
+ *
+ * PHP looks up a function that is called without a namespace in the namespace of the caller first, so while the tests run,
+ * the classes of this namespace call this function instead of the one of libsodium. PHPUnit loads this file, which declares
+ * it, before any test runs.
+ *
+ * @param string $buffer The buffer, which is wiped.
+ */
+function sodium_memzero(string &$buffer): void {
+    signing_keys_test::$wiped[] = $buffer;
+    \sodium_memzero($buffer);
+}
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\crypto\signing_keypair::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\crypto\signing_keys::class)]
@@ -28,6 +52,25 @@ namespace tool_secbackup\local\crypto;
  * @covers     \tool_secbackup\local\crypto\signing_keys
  */
 final class signing_keys_test extends \advanced_testcase {
+    /** @var string[] Copies of the buffers that sodium_memzero() wiped, in order. */
+    public static array $wiped = [];
+
+    public function test_the_key_pair_derived_from_the_seed_is_wiped(): void {
+        $secret = sodium_crypto_sign_secretkey(sodium_crypto_sign_keypair());
+        self::$wiped = [];
+        new signing_keypair($secret);
+        // The constructor makes the key pair of the seed again to check the public half, and wipes that copy of the secret.
+        $this->assertSame([sodium_crypto_sign_seed_keypair(substr($secret, 0, SODIUM_CRYPTO_SIGN_SEEDBYTES))], self::$wiped);
+    }
+
+    public function test_the_generated_key_pair_is_wiped(): void {
+        self::$wiped = [];
+        $pair = signing_keypair::generate();
+        // The constructor wipes its copy, then generate() wipes the key pair that libsodium made.
+        $this->assertCount(2, self::$wiped);
+        $this->assertSame($pair->export_secret(), sodium_crypto_sign_secretkey(self::$wiped[1]));
+    }
+
     public function test_generated_pair_signs_verifiably(): void {
         $pair = signing_keypair::generate();
         $this->assertSame(SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES, strlen($pair->public_key()));

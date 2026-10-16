@@ -42,5 +42,8 @@ final class fingerprint_test extends \basic_testcase {
         $this->assertNull(fingerprint::normalize('A260B4050FD28D2B313C9A9'));
         $this->assertNull(fingerprint::normalize('A260B4050FD28D2B313C9A9Z'));
         $this->assertNull(fingerprint::normalize(''));
+        // The 24 characters must be the whole text, not its start or its end.
+        $this->assertNull(fingerprint::normalize('XA260B4050FD28D2B313C9A94'));
+        $this->assertNull(fingerprint::normalize('A260B4050FD28D2B313C9A940'));
     }
 }

@@ -90,6 +90,16 @@ final class public_key_format_test extends \basic_testcase {
         }
     }
 
+    public function test_text_that_is_not_utf8_is_refused_without_a_php_notice(): void {
+        // Made here and not in a data provider, so that a failure does not print bytes that are not text.
+        try {
+            public_key_format::parse(self::VALID . "\xff");
+            $this->fail('No exception');
+        } catch (key_exception $e) {
+            $this->assertSame('publickey_prefix', $e->errorcode);
+        }
+    }
+
     public function test_encode_matches_the_service(): void {
         $this->assertSame(self::VALID, public_key_format::encode(str_repeat("\x01", 32)));
     }
