@@ -464,11 +464,15 @@ jobs:
           path: plugin
           persist-credentials: false
 
+      # setup-php turns on the JIT of OPcache (opcache.jit=1235), and OPcache is on in PHP's web server (php -S reads
+      # opcache.enable, not opcache.enable_cli). On this ARM64 macOS runner the JIT code crashed the web server part-way
+      # through the scenarios (SIGSEGV in zend_jit_* frames and in the JIT buffer), so the JIT is turned off here; OPcache
+      # itself stays on.
       - name: Set up PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ matrix.php }}
-          ini-values: max_input_vars=5000
+          ini-values: max_input_vars=5000, opcache.jit=disable
           coverage: none
 
       # Homebrew has no PostgreSQL 13, and PostgreSQL 14 is deprecated there and is disabled on 2026-11-12, so Moodle 4.5
@@ -539,9 +543,8 @@ jobs:
       # moodle-plugin-ci would start Selenium in Docker for the install's setting MOODLE_START_BEHAT_SERVERS, so it is told
       # not to, and the two servers are started here: safaridriver, and the web server of PHP.
       # The web server runs as one process here, without PHP_CLI_SERVER_WORKERS (the jobs on Linux use 4 workers). On macOS
-      # the PHP process is already multi-threaded when it forks its workers, and the workers then crash one after another
-      # (SIGSEGV; the crash reports say "multi-threaded process forked", "crashed on child side of fork pre-exec"), until
-      # nothing answers on port 8000.
+      # the PHP process is already multi-threaded when it forks its workers, and a worker crashed in CoreFoundation (the
+      # crash report says "multi-threaded process forked", "crashed on child side of fork pre-exec").
       - name: Start safaridriver and the web server of the Behat site
         run: |
           sudo safaridriver --enable
@@ -617,7 +620,20 @@ jobs:
             for report in "$dir"/php*; do
               if [ -f "$report" ]; then
                 echo "== $report"
-                head -n 80 "$report"
+                grep -E '"(exception|termination|asi)" :' "$report" || true
+                # The frames of the thread that crashed, with the names of their images.
+                # shellcheck disable=SC2016
+                php -r '
+                  $report = json_decode(implode("", array_slice(file($argv[1]), 1)), true);
+                  foreach ($report["threads"] ?? [] as $thread) {
+                      if (empty($thread["triggered"])) {
+                          continue;
+                      }
+                      foreach (array_slice($thread["frames"], 0, 30) as $i => $frame) {
+                          $image = $report["usedImages"][$frame["imageIndex"]]["name"] ?? "?";
+                          echo $i, " ", $image, " ", $frame["symbol"] ?? "?", "+", $frame["symbolLocation"] ?? $frame["imageOffset"], "\n";
+                      }
+                  }' "$report" || true
               fi
             done
           done
