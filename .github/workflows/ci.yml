@@ -545,20 +545,80 @@ jobs:
           nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
           if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
           PHP_CLI_SERVER_WORKERS=4 nohup php -S localhost:8000 -t "$root" > "$RUNNER_TEMP/web.log" 2>&1 &
+          ready=no
           for _ in $(seq 1 30); do
             if curl -fs http://localhost:4444/status > /dev/null && curl -s -o /dev/null http://localhost:8000/; then
-              exit 0
+              ready=yes
+              break
             fi
             sleep 1
           done
-          cat "$RUNNER_TEMP/safaridriver.log" "$RUNNER_TEMP/web.log"
-          exit 1
+          if [ "$ready" != yes ]; then
+            cat "$RUNNER_TEMP/safaridriver.log" "$RUNNER_TEMP/web.log"
+            exit 1
+          fi
+          # Every 10 seconds, each process of the web server and the number of files it has open, for the step that shows the
+          # logs when Behat fails (the web server stopped answering part-way on the first runs).
+          # shellcheck disable=SC2016
+          nohup bash -c 'while :; do
+              t="$(date -u +%T)"
+              pids="$(pgrep -f "php -S localhost:8000" || true)"
+              [ -n "$pids" ] || echo "$t no process"
+              for p in $pids; do echo "$t $p $(lsof -p "$p" 2> /dev/null | wc -l | tr -d " ") files"; done
+              sleep 10
+            done' > "$RUNNER_TEMP/web-processes.log" 2>&1 &
+          # A new runner can take longer to launch Safari than safaridriver waits for it ("The session timed out while
+          # connecting to a Safari instance"). One session is opened and closed here, up to three times, so that Safari has
+          # been launched once before the first scenario.
+          id=''
+          for attempt in 1 2 3; do
+            answer="$(curl -s --max-time 180 -X POST -H 'Content-Type: application/json' \
+              -d '{"capabilities": {"alwaysMatch": {"browserName": "safari"}}}' http://localhost:4444/session || true)"
+            # shellcheck disable=SC2016
+            id="$(printf '%s' "$answer" | php -r '$a = json_decode(stream_get_contents(STDIN), true); echo $a["value"]["sessionId"] ?? "";')"
+            if [ -n "$id" ]; then
+              curl -s -X DELETE "http://localhost:4444/session/$id" > /dev/null
+              echo "Attempt $attempt: Safari opened and closed a session."
+              break
+            fi
+            echo "Attempt $attempt: no session: $answer"
+            sleep 10
+          done
+          if [ -z "$id" ]; then
+            cat "$RUNNER_TEMP/safaridriver.log"
+            exit 1
+          fi
 
       - name: Behat features
         id: behat
         env:
           MOODLE_START_BEHAT_SERVERS: 'NO'
         run: moodle-plugin-ci behat --profile safari --auto-rerun 0
+
+      - name: Show the logs of the servers
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: |
+          echo '::group::Processes of the web server and their open files, every 10 seconds'
+          cat "$RUNNER_TEMP/web-processes.log"
+          echo '::endgroup::'
+          echo '::group::Lines of web.log other than requests'
+          grep -v -E ' (Accepted|Closing)$|\]: (GET|POST|HEAD) ' "$RUNNER_TEMP/web.log" | tail -n 200 || true
+          echo '::endgroup::'
+          for name in web safaridriver fakesec; do
+            echo "::group::The last 100 lines of $name.log"
+            tail -n 100 "$RUNNER_TEMP/$name.log" || true
+            echo '::endgroup::'
+          done
+          echo '::group::Crash reports of PHP'
+          for dir in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            for report in "$dir"/php*; do
+              if [ -f "$report" ]; then
+                echo "== $report"
+                head -n 80 "$report"
+              fi
+            done
+          done
+          echo '::endgroup::'
 
       - name: Upload Behat Faildump
         if: ${{ failure() && steps.behat.outcome == 'failure' }}
