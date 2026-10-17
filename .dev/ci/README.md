@@ -192,7 +192,8 @@ What act cannot do, and what stands in for it:
 - `actions/checkout`: act skips every checkout step unless `--no-skip-checkout` is given, which `act.sh` does so that the local
   action runs. The PHP web server that serves the Behat site gets four workers (`PHP_CLI_SERVER_WORKERS` in the Behat steps),
   because with one worker the AJAX calls of Moodle queued behind each other and Behat's 10-second limit failed 18 of 21
-  scenarios in Chrome under act.
+  scenarios in Chrome under act. The job `behat-safari` runs the web server as one process: on the macOS runner the workers
+  crashed one after another (SIGSEGV, "multi-threaded process forked" in the crash reports) until nothing answered.
 
 Two defects of the workflow were found by act and fixed: the site itself was never installed (moodle-plugin-ci prepares only the
 PHPUnit and Behat sites, so the reinstall with the collector and the command line scripts failed), and the `rules` job relied on a PHP that the

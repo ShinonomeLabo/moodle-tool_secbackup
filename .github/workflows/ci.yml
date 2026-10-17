@@ -537,14 +537,17 @@ jobs:
           php "$cli/util_single_run.php" --enable --add-core-features-to-theme
 
       # moodle-plugin-ci would start Selenium in Docker for the install's setting MOODLE_START_BEHAT_SERVERS, so it is told
-      # not to, and the two servers are started here: safaridriver, and the web server of PHP with several workers (a page
-      # asks for many files at once).
+      # not to, and the two servers are started here: safaridriver, and the web server of PHP.
+      # The web server runs as one process here, without PHP_CLI_SERVER_WORKERS (the jobs on Linux use 4 workers). On macOS
+      # the PHP process is already multi-threaded when it forks its workers, and the workers then crash one after another
+      # (SIGSEGV; the crash reports say "multi-threaded process forked", "crashed on child side of fork pre-exec"), until
+      # nothing answers on port 8000.
       - name: Start safaridriver and the web server of the Behat site
         run: |
           sudo safaridriver --enable
           nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
           if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
-          PHP_CLI_SERVER_WORKERS=4 nohup php -S localhost:8000 -t "$root" > "$RUNNER_TEMP/web.log" 2>&1 &
+          nohup php -S localhost:8000 -t "$root" > "$RUNNER_TEMP/web.log" 2>&1 &
           ready=no
           for _ in $(seq 1 30); do
             if curl -fs http://localhost:4444/status > /dev/null && curl -s -o /dev/null http://localhost:8000/; then
