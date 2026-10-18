@@ -91,12 +91,14 @@ final class aws_ranges {
      */
     public static function current(): self {
         $stored = get_config('tool_secbackup', 'awsranges');
-        if (is_string($stored) && $stored !== '') {
+        // A list belongs to the connection URL it came from; the numbering of another service starts again from 1.
+        if (is_string($stored) && $stored !== '' && self::stored_endpoint() === self::endpoint()) {
             try {
                 return self::from_json($stored);
             } catch (\coding_exception $e) {
                 unset_config('awsranges', 'tool_secbackup');
                 unset_config('awsrangesseq', 'tool_secbackup');
+                unset_config('awsrangesendpoint', 'tool_secbackup');
             }
         }
         return self::bundled();
@@ -111,7 +113,28 @@ final class aws_ranges {
         // The list is read first: a stored list that cannot be read is dropped with its sequence number.
         self::current();
         $seq = get_config('tool_secbackup', 'awsrangesseq');
+        if (self::stored_endpoint() !== self::endpoint()) {
+            return 0;
+        }
         return is_string($seq) && preg_match('/^[1-9]\d{0,17}\z/', $seq) === 1 ? (int) $seq : 0;
+    }
+
+    /**
+     * The connection URL of this registration.
+     *
+     * @return string Empty when none is stored.
+     */
+    private static function endpoint(): string {
+        return (string) get_config('tool_secbackup', 'endpoint');
+    }
+
+    /**
+     * The connection URL that the stored list came from.
+     *
+     * @return string
+     */
+    private static function stored_endpoint(): string {
+        return (string) get_config('tool_secbackup', 'awsrangesendpoint');
     }
 
     /**
@@ -151,6 +174,7 @@ final class aws_ranges {
         }
         set_config('awsranges', $content, 'tool_secbackup');
         set_config('awsrangesseq', $instruction->seq(), 'tool_secbackup');
+        set_config('awsrangesendpoint', self::endpoint(), 'tool_secbackup');
         return true;
     }
 

@@ -48,14 +48,19 @@ final class instruction {
     /** @var array Body. */
     private array $body;
 
+    /** @var string|null Site ID of a settings instruction; null for aws_ranges. */
+    private ?string $siteid;
+
     /**
      * Constructor.
      *
      * @param string $kind Kind.
      * @param int $seq Sequence number.
      * @param array $body Body.
+     * @param string|null $siteid Site ID.
      */
-    private function __construct(string $kind, int $seq, array $body) {
+    private function __construct(string $kind, int $seq, array $body, ?string $siteid) {
+        $this->siteid = $siteid;
         $this->kind = $kind;
         $this->seq = $seq;
         $this->body = $body;
@@ -92,7 +97,7 @@ final class instruction {
         if (!$valid) {
             throw new envelope_exception('instruction_invalid');
         }
-        return new self($kind, $seq, $body);
+        return new self($kind, $seq, $body, $payload['site_id']);
     }
 
     /**
@@ -113,6 +118,15 @@ final class instruction {
      */
     public function kind(): string {
         return $this->kind;
+    }
+
+    /**
+     * The site that a settings instruction is for.
+     *
+     * @return string|null Null for aws_ranges, which is the same for all sites.
+     */
+    public function site_id(): ?string {
+        return $this->siteid;
     }
 
     /**

@@ -18,6 +18,8 @@ namespace tool_secbackup\local\backup;
 
 use tool_secbackup\local\api\instruction;
 use tool_secbackup\local\trust\envelope_exception;
+use tool_secbackup\local\enrollment\state;
+use tool_secbackup\tests\fake_service;
 use tool_secbackup\tests\instruction_factory;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\settings::class)]
@@ -33,6 +35,7 @@ final class settings_test extends \advanced_testcase {
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
+        set_config('siteid', fake_service::SITE_ID, 'tool_secbackup');
     }
 
     /**
@@ -125,6 +128,7 @@ final class settings_test extends \advanced_testcase {
             'a time of 24:00' => [self::body(['window_end' => '24:00'])],
             'a time with a final line feed' => [self::body(['window_end' => "05:00\n"])],
             'a time that is a number' => [self::body(['window_end' => 500])],
+            'seven runs, which do not divide the day' => [self::body(['runs_per_day' => 7, 'window_end' => '03:00'])],
             'no runs' => [self::body(['runs_per_day' => 0])],
             'too many runs' => [self::body(['runs_per_day' => 25])],
             'runs as text' => [self::body(['runs_per_day' => '1'])],
@@ -192,5 +196,33 @@ final class settings_test extends \advanced_testcase {
         // A new instruction is accepted over the damaged one, whatever the stored seq says.
         $this->assertTrue(settings::apply(self::instruction(1, self::body())));
         $this->assertTrue(settings::current()->is_received());
+    }
+
+    public function test_five_runs_divide_the_day_and_are_accepted(): void {
+        $this->assertTrue(settings::apply(self::instruction(1, self::body(['runs_per_day' => 5, 'window_end' => '04:00']))));
+        $this->assertSame(5, settings::current()->runs_per_day());
+    }
+
+    public function test_settings_of_another_registration_do_not_count(): void {
+        $other = '99999999-2222-4333-8444-555555555555';
+        $this->assertTrue(settings::apply(self::instruction(7, self::body(['window_start' => '03:00']))));
+        // The site registers again as another site: the service numbers the settings of each site from 1.
+        set_config('siteid', $other, 'tool_secbackup');
+        $this->assertFalse(settings::current()->is_received());
+        $this->assertSame(0, settings::current()->seq());
+        $new = instruction_factory::make('settings', 1, self::body(['window_start' => '04:00']), $other);
+        $this->assertTrue(settings::apply($new));
+        $this->assertTrue(settings::current()->is_received());
+        $this->assertSame(4 * 60, settings::current()->window_start());
+        $this->assertSame(1, settings::current()->seq());
+    }
+
+    public function test_removing_the_registration_removes_the_settings(): void {
+        settings::apply(self::instruction(7, self::body()));
+        state::clear();
+        foreach (['backupsettings', 'backupsettingsseq', 'backupsettingssite'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
+        $this->assertFalse(settings::current()->is_received());
     }
 }

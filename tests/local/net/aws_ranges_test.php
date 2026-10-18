@@ -420,4 +420,30 @@ final class aws_ranges_test extends \advanced_testcase {
         $this->assertSame(0, aws_ranges::stored_seq());
         $this->assertFalse(get_config('tool_secbackup', 'awsrangesseq'));
     }
+
+    public function test_a_stored_list_belongs_to_the_connection_url_it_came_from(): void {
+        $content = self::sample();
+        set_config('endpoint', 'https://app.example.test/api/lms-backup/v1', 'tool_secbackup');
+        aws_ranges::apply(self::instruction(9, $content), $content);
+        $this->assertSame('1791766626', aws_ranges::current()->sync_token());
+
+        set_config('endpoint', 'https://other.example.test/api/lms-backup/v1', 'tool_secbackup');
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
+        $this->assertSame(0, aws_ranges::stored_seq());
+        $this->assertTrue(aws_ranges::is_newer(self::instruction(1, $content)));
+        $other = self::with_part('syncToken', '555');
+        $this->assertTrue(aws_ranges::apply(self::instruction(1, $other), $other));
+        $this->assertSame('555', aws_ranges::current()->sync_token());
+        $this->assertSame(1, aws_ranges::stored_seq());
+    }
+
+    public function test_removing_the_registration_removes_the_stored_list(): void {
+        $content = self::sample();
+        aws_ranges::apply(self::instruction(9, $content), $content);
+        \tool_secbackup\local\enrollment\state::clear();
+        foreach (['awsranges', 'awsrangesseq', 'awsrangesendpoint'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
+    }
 }

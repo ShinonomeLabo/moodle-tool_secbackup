@@ -22,6 +22,7 @@ use tool_secbackup\tests\envelope_builder;
 use tool_secbackup\tests\fake_service;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\api\instruction::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\trust\sec_trust::class)]
 /**
  * Tests for the signed instructions.
  *
@@ -61,6 +62,7 @@ final class instruction_test extends \basic_testcase {
         $i = instruction::from_envelope((new envelope_builder())->parts(self::payload()), $this->trust, fake_service::SITE_ID);
         $this->assertSame('settings', $i->kind());
         $this->assertSame(12, $i->seq());
+        $this->assertSame(fake_service::SITE_ID, $i->site_id());
         $this->assertSame(['timezone' => 'Asia/Tokyo'], $i->body());
     }
 

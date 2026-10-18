@@ -23,7 +23,8 @@ use tool_secbackup\local\trust\envelope_exception;
  * The backup settings of this site, which the backup service sends as signed instructions.
  *
  * They are kept in the plugin's settings as the JSON of the body that was verified, with the sequence number of the
- * instruction. Until the first instruction has been received, the site makes no backup by itself.
+ * instruction and the ID of the site it was for; settings of another registration do not count.
+ * Until the first instruction has been received, the site makes no backup by itself.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -67,8 +68,14 @@ final class settings {
     public static function current(): self {
         $json = get_config('tool_secbackup', 'backupsettings');
         $seq = get_config('tool_secbackup', 'backupsettingsseq');
+        $site = get_config('tool_secbackup', 'backupsettingssite');
         $body = is_string($json) ? json_decode($json, true, 4) : null;
-        if (is_array($body) && is_string($seq) && preg_match('/^[1-9]\d{0,17}\z/', $seq) === 1) {
+        // The service numbers the settings of each site from 1, so settings of another registration do not count.
+        $siteid = get_config('tool_secbackup', 'siteid');
+        if (
+            is_array($body) && is_string($site) && $site !== '' && $site === $siteid
+            && is_string($seq) && preg_match('/^[1-9]\d{0,17}\z/', $seq) === 1
+        ) {
             try {
                 return new self(self::validated($body), (int) $seq);
             } catch (envelope_exception $e) {
@@ -95,6 +102,7 @@ final class settings {
         }
         set_config('backupsettings', json_encode($body), 'tool_secbackup');
         set_config('backupsettingsseq', $instruction->seq(), 'tool_secbackup');
+        set_config('backupsettingssite', (string) $instruction->site_id(), 'tool_secbackup');
         return true;
     }
 
@@ -114,7 +122,7 @@ final class settings {
         $valid = $names === self::FIELDS
             && self::is_time_zone($body['timezone'])
             && self::is_time($start) && self::is_time($end)
-            && is_int($runs) && $runs >= 1 && $runs <= 24
+            && is_int($runs) && $runs >= 1 && $runs <= 24 && self::DAY % $runs === 0
             && in_array($body['full_interval'], self::INTERVALS, true)
             && is_int($body['bandwidth_mbps']) && $body['bandwidth_mbps'] >= 0 && $body['bandwidth_mbps'] <= 1000
             && is_bool($body['include_logs']);

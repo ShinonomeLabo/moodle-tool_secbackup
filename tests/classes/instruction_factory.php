@@ -51,18 +51,20 @@ final class instruction_factory {
      * @param string $kind settings or aws_ranges.
      * @param int $seq Sequence number.
      * @param array $body Body.
+     * @param string|null $siteid Site ID of a settings instruction; null for the one given at enrolment.
      * @return instruction
      */
-    public static function make(string $kind, int $seq, array $body): instruction {
+    public static function make(string $kind, int $seq, array $body, ?string $siteid = null): instruction {
+        $siteid ??= fake_service::SITE_ID;
         $payload = [
             'type' => 'instruction',
             'kind' => $kind,
-            'site_id' => $kind === 'settings' ? fake_service::SITE_ID : null,
+            'site_id' => $kind === 'settings' ? $siteid : null,
             'seq' => $seq,
             'issued_at' => '2026-10-18T09:00:00Z',
             'body' => $body,
         ];
         $trust = new sec_trust([base64_decode(envelope_builder::PUBLIC_KEY)]);
-        return instruction::from_envelope((new envelope_builder())->parts($payload), $trust, fake_service::SITE_ID);
+        return instruction::from_envelope((new envelope_builder())->parts($payload), $trust, $siteid);
     }
 }

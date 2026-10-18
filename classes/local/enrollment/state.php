@@ -43,6 +43,7 @@ final class state {
      *     removes every stored value first.
      */
     private const NAMES = ['platformname', 'encryptionkey', 'enrolledat', 'clockskew',
+        'backupsettings', 'backupsettingsseq', 'backupsettingssite', 'awsranges', 'awsrangesseq', 'awsrangesendpoint',
         'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'endpoint', 'siteid', 'sitename'];
 
     /** @var \stdClass The plugin's settings. */
