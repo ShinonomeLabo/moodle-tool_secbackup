@@ -95,7 +95,7 @@ final class state_test extends \advanced_testcase {
 
     public function test_poll_results(): void {
         self::save();
-        state::record_poll(1760000400, new status_result('active', 1760000405, 5, 0));
+        state::record_poll(1760000400, new status_result('active', 1760000405, 5, []));
         $state = state::load();
         $this->assertSame(1760000400, $state->last_poll());
         $this->assertSame('active', $state->last_poll_status());

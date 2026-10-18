@@ -153,6 +153,7 @@ $string['field_endpoint_help'] = 'Copy the connection URL shown for this site on
 $string['field_fingerprint'] = 'Fingerprint of the public key';
 $string['field_publickey'] = 'Public key of this site';
 $string['field_publickey_help'] = 'Copy the public key of this site, which starts with secbk1:, from the platform screen. The next step shows its fingerprint, so that you can check that you copied the right key.';
+$string['instruction_invalid'] = 'The backup service sent an instruction that could not be verified, so it was not used.';
 $string['intro'] = 'This plugin connects this site (Moodle™) to the backup service, which keeps encrypted backups of the site.';
 $string['message_deregistered_body'] = '{$a->user} removed the registration of this site with {$a->platform}.
 

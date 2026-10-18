@@ -55,12 +55,12 @@ final class dns_guard {
     }
 
     /**
-     * The guard with the bundled ranges and the public resolvers.
+     * The guard with the ranges in use (the stored list or the bundled one) and the public resolvers.
      *
      * @return self
      */
     public static function create(): self {
-        return new self(aws_ranges::bundled(), doh_resolver::all());
+        return new self(aws_ranges::current(), doh_resolver::all());
     }
 
     /**

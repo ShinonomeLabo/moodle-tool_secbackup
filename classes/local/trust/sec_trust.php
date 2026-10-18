@@ -100,7 +100,24 @@ final class sec_trust {
             throw new envelope_exception('envelope_malformed');
         }
         $envelope = json_decode($body, true, 4);
-        if (!is_array($envelope) || !self::well_formed($envelope)) {
+        if (!is_array($envelope)) {
+            throw new envelope_exception('envelope_malformed');
+        }
+        return $this->open_envelope($envelope);
+    }
+
+    /**
+     * Verifies a signed response that was decoded already, such as an instruction inside a status answer, and returns its payload.
+     *
+     * The text that was signed is built from the key ID and the payload string of the envelope exactly as they are,
+     * so nothing is encoded again.
+     *
+     * @param array $envelope The decoded response: v, kid, payload and sig.
+     * @return array The payload (a JSON object).
+     * @throws envelope_exception When the envelope is not a response signed by a trusted key.
+     */
+    public function open_envelope(array $envelope): array {
+        if (!self::well_formed($envelope) || strlen($envelope['payload']) > self::MAX_BODY) {
             throw new envelope_exception('envelope_malformed');
         }
         $payloadjson = base64url::decode($envelope['payload']);

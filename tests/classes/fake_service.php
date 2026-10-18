@@ -79,6 +79,8 @@ final class fake_service {
      *   site_removed, bad_status.
      * - enrollpayload: fields that replace those of the enrolment answer.
      * - sitename and platformname: the names the enrolment answer gives.
+     * - instructions: the signed instruction envelopes that the status answer carries, by kind.
+     * - awsranges: the content that GET /aws-ranges gives, or null for none.
      *
      * @return array
      */
@@ -93,6 +95,8 @@ final class fake_service {
             'sitename' => self::SITE_NAME,
             'platformname' => self::PLATFORM_NAME,
             'status' => 'active',
+            'instructions' => [],
+            'awsranges' => null,
             'requests' => [],
             'lastbody' => null,
             'lastheaders' => null,
@@ -129,7 +133,52 @@ final class fake_service {
         if ($method === 'GET' && $path === $this->basepath . '/status') {
             return $this->status($host, $path, $headers);
         }
+        if ($method === 'GET' && $path === $this->basepath . '/aws-ranges') {
+            return $this->aws_ranges($host, $path, $headers);
+        }
         return [404, [], self::error('not_found')];
+    }
+
+    /**
+     * Sets the instruction of a kind that the status answer carries, signed with the service's key.
+     *
+     * @param string $kind settings or aws_ranges.
+     * @param int $seq Sequence number.
+     * @param array $body Body of the instruction.
+     * @param string|null $siteid Site ID in the instruction; null for the one given at enrolment, and for aws_ranges none.
+     */
+    public function set_instruction(string $kind, int $seq, array $body, ?string $siteid = null): void {
+        $this->state['instructions'][$kind] = $this->signer->parts([
+            'type' => 'instruction',
+            'kind' => $kind,
+            'site_id' => $kind === 'aws_ranges' ? null : ($siteid ?? self::SITE_ID),
+            'seq' => $seq,
+            'issued_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
+            'body' => $body,
+        ]);
+    }
+
+    /**
+     * Publishes a list of AWS ranges: stores the content for GET /aws-ranges and sets the instruction that names it.
+     *
+     * @param int $seq Sequence number.
+     * @param string $content The content.
+     */
+    public function publish_aws_ranges(int $seq, string $content): void {
+        $this->state['awsranges'] = $content;
+        $this->set_instruction('aws_ranges', $seq, [
+            'sync_token' => '1791766626',
+            'create_date' => '2026-10-18-00-00-00',
+            'sha256' => hash('sha256', $content),
+            'size' => strlen($content),
+        ]);
+    }
+
+    /**
+     * Removes the instructions.
+     */
+    public function clear_instructions(): void {
+        $this->state['instructions'] = [];
     }
 
     /**
@@ -291,7 +340,34 @@ final class fake_service {
             return [200, [], '{"site_id":"00000000-0000-4000-8000-000000000000","status":"active"}'];
         }
         return [200, ['Content-Type' => 'application/json'], json_encode(['site_id' => self::SITE_ID,
-            'status' => $this->state['status'], 'server_time' => $this->now(), 'instructions' => []])];
+            'status' => $this->state['status'], 'server_time' => $this->now(),
+            'instructions' => array_values($this->state['instructions'])])];
+    }
+
+    /**
+     * The list of AWS ranges.
+     *
+     * @param string $host Host.
+     * @param string $path Path.
+     * @param string[] $headers Headers.
+     * @return array
+     */
+    private function aws_ranges(string $host, string $path, array $headers): array {
+        $problem = $this->header_problem($headers);
+        if ($problem !== null) {
+            return $problem;
+        }
+        if (($headers['x-secbackup-site'] ?? '') !== self::SITE_ID || $this->state['signingkey'] === null) {
+            return [401, [], self::error('site_not_enrolled')];
+        }
+        $problem = $this->verify_problem('GET', $host, $path, $headers, '', (string) base64_decode($this->state['signingkey']));
+        if ($problem !== null) {
+            return $problem;
+        }
+        if ($this->state['awsranges'] === null) {
+            return [404, [], self::error('not_found')];
+        }
+        return [200, ['Content-Type' => 'application/json'], $this->state['awsranges']];
     }
 
     /**

@@ -96,7 +96,7 @@ final class status_page_test extends \advanced_testcase {
 
     public function test_registered_site(): void {
         self::register();
-        state::record_poll(1760000300, new status_result('active', 1760000305, 5, 0));
+        state::record_poll(1760000300, new status_result('active', 1760000305, 5, []));
         $html = (new status_page())->render();
         $this->assertStringContainsString('Example Platform', $html);
         $this->assertStringContainsString('Example &lt;b&gt;site&lt;/b&gt;', $html);
@@ -134,7 +134,7 @@ final class status_page_test extends \advanced_testcase {
 
     public function test_small_clock_difference_gives_no_warning(): void {
         self::register();
-        state::record_poll(1760000300, new status_result('active', 1760000360, 60, 0));
+        state::record_poll(1760000300, new status_result('active', 1760000360, 60, []));
         $this->assertStringNotContainsString(
             get_string('clock_skew_warning', 'tool_secbackup', 1),
             (new status_page())->render()
@@ -162,7 +162,7 @@ final class status_page_test extends \advanced_testcase {
 
     public function test_other_service_status(): void {
         self::register();
-        state::record_poll(1760000300, new status_result('suspended', 1760000300, 0, 0));
+        state::record_poll(1760000300, new status_result('suspended', 1760000300, 0, []));
         $this->assertStringContainsString(
             get_string('service_status_other', 'tool_secbackup', 'suspended'),
             (new status_page())->render()
@@ -192,7 +192,7 @@ final class status_page_test extends \advanced_testcase {
         self::register();
         set_config('sitename', '<b>A&B</b>', 'tool_secbackup');
         set_config('platformname', '<i>C&D</i>', 'tool_secbackup');
-        state::record_poll(1760000300, new status_result('<u>E&F</u>', 1760000300, 0, 0));
+        state::record_poll(1760000300, new status_result('<u>E&F</u>', 1760000300, 0, []));
         $html = (new status_page())->render();
         $this->assert_escaped_once($html, '<b>A&B</b>', '&lt;b&gt;A&amp;B&lt;/b&gt;');
         $this->assert_escaped_once($html, '<i>C&D</i>', '&lt;i&gt;C&amp;D&lt;/i&gt;');
@@ -281,7 +281,7 @@ final class status_page_test extends \advanced_testcase {
 
     public function test_a_status_the_service_has_a_label_for(): void {
         self::register();
-        state::record_poll(1760000300, new status_result('awaiting_enrollment', 1760000300, 0, 0));
+        state::record_poll(1760000300, new status_result('awaiting_enrollment', 1760000300, 0, []));
         $html = (new status_page())->render();
         $this->assertStringContainsString(get_string('service_status_awaiting_enrollment', 'tool_secbackup'), $html);
         $this->assertStringNotContainsString(get_string('service_status_other', 'tool_secbackup', ''), $html);

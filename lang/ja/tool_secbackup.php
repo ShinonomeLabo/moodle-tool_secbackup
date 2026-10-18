@@ -153,6 +153,7 @@ $string['field_endpoint_help'] = 'プラットフォーム (バックアップ�
 $string['field_fingerprint'] = '公開鍵のフィンガープリント';
 $string['field_publickey'] = 'このサイトの公開鍵';
 $string['field_publickey_help'] = 'プラットフォームの画面から、secbk1: で始まるこのサイトの公開鍵をコピーしてください。次の画面にフィンガープリントを出すので、正しい鍵をコピーしたかを確かめられます。';
+$string['instruction_invalid'] = 'バックアップのサービスから届いた指示を確かめられなかったので、使いませんでした。';
 $string['intro'] = 'この連携ツールは、このサイト (Moodle™) をバックアップのサービスにつなぎ、暗号化したバックアップを預けられるようにします。';
 $string['message_deregistered_body'] = '{$a->user} が、このサイトの {$a->platform} との登録を解除しました。
 

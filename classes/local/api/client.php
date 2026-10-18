@@ -200,7 +200,30 @@ final class client {
         ) {
             throw new api_exception('status_response_invalid', '', 200);
         }
-        return new status_result($data['status'], $data['server_time'], $data['server_time'] - $now, count($data['instructions']));
+        return new status_result($data['status'], $data['server_time'], $data['server_time'] - $now, $data['instructions']);
+    }
+
+    /**
+     * Fetches the list of AWS address ranges that the service published.
+     *
+     * The answer is not signed. The caller checks it against the SHA-256 and the size that a signed instruction names.
+     *
+     * The type of $pair is written as in enroll().
+     *
+     * @param endpoint $endpoint Connection URL.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The site's key pair.
+     * @param string $siteid The site's ID.
+     * @return string The content, as it came.
+     * @throws api_exception|\tool_secbackup\local\net\transport_exception
+     */
+    public function aws_ranges(endpoint $endpoint, #[\SensitiveParameter] signing_keypair $pair, string $siteid): string {
+        $now = ($this->clock)();
+        $headers = request_signer::headers($pair, 'GET', $endpoint, 'aws-ranges', '', $siteid, $now, request_signer::new_nonce());
+        $response = $this->transport->send('GET', $endpoint, 'aws-ranges', $headers, '');
+        if ($response->status !== 200) {
+            throw self::error($response, $now);
+        }
+        return $response->body;
     }
 
     /**

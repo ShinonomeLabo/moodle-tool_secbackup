@@ -16,8 +16,14 @@
 
 namespace tool_secbackup\local\net;
 
+use tool_secbackup\local\api\instruction;
+use tool_secbackup\local\trust\envelope_exception;
+
 /**
- * IPv4 address ranges of Amazon CloudFront and Amazon S3 (ap-northeast-1), bundled in data/aws-ranges.json.
+ * IPv4 address ranges of Amazon CloudFront and Amazon S3 (of the region of the storage).
+ *
+ * The list bundled in data/aws-ranges.json is used until the backup service sends a newer one, which is kept in the
+ * plugin's settings after its SHA-256 and size have been checked against a signed instruction.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -33,6 +39,12 @@ final class aws_ranges {
     /** @var int Fewest prefixes that a list may have for a service: the tool that makes the list refuses fewer. */
     private const MIN_PREFIXES = 5;
 
+    /** @var string Region of the S3 prefixes of the bundled list, which does not name one. */
+    private const DEFAULT_REGION = 'ap-northeast-1';
+
+    /** @var int Largest list accepted, in bytes: the largest answer the transport reads. */
+    private const MAX_SIZE = 1048576;
+
     /** @var array Networks by service: lists of [network, mask] as integers. */
     private array $networks;
 
@@ -42,17 +54,22 @@ final class aws_ranges {
     /** @var string AWS creation date of the list. */
     private string $createdate;
 
+    /** @var string Region of the S3 prefixes. */
+    private string $region;
+
     /**
      * Constructor.
      *
      * @param array $networks Networks by service.
      * @param string $synctoken Sync token.
      * @param string $createdate Creation date.
+     * @param string $region Region of the S3 prefixes.
      */
-    private function __construct(array $networks, string $synctoken, string $createdate) {
+    private function __construct(array $networks, string $synctoken, string $createdate, string $region) {
         $this->networks = $networks;
         $this->synctoken = $synctoken;
         $this->createdate = $createdate;
+        $this->region = $region;
     }
 
     /**
@@ -65,10 +82,110 @@ final class aws_ranges {
     }
 
     /**
+     * The list in use: the one the backup service sent and this site stored, or else the bundled one.
+     *
+     * A stored list that cannot be read, which should not happen, is dropped, so that the check of the addresses never
+     * depends on it.
+     *
+     * @return self
+     */
+    public static function current(): self {
+        $stored = get_config('tool_secbackup', 'awsranges');
+        if (is_string($stored) && $stored !== '') {
+            try {
+                return self::from_json($stored);
+            } catch (\coding_exception $e) {
+                unset_config('awsranges', 'tool_secbackup');
+                unset_config('awsrangesseq', 'tool_secbackup');
+            }
+        }
+        return self::bundled();
+    }
+
+    /**
+     * Sequence number of the stored list.
+     *
+     * @return int 0 when none is stored.
+     */
+    public static function stored_seq(): int {
+        // The list is read first: a stored list that cannot be read is dropped with its sequence number.
+        self::current();
+        $seq = get_config('tool_secbackup', 'awsrangesseq');
+        return is_string($seq) && preg_match('/^[1-9]\d{0,17}\z/', $seq) === 1 ? (int) $seq : 0;
+    }
+
+    /**
+     * Whether an instruction is newer than the stored list, so that the list is worth fetching.
+     *
+     * @param instruction $instruction An aws_ranges instruction.
+     * @return bool
+     * @throws envelope_exception With the code instruction_invalid, when the body breaks a rule.
+     */
+    public static function is_newer(instruction $instruction): bool {
+        self::checked_body($instruction);
+        return $instruction->seq() > self::stored_seq();
+    }
+
+    /**
+     * Stores a list that an instruction names, when the content is what the instruction signed.
+     *
+     * @param instruction $instruction An aws_ranges instruction.
+     * @param string $content The content that was fetched.
+     * @return bool False when the instruction is not newer, or when the content is not the signed one (a newer list was
+     *     published in between); nothing is stored then, and the next poll fetches again.
+     * @throws envelope_exception With the code instruction_invalid, when the body breaks a rule or the signed content is
+     *     not a list.
+     */
+    public static function apply(instruction $instruction, string $content): bool {
+        $body = self::checked_body($instruction);
+        if ($instruction->seq() <= self::stored_seq()) {
+            return false;
+        }
+        if (strlen($content) !== $body['size'] || !hash_equals($body['sha256'], hash('sha256', $content))) {
+            return false;
+        }
+        try {
+            self::from_json($content);
+        } catch (\coding_exception $e) {
+            throw new envelope_exception('instruction_invalid');
+        }
+        set_config('awsranges', $content, 'tool_secbackup');
+        set_config('awsrangesseq', $instruction->seq(), 'tool_secbackup');
+        return true;
+    }
+
+    /**
+     * Checks the body of an aws_ranges instruction.
+     *
+     * @param instruction $instruction The instruction.
+     * @return array The body, unchanged.
+     * @throws envelope_exception With the code instruction_invalid.
+     */
+    private static function checked_body(instruction $instruction): array {
+        if ($instruction->kind() !== instruction::KIND_AWS_RANGES) {
+            throw new \coding_exception('Not an aws_ranges instruction.');
+        }
+        $body = $instruction->body();
+        $names = array_keys($body);
+        sort($names);
+        // The patterns end with \z: $ also matches before a final line feed.
+        $valid = $names === ['create_date', 'sha256', 'size', 'sync_token']
+            && is_string($body['sync_token']) && $body['sync_token'] !== '' && strlen($body['sync_token']) <= 64
+            && is_string($body['create_date']) && preg_match('/^\d{4}(-\d{2}){5}\z/', $body['create_date']) === 1
+            && is_string($body['sha256']) && preg_match('/^[0-9a-f]{64}\z/', $body['sha256']) === 1
+            && is_int($body['size']) && $body['size'] >= 1 && $body['size'] <= self::MAX_SIZE;
+        if (!$valid) {
+            throw new envelope_exception('instruction_invalid');
+        }
+        return $body;
+    }
+
+    /**
      * Reads a list in the format of data/aws-ranges.json.
      *
-     * The list has to be exactly what the tool writes: two strings, and for each service a list of at least five prefixes
-     * that are strings of the form a.b.c.d/n with n from 8 to 32. A list with fewer prefixes, or a prefix that covers
+     * The list has to be exactly what the tool writes: two strings, optionally the region of the S3 prefixes, and for each
+     * service a list of at least five different prefixes that are strings of the form a.b.c.d/n with n from 8 to 32.
+     * A list with fewer prefixes, or a prefix that covers
      * a large part of the internet, would make the check of the addresses meaningless.
      *
      * @param string $json The list.
@@ -80,18 +197,29 @@ final class aws_ranges {
         if (!is_array($data) || !is_string($data['syncToken'] ?? null) || !is_string($data['createDate'] ?? null)) {
             throw new \coding_exception('The AWS range list is not valid.');
         }
+        $region = array_key_exists('s3_region', $data) ? $data['s3_region'] : self::DEFAULT_REGION;
+        // The pattern ends with \z: $ also matches before a final line feed.
+        if (!is_string($region) || preg_match('/^[a-z]{2}-[a-z]+-\d\z/', $region) !== 1) {
+            throw new \coding_exception('The AWS range list is not valid.');
+        }
         $networks = [];
         foreach ([self::SERVICE_CLOUDFRONT, self::SERVICE_S3] as $service) {
             $prefixes = $data['services'][$service] ?? null;
             if (!is_array($prefixes) || !array_is_list($prefixes)) {
                 throw new \coding_exception('The AWS range list is not valid.');
             }
-            if (count($prefixes) < self::MIN_PREFIXES) {
+            // A prefix that is repeated, or written in another way for the same network, counts once.
+            $unique = [];
+            foreach ($prefixes as $prefix) {
+                $network = self::network($prefix);
+                $unique[$network[0] . '/' . $network[1]] = $network;
+            }
+            if (count($unique) < self::MIN_PREFIXES) {
                 throw new \coding_exception('The AWS range list has too few prefixes of ' . $service . '.');
             }
-            $networks[$service] = array_map([self::class, 'network'], $prefixes);
+            $networks[$service] = array_values($unique);
         }
-        return new self($networks, $data['syncToken'], $data['createDate']);
+        return new self($networks, $data['syncToken'], $data['createDate'], $region);
     }
 
     /**
@@ -145,6 +273,15 @@ final class aws_ranges {
      */
     public function count(string $service): int {
         return count($this->networks[$service]);
+    }
+
+    /**
+     * Region of the S3 prefixes.
+     *
+     * @return string Such as ap-northeast-1.
+     */
+    public function s3_region(): string {
+        return $this->region;
     }
 
     /**

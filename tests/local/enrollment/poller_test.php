@@ -18,8 +18,10 @@ namespace tool_secbackup\local\enrollment;
 
 use tool_secbackup\local\api\api_exception;
 use tool_secbackup\local\api\client;
+use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\endpoint\endpoint;
+use tool_secbackup\local\net\aws_ranges;
 use tool_secbackup\local\net\dns_guard;
 use tool_secbackup\local\net\transport;
 use tool_secbackup\local\plugin_exception;
@@ -27,6 +29,7 @@ use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\local\trust\sec_trust;
 use tool_secbackup\tests\envelope_builder;
 use tool_secbackup\tests\fake_service;
+use tool_secbackup\tests\instruction_factory;
 use tool_secbackup\tests\network_fakes;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\enrollment\poller::class)]
@@ -76,7 +79,7 @@ final class poller_test extends \advanced_testcase {
      * @return poller
      */
     private function poller(int $now): poller {
-        return new poller(network_fakes::client($this->service->handler(), $now), static fn(): int => $now);
+        return new poller(network_fakes::client($this->service->handler(), $now), static fn(): int => $now, network_fakes::trust());
     }
 
     public function test_unregistered_site_asks_nothing(): void {
@@ -261,5 +264,120 @@ final class poller_test extends \advanced_testcase {
         $this->assertSame('failed', (new poller())->run());
         $this->assertGreaterThanOrEqual($before, state::load()->last_poll());
         $this->assertLessThanOrEqual(time(), state::load()->last_poll());
+    }
+
+    /**
+     * A list of AWS ranges that differs from the bundled one.
+     *
+     * @param string $token Sync token.
+     * @return string
+     */
+    private static function ranges_content(string $token = '42'): string {
+        $data = json_decode(file_get_contents(__DIR__ . '/../../../data/aws-ranges.json'), true);
+        $data['syncToken'] = $token;
+        return json_encode($data, JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Counts the requests that the fake service got for a path.
+     *
+     * @param string $name Last part of the path.
+     * @return int
+     */
+    private function requests_for(string $name): int {
+        return count(array_filter($this->service->state['requests'], static fn($r) => str_ends_with($r, '/' . $name)));
+    }
+
+    public function test_instructions_are_applied_once(): void {
+        $this->register();
+        $this->service->set_instruction('settings', 2, instruction_factory::settings_body([
+            'window_start' => '03:00', 'bandwidth_mbps' => 20,
+        ]));
+        $this->service->publish_aws_ranges(5, self::ranges_content());
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertSame(3 * 60, settings::current()->window_start());
+        $this->assertSame(20, settings::current()->bandwidth_mbps());
+        $this->assertSame(2, settings::current()->seq());
+        $this->assertSame('42', aws_ranges::current()->sync_token());
+        $this->assertSame(5, aws_ranges::stored_seq());
+        $this->assertSame('', state::load()->last_poll_error());
+        $this->assertSame(1, $this->requests_for('aws-ranges'));
+
+        // The same sequence numbers again change nothing and the list is not fetched again.
+        $this->service->set_instruction('settings', 2, instruction_factory::settings_body(['window_start' => '04:00']));
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertSame(3 * 60, settings::current()->window_start());
+        $this->assertSame(1, $this->requests_for('aws-ranges'));
+    }
+
+    public function test_a_broken_instruction_is_skipped_and_the_others_are_applied(): void {
+        $this->register();
+        $this->service->set_instruction('settings', 2, instruction_factory::settings_body(['runs_per_day' => 0]));
+        $this->service->publish_aws_ranges(5, self::ranges_content());
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertFalse(settings::current()->is_received());
+        $this->assertSame('42', aws_ranges::current()->sync_token());
+        $state = state::load();
+        $this->assertSame('instruction_invalid', $state->last_poll_error());
+        $this->assertSame(self::NOW, $state->last_poll());
+        $this->assertSame('active', $state->last_poll_status());
+    }
+
+    public function test_instructions_that_cannot_be_verified_are_skipped(): void {
+        $this->register();
+        $builder = new envelope_builder();
+        $good = $builder->parts([
+            'type' => 'instruction', 'kind' => 'settings', 'site_id' => fake_service::SITE_ID, 'seq' => 3,
+            'issued_at' => '2026-10-18T09:00:00Z', 'body' => instruction_factory::settings_body(),
+        ]);
+        $other = $builder->parts([
+            'type' => 'instruction', 'kind' => 'settings', 'site_id' => '99999999-2222-4333-8444-555555555555', 'seq' => 4,
+            'issued_at' => '2026-10-18T09:00:00Z', 'body' => instruction_factory::settings_body(),
+        ]);
+        $forged = array_merge($good, ['sig' => envelope_builder::b64url(str_repeat("\0", 64))]);
+        foreach (['another site' => $other, 'forged' => $forged, 'not an envelope' => 'junk'] as $name => $envelope) {
+            $this->service->state['instructions'] = ['settings' => $envelope];
+            $this->assertSame('ok', $this->poller(self::NOW)->run(), $name);
+            $this->assertFalse(settings::current()->is_received(), $name);
+            $this->assertSame('instruction_invalid', state::load()->last_poll_error(), $name);
+        }
+        // The next poll with nothing wrong clears the error.
+        $this->service->state['instructions'] = ['settings' => $good];
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertSame('', state::load()->last_poll_error());
+        $this->assertTrue(settings::current()->is_received());
+    }
+
+    public function test_a_list_that_changed_after_the_instruction_is_not_stored_and_is_fetched_again(): void {
+        $this->register();
+        $this->service->publish_aws_ranges(5, self::ranges_content('42'));
+        $this->service->state['awsranges'] = self::ranges_content('43');
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertSame(0, aws_ranges::stored_seq());
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
+        $this->assertSame('', state::load()->last_poll_error());
+
+        $this->service->publish_aws_ranges(6, self::ranges_content('43'));
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertSame(6, aws_ranges::stored_seq());
+        $this->assertSame('43', aws_ranges::current()->sync_token());
+        $this->assertSame(2, $this->requests_for('aws-ranges'));
+    }
+
+    public function test_a_list_that_cannot_be_fetched_is_recorded_and_tried_again(): void {
+        $this->register();
+        $this->service->publish_aws_ranges(5, self::ranges_content());
+        $content = $this->service->state['awsranges'];
+        $this->service->state['awsranges'] = null;
+        $this->assertSame('failed', $this->poller(self::NOW)->run());
+        $state = state::load();
+        $this->assertSame('api_unexpected', $state->last_poll_error());
+        $this->assertSame('active', $state->last_poll_status());
+        $this->assertSame(0, aws_ranges::stored_seq());
+
+        $this->service->state['awsranges'] = $content;
+        $this->assertSame('ok', $this->poller(self::NOW)->run());
+        $this->assertSame(5, aws_ranges::stored_seq());
+        $this->assertSame('', state::load()->last_poll_error());
     }
 }

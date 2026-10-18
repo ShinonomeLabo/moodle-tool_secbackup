@@ -983,7 +983,7 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(get_string('diag_clock_seconds', 'tool_secbackup', 30), $named['clock']->detail);
         $this->assertSame('', $named['clock']->advice);
 
-        state::record_poll(1760000300, new status_result('active', 1760000000, -300, 0));
+        state::record_poll(1760000300, new status_result('active', 1760000000, -300, []));
         $named = self::by_name(self::runner([], make_request_directory())->run(null));
         $this->assertSame(check_result::WARN, $named['clock']->result);
         $this->assertSame(get_string('diag_clock_seconds', 'tool_secbackup', 300), $named['clock']->detail);

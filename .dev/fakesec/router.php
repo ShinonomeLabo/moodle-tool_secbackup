@@ -59,6 +59,24 @@ if ($method === 'POST' && str_starts_with($path, '/_fake/')) {
         $state['mode'] = $m[1];
     } else if (preg_match('~^status/([a-z_]+)\z~', $action, $m) === 1) {
         $state['status'] = $m[1];
+    } else if (preg_match('~^instruction/(settings|aws_ranges)\z~', $action, $m) === 1) {
+        // The body is {"seq": N, "body": {...}} for settings, or {"seq": N, "content": "..."} for aws_ranges.
+        $given = json_decode((string) file_get_contents('php://input'), true);
+        $fake = new fake_service($apibase, $state);
+        if (!is_array($given) || !is_int($given['seq'] ?? null)) {
+            http_response_code(400);
+            return;
+        }
+        if ($m[1] === 'aws_ranges') {
+            $fake->publish_aws_ranges($given['seq'], (string) ($given['content'] ?? ''));
+        } else {
+            $fake->set_instruction('settings', $given['seq'], (array) ($given['body'] ?? []));
+        }
+        $state = $fake->state;
+    } else if ($action === 'instructions/clear') {
+        $fake = new fake_service($apibase, $state);
+        $fake->clear_instructions();
+        $state = $fake->state;
     } else if (preg_match('~^clock/(-?\d+)\z~', $action, $m) === 1) {
         $state['now'] = time() + (int) $m[1];
     } else {
