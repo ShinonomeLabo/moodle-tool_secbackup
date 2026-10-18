@@ -138,10 +138,11 @@ final class network_fakes {
      *
      * @param callable $handler Guzzle handler, such as fake_service::handler().
      * @param int $now This server's clock (UNIX time).
+     * @param developer_settings|null $settings Developer settings; null for none.
      * @return client
      */
-    public static function client(callable $handler, int $now): client {
-        $settings = developer_settings::from_value(null);
+    public static function client(callable $handler, int $now, ?developer_settings $settings = null): client {
+        $settings ??= developer_settings::from_value(null);
         $transport = new transport($settings, self::passing_guard(), $handler);
         return new client(
             $transport,

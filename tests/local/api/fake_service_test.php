@@ -202,4 +202,236 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame(fake_service::SITE_NAME, $state['sitename']);
         $this->assertSame(fake_service::PLATFORM_NAME, $state['platformname']);
     }
+
+    /** @var string Path prefix of the API. */
+    private const BASE = '/api/lms-backup/v1';
+
+    /** @var string A digest, standard base64. */
+    private const SHA = 'ypeBEsobvcr6wjGzmiPcTaeG7/gUfE5yuYB3ha/uSLs=';
+
+    /** @var string The first run that the fake service makes. */
+    private const RUN = '/runs/aaaaaaaa-bbbb-4ccc-8ddd-000000000001';
+
+    /**
+     * A fake service where a key pair made here is enrolled.
+     *
+     * @return array [fake_service, secret key]
+     */
+    private static function enrolled(): array {
+        $pair = sodium_crypto_sign_keypair();
+        $service = new fake_service(self::API, array_merge(fake_service::initial_state(), [
+            'now' => self::NOW, 'signingkey' => base64_encode(sodium_crypto_sign_publickey($pair))]));
+        return [$service, sodium_crypto_sign_secretkey($pair)];
+    }
+
+    /**
+     * Sends a request signed as the plugin signs its requests, written out here from the contract.
+     *
+     * @param fake_service $service The service.
+     * @param string $secret Secret key.
+     * @param string $method Method.
+     * @param string $path Path after the API prefix.
+     * @param string $body Body.
+     * @param string|null $signedpath Path that is signed, when it is not the one that is sent.
+     * @return array [HTTP status, headers, decoded body]
+     */
+    private static function signed(
+        fake_service $service,
+        string $secret,
+        string $method,
+        string $path,
+        string $body = '',
+        ?string $signedpath = null
+    ): array {
+        static $counter = 0;
+        $nonce = envelope_builder::b64url(str_pad((string) ++$counter, 16, '0', STR_PAD_LEFT));
+        $canonical = implode("\n", ['SECBACKUP-V1', $method, 'app.example.test', self::BASE . ($signedpath ?? $path), '',
+            (string) self::NOW, $nonce, hash('sha256', $body)]);
+        $headers = ['x-secbackup-timestamp' => (string) self::NOW, 'x-secbackup-nonce' => $nonce,
+            'x-secbackup-signature' => envelope_builder::b64url(sodium_crypto_sign_detached($canonical, $secret)),
+            'x-secbackup-site' => fake_service::SITE_ID];
+        $answer = $service->handle($method, 'app.example.test', self::BASE . $path, $headers, $body);
+        return [$answer[0], $answer[1], json_decode($answer[2], true)];
+    }
+
+    /**
+     * The code of the error in an answer.
+     *
+     * @param array $answer An answer of signed().
+     * @return string
+     */
+    private static function code(array $answer): string {
+        return $answer[2]['error']['code'];
+    }
+
+    public function test_the_run_endpoints_check_the_signature_over_the_path_they_received(): void {
+        [$service, $secret] = self::enrolled();
+        $this->assertSame(201, self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}')[0]);
+        $body = '{"estimated_bytes":5}';
+        // The signature over the path of another call is refused.
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/capacity', $body, '/runs');
+        $this->assertSame([401, 'signature_invalid'], [$answer[0], self::code($answer)]);
+        $this->assertSame(200, self::signed($service, $secret, 'POST', self::RUN . '/capacity', $body)[0]);
+        // Without a signature or an enrolment, the run endpoints answer as the others do.
+        $this->assertSame(401, $service->handle('POST', 'app.example.test', self::BASE . '/runs', [], '{"kind":"full"}')[0]);
+        $other = new fake_service(self::API, array_merge(fake_service::initial_state(), ['now' => self::NOW]));
+        $answer = self::signed($other, $secret, 'POST', '/runs', '{"kind":"full"}');
+        $this->assertSame([401, 'site_not_enrolled'], [$answer[0], self::code($answer)]);
+    }
+
+    /**
+     * Requests that the service refuses as malformed: path, body.
+     *
+     * @return array
+     */
+    public static function malformed_run_request_provider(): array {
+        $item = ['kind' => 'index', 'size' => 1, 'sha256' => self::SHA];
+        $urls = self::RUN . '/upload-urls';
+        return [
+            'start with another kind' => ['/runs', '{"kind":"partial"}'],
+            'start with a field more' => ['/runs', '{"kind":"full","x":1}'],
+            'start with no body' => ['/runs', ''],
+            'capacity as text' => [self::RUN . '/capacity', '{"estimated_bytes":"5"}'],
+            'capacity below zero' => [self::RUN . '/capacity', '{"estimated_bytes":-5}'],
+            'capacity with a field more' => [self::RUN . '/capacity', '{"estimated_bytes":5,"x":1}'],
+            'urls without items' => [$urls, '{"items":[]}'],
+            'urls with 257 items' => [$urls, json_encode(['items' => array_fill(0, 257, $item)])],
+            'urls with an item more' => [$urls, json_encode(['items' => [$item + ['x' => 1]]])],
+            'urls of an object without a name' => [$urls, json_encode(['items' => [['kind' => 'object'] + $item]])],
+            'urls with a short name' => [$urls, json_encode(['items' => [['kind' => 'object', 'name' => 'ab'] + $item]])],
+            'urls with a digest in hexadecimal' => [$urls, json_encode(['items' => [['sha256' => 'ab'] + $item]])],
+            'urls as a list of items only' => [$urls, json_encode([$item])],
+            'complete without stats' => [self::RUN . '/complete', json_encode(['manifest' => [], 'index' => []])],
+            'complete with other keys' => [self::RUN . '/complete', json_encode(['manifest' => ['sha256' => 'a'], 'index' => [],
+                'stats' => []])],
+            'fail with an unknown reason' => [self::RUN . '/fail', '{"code":"expired"}'],
+            'fail with a field more' => [self::RUN . '/fail', '{"code":"disk_low","x":1}'],
+            'a list as the body' => [self::RUN . '/fail', '[1]'],
+            'core manifest with a short build' => ['/core-manifests', '{"version":"2024100703.10","build":"2025"}'],
+            'core manifest with a long version' => ['/core-manifests', '{"version":"2024100703.100","build":"20250113"}'],
+            'core manifest with a field more' => ['/core-manifests', '{"version":"2024100703.10","build":"20250113","x":1}'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformed_run_request_provider')]
+    /**
+     * The service refuses a request body that is not in its shape.
+     *
+     * @dataProvider malformed_run_request_provider
+     * @param string $path Path after the API prefix.
+     * @param string $body Body.
+     */
+    public function test_a_run_request_in_a_wrong_shape_is_refused(string $path, string $body): void {
+        [$service, $secret] = self::enrolled();
+        $service->state['runs']['aaaaaaaa-bbbb-4ccc-8ddd-000000000001'] = ['status' => 'uploading', 'kind' => 'full',
+            'failure_code' => null, 'receipt' => null, 'estimated' => 100, 'reserved' => 0, 'started' => self::NOW,
+            'manifest' => null, 'index' => null, 'storedbytes' => 0];
+        $answer = self::signed($service, $secret, 'POST', $path, $body);
+        $this->assertSame([422, 'invalid_request'], [$answer[0], self::code($answer)]);
+    }
+
+    public function test_upload_urls_follow_the_decision_on_the_size(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        $item = static fn(int $size): string => json_encode(['items' => [['kind' => 'index', 'size' => $size,
+            'sha256' => self::SHA]]]);
+        $urls = self::RUN . '/upload-urls';
+        // No decision yet.
+        $answer = self::signed($service, $secret, 'POST', $urls, $item(10));
+        $error = $answer[2]['error'];
+        $this->assertSame(['capacity_recheck_required', 10, null], [$error['code'], $error['requested_bytes'],
+            $error['estimated_bytes']]);
+        // A refused decision is no decision.
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":2000000000000}');
+        $this->assertSame(409, self::signed($service, $secret, 'POST', $urls, $item(10))[0]);
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
+        // 110% of the estimate is the most that is given: 110 bytes pass, 111 do not.
+        $this->assertSame(200, self::signed($service, $secret, 'POST', $urls, $item(110))[0]);
+        $answer = self::signed($service, $secret, 'POST', $urls, $item(1));
+        $this->assertSame([409, 111, 100], [$answer[0], $answer[2]['error']['requested_bytes'],
+            $answer[2]['error']['estimated_bytes']]);
+    }
+
+    public function test_the_headers_of_an_upload_url_are_the_five_of_the_contract(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
+        $name = str_repeat('a', 64);
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', json_encode(['items' => [
+            ['kind' => 'object', 'name' => $name, 'size' => 7, 'sha256' => self::SHA]]]));
+        $item = $answer[2]['items'][0];
+        $this->assertSame(['kind', 'name', 'url', 'headers', 'expires_at'], array_keys($item));
+        $this->assertSame(
+            ['Content-Length' => '7', 'x-amz-checksum-sha256' => self::SHA, 'x-amz-storage-class' => 'STANDARD',
+            'x-amz-object-lock-mode' => 'COMPLIANCE', 'x-amz-object-lock-retain-until-date' => '2025-11-07T00:00:00Z'],
+            $item['headers']
+        );
+        $this->assertSame('https://app.example.test/_s3/sites/' . fake_service::SITE_ID . '/objects/' . $name
+            . '?X-Amz-Expires=900&X-Amz-Signature=0123456789abcdef', $item['url']);
+    }
+
+    public function test_calls_that_the_state_of_the_run_does_not_allow_are_refused_with_the_status(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        self::signed($service, $secret, 'POST', self::RUN . '/fail', '{"code":"disk_low"}');
+        foreach (['/capacity' => '{"estimated_bytes":5}', '/fail' => '{"code":"disk_low"}'] as $suffix => $body) {
+            $answer = self::signed($service, $secret, 'POST', self::RUN . $suffix, $body);
+            $this->assertSame([409, 'run_state_invalid', 'failed'], [$answer[0], self::code($answer),
+                $answer[2]['error']['status']]);
+        }
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', json_encode(['items' => [['kind' => 'index',
+            'size' => 1, 'sha256' => self::SHA]]]));
+        $this->assertSame([409, 'run_state_invalid'], [$answer[0], self::code($answer)]);
+        // A new run can start after a failed one.
+        $this->assertSame(201, self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}')[0]);
+    }
+
+    public function test_unknown_runs_and_paths(): void {
+        [$service, $secret] = self::enrolled();
+        $unknown = '/runs/aaaaaaaa-bbbb-4ccc-8ddd-000000000009';
+        $answer = self::signed($service, $secret, 'GET', $unknown);
+        $this->assertSame([404, 'run_not_found'], [$answer[0], self::code($answer)]);
+        $this->assertSame(404, self::signed($service, $secret, 'POST', $unknown . '/capacity', '{"estimated_bytes":5}')[0]);
+        $this->assertSame(404, self::signed($service, $secret, 'GET', '/runs/not-a-run')[0]);
+        $this->assertSame(404, self::signed($service, $secret, 'GET', '/runs')[0]);
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        $this->assertSame(404, self::signed($service, $secret, 'POST', self::RUN, '{}')[0]);
+        $this->assertSame(404, self::signed($service, $secret, 'GET', self::RUN . '/capacity')[0]);
+    }
+
+    /**
+     * The error modes, which answer every request with their error.
+     *
+     * @return array
+     */
+    public static function mode_provider(): array {
+        return [
+            ['run_in_progress', 409, 'run_id'],
+            ['run_limit_reached', 429, 'retry_after'],
+            ['run_not_found', 404, null],
+            ['run_state_invalid', 409, 'status'],
+            ['capacity_recheck_required', 409, 'requested_bytes'],
+            ['artifact_signature_invalid', 422, 'artifact'],
+            ['core_manifest_not_found', 404, null],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('mode_provider')]
+    /**
+     * Each new mode gives the error of its name with the details of the contract.
+     *
+     * @dataProvider mode_provider
+     * @param string $mode The mode.
+     * @param int $status HTTP status.
+     * @param string|null $detail A detail that the error carries.
+     */
+    public function test_the_new_modes(string $mode, int $status, ?string $detail): void {
+        [$service] = self::enrolled();
+        $service->state['mode'] = $mode;
+        $answer = $service->handle('POST', 'app.example.test', self::BASE . '/runs', [], '');
+        $this->assertSame($status, $answer[0]);
+        $error = json_decode($answer[2], true)['error'];
+        $this->assertSame($mode, $error['code']);
+        $this->assertSame($detail === null, !array_key_exists((string) $detail, $error));
+    }
 }

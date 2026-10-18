@@ -33,6 +33,9 @@ final class request_signer {
     /** @var string First line of the signed text. */
     private const CONTEXT = 'SECBACKUP-V1';
 
+    /** @var int Largest body, in bytes, that the service accepts (it answers 413 body_too_large for more). */
+    public const MAX_BODY = 65536;
+
     /**
      * The text that is signed.
      *
@@ -83,7 +86,8 @@ final class request_signer {
      * @param int $timestamp UNIX time, from 0 to 999999999999.
      * @param string $nonce Nonce from new_nonce().
      * @return string[] Header values by name.
-     * @throws \coding_exception When an argument is not in its shape: that is a mistake of the caller.
+     * @throws \coding_exception When an argument is not in its shape, or the body is larger than the service accepts: that is
+     *         a mistake of the caller.
      */
     public static function headers(
         #[\SensitiveParameter] signing_keypair $pair,
@@ -105,6 +109,9 @@ final class request_signer {
         // The method is a line of the signed text, so it has to be exactly one of two words.
         if ($method !== 'GET' && $method !== 'POST') {
             throw new \coding_exception('A method is GET or POST.');
+        }
+        if (strlen($body) > self::MAX_BODY) {
+            throw new \coding_exception('A request body has at most ' . self::MAX_BODY . ' bytes.');
         }
         // The service reads 1 to 12 digits.
         if ($timestamp < 0 || $timestamp > 999999999999) {
