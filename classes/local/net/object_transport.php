@@ -87,7 +87,10 @@ final class object_transport {
     /**
      * Sends a file with PUT, with the headers that the backup service returned, exactly as they are.
      *
-     * @param object_url $url Pre-signed URL.
+     * The type of $url is written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see
+     * transport::send()). The attribute keeps the pre-signed URL, which the object holds, out of the trace of an exception.
+     *
+     * @param #[|\SensitiveParameter|]|object_url $url Pre-signed URL.
      * @param string[] $headers Headers by name: only Content-Length, x-amz-checksum-sha256, x-amz-storage-class,
      *        x-amz-object-lock-mode and x-amz-object-lock-retain-until-date, and Content-Length is required.
      * @param string $path File to send.
@@ -98,7 +101,12 @@ final class object_transport {
      *         the sending), with object_rejected when the storage does not answer 2xx, and with the transport_* and dns_*
      *         codes of the connection.
      */
-    public function put_file(object_url $url, array $headers, string $path, int $bandwidthbytespersecond): void {
+    public function put_file(
+        #[\SensitiveParameter] object_url $url,
+        array $headers,
+        string $path,
+        int $bandwidthbytespersecond
+    ): void {
         if ($bandwidthbytespersecond < 0) {
             throw new \coding_exception('The limit of the speed is not negative.');
         }
@@ -117,7 +125,7 @@ final class object_transport {
             if ($bandwidthbytespersecond > 0) {
                 $curl[CURLOPT_MAX_SEND_SPEED_LARGE] = $bandwidthbytespersecond;
             }
-            $response = $this->request('PUT', $url, $options, $curl, $declared, transport::MAX_RESPONSE);
+            $response = $this->request('PUT', $url, $options, $curl, $declared, $bandwidthbytespersecond, transport::MAX_RESPONSE);
             self::check_status($response->getStatusCode());
             // The position of the stream is the number of bytes that the client took from it.
             if ($body->tell() !== $declared) {
@@ -131,7 +139,9 @@ final class object_transport {
     /**
      * Reads an object into a file. On any failure the file is removed.
      *
-     * @param object_url $url Pre-signed URL.
+     * The type of $url is written as in put_file().
+     *
+     * @param #[|\SensitiveParameter|]|object_url $url Pre-signed URL.
      * @param string $path File to write; it is replaced.
      * @param int $maxbytes Most bytes accepted.
      * @return bool False when the storage has no such object (404).
@@ -140,13 +150,13 @@ final class object_transport {
      *         when the file is not as long as Content-Length says, with object_rejected for another answer that is not 2xx, and
      *         with the transport_* and dns_* codes of the connection.
      */
-    public function get_to_file(object_url $url, string $path, int $maxbytes): bool {
+    public function get_to_file(#[\SensitiveParameter] object_url $url, string $path, int $maxbytes): bool {
         if ($maxbytes < 1) {
             throw new \coding_exception('The most bytes is positive.');
         }
         $done = false;
         try {
-            $response = $this->request('GET', $url, ['sink' => $path], [], $maxbytes, $maxbytes);
+            $response = $this->request('GET', $url, ['sink' => $path], [], $maxbytes, 0, $maxbytes);
             if ($response->getStatusCode() === 404) {
                 return false;
             }
@@ -198,20 +208,25 @@ final class object_transport {
      * Sends one request through the checks.
      *
      * @param string $method PUT or GET.
-     * @param object_url $url Pre-signed URL.
-     * @param array $options Options of the request besides the common ones.
+     * The types of $url and $given are written as in put_file(). The attributes keep the URL and the options (the headers, and
+     * later the proxy with its password, which is built in a local variable) out of the trace of an exception.
+     *
+     * @param #[|\SensitiveParameter|]|object_url $url Pre-signed URL.
+     * @param #[|\SensitiveParameter|]|array $given Options of the request besides the common ones.
      * @param array $curl Options of curl besides the common ones.
      * @param int $size Number of bytes that the transfer is expected to move; it sets the time limit.
+     * @param int $limit Upper limit of the speed in bytes a second; 0 for none. A limit under 128 KiB/s lengthens the time.
      * @param int $maxresponse Most bytes accepted from the storage.
      * @return ResponseInterface
      * @throws transport_exception When the checks or the connection fail.
      */
     private function request(
         string $method,
-        object_url $url,
-        array $options,
+        #[\SensitiveParameter] object_url $url,
+        #[\SensitiveParameter] array $given,
         array $curl,
         int $size,
+        int $limit,
         int $maxresponse
     ): ResponseInterface {
         $address = $url->url();
@@ -225,13 +240,15 @@ final class object_transport {
             }
             return 0;
         };
-        $options['headers'] = ($options['headers'] ?? []) + ['User-Agent' => self::USER_AGENT];
+        $speed = $limit > 0 ? min(self::MIN_SPEED, $limit) : self::MIN_SPEED;
+        $options = $given;
+        $options['headers'] = ($given['headers'] ?? []) + ['User-Agent' => self::USER_AGENT];
         $options += [
             'http_errors' => false,
             'allow_redirects' => false,
             // The limit counts the bytes of the wire, so the response must not be decompressed.
             'decode_content' => false,
-            'timeout' => min(self::MAX_SECONDS, (int) ceil($size / self::MIN_SPEED) + self::EXTRA_SECONDS),
+            'timeout' => min(self::MAX_SECONDS, (int) ceil($size / $speed) + self::EXTRA_SECONDS),
             'connect_timeout' => 10,
             'proxy' => proxy_settings::for_url($address),
             // The mocked transport also calls this with the exception that it is about to throw: the argument has no type.
@@ -250,7 +267,7 @@ final class object_transport {
                 CURLOPT_PROGRESSFUNCTION => $progress,
             ],
         ];
-        $options = guarded_options::apply(
+        $checked = guarded_options::apply(
             $this->settings,
             $this->guard,
             $address,
@@ -263,7 +280,7 @@ final class object_transport {
         // Every exception of the HTTP client is replaced here, where the URL is hidden from its trace: one that was made inside
         // the client holds the arguments of Guzzle's calls, the request with its URL among them.
         try {
-            return (new \core\http_client($config))->request($method, $address, $options);
+            return (new \core\http_client($config))->request($method, $address, $checked);
         } catch (GuzzleException $e) {
             throw $toolarge ? new transport_exception('transport_too_large') : guarded_options::failure($e);
         } catch (\Throwable $e) {

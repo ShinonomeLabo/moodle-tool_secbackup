@@ -42,6 +42,9 @@ final class object_transport_test extends \advanced_testcase {
     /** @var string The signature inside a pre-signed URL: no exception keeps it in its message or in its trace. */
     private const SECRET = 'X-Amz-Signature=5ecretSignatureOfTheTestUrl';
 
+    /** @var string The password of a proxy: it must not stay in any trace either. */
+    private const PROXYPASSWORD = 'pr0xyPassw0rdOfTheTest';
+
     /** @var string Address of the test object. */
     private const URL = 'https://bucket-1.s3.ap-northeast-1.amazonaws.com/sites/x/objects/y?X-Amz-Expires=900&' . self::SECRET;
 
@@ -383,6 +386,32 @@ final class object_transport_test extends \advanced_testcase {
         $this->assertSame($expected, $mock->getLastOptions()['timeout']);
     }
 
+    public function test_a_limit_of_the_speed_lengthens_the_time_limit(): void {
+        // 200 MB at 125,000 bytes a second (1 Mbps) take 1600 seconds; the limit of 128 KiB/s would give 1589 and cut it off.
+        $path = $this->file(null);
+        $handle = fopen($path, 'wb');
+        ftruncate($handle, 200000000);
+        fclose($handle);
+        $skipping = static function (RequestInterface $request): Response {
+            $request->getBody()->seek(200000000);
+            return new Response(200);
+        };
+        $headers = ['Content-Length' => '200000000'];
+        $mock = new MockHandler([$skipping]);
+        self::transport($mock)->put_file(self::url(), $headers, $path, 125000);
+        $this->assertSame(1660, $mock->getLastOptions()['timeout']);
+    }
+
+    public function test_the_time_limit_is_the_size_over_the_slower_speed_and_at_most_3600(): void {
+        $cases = [[1000, 0, 61], [1000, 1048576, 61], [1000, 131072, 61], [1000, 100, 70], [1000, 1, 1060], [5000, 1, 3600]];
+        foreach ($cases as [$size, $limit, $expected]) {
+            $content = str_repeat('x', $size);
+            $mock = new MockHandler([self::reading()]);
+            self::transport($mock)->put_file(self::url(), self::headers($content), $this->file($content), $limit);
+            $this->assertSame($expected, $mock->getLastOptions()['timeout'], "$size bytes at $limit");
+        }
+    }
+
     /**
      * Header sets that are mistakes of the caller.
      *
@@ -651,6 +680,11 @@ final class object_transport_test extends \advanced_testcase {
             'a failure of PHP' => [new \RuntimeException(self::URL), false],
             'an answer that is refused' => [new Response(403, [], 'denied'), false],
             'a name check that fails' => [new Response(200), true],
+            'an answer that is too large' => [
+                new Response(200, ['Content-Length' => (string) (transport::MAX_RESPONSE + 1)], 'x'),
+                false,
+            ],
+            'an answer that is a redirect' => [new Response(302, ['Location' => 'https://elsewhere.example.test/'], ''), false],
         ];
     }
 
@@ -667,6 +701,9 @@ final class object_transport_test extends \advanced_testcase {
             $this->markTestSkipped('Before PHP 8.2 #[\SensitiveParameter] does nothing.');
         }
         $guard = $namecheckfails ? network_fakes::guard(['3.5.152.1'], null, ['203.0.113.7']) : null;
+        // A SOCKS5 proxy looks nothing up, so the name check of this server still runs. The password is part of the proxy option.
+        $this->use_proxy_with_credentials();
+        $this->assertStringContainsString(self::PROXYPASSWORD, proxy_settings::for_url(self::URL));
         $previous = ini_set('zend.exception_ignore_args', '0');
         $this->assertNotFalse($previous);
         try {
@@ -690,12 +727,46 @@ final class object_transport_test extends \advanced_testcase {
         }
     }
 
-    public function test_the_trace_check_sees_a_url_that_is_given_to_a_call(): void {
+    /**
+     * Sets a SOCKS5 proxy with a user name and a password.
+     */
+    private function use_proxy_with_credentials(): void {
+        global $CFG;
+        $CFG->proxyhost = 'proxy.example.ac.jp';
+        $CFG->proxyport = '1080';
+        $CFG->proxytype = 'SOCKS5';
+        $CFG->proxyuser = 'proxyuser';
+        $CFG->proxypassword = self::PROXYPASSWORD;
+    }
+
+    /**
+     * Calls whose arguments hold a secret in different ways.
+     *
+     * @return array
+     */
+    public static function control_provider(): array {
+        $url = object_url::parse(self::URL, developer_settings::from_value(null));
+        return [
+            'the URL as text' => [self::URL],
+            'the URL in an object' => [$url],
+            'the URL in an array' => [['a' => ['b' => self::URL]]],
+            'the proxy password in an array' => [['proxy' => 'socks5://u:' . self::PROXYPASSWORD . '@proxy.example.ac.jp:1080']],
+        ];
+    }
+
+    /**
+     * The trace check sees a secret that is given to a call.
+     *
+     * @dataProvider control_provider
+     * @param mixed $argument The argument.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('control_provider')]
+    public function test_the_trace_check_sees_a_secret_that_is_given_to_a_call(mixed $argument): void {
         $previous = ini_set('zend.exception_ignore_args', '0');
         try {
-            $thrown = (static function (string $url): \Exception {
+            $thrown = (static function (mixed $argument): \Exception {
                 return new \Exception('x');
-            })(self::URL);
+            })($argument);
         } finally {
             ini_set('zend.exception_ignore_args', $previous);
         }
@@ -725,7 +796,7 @@ final class object_transport_test extends \advanced_testcase {
     }
 
     /**
-     * Tells whether an argument holds the signature, also inside arrays and as part of longer text.
+     * Tells whether an argument holds the signature, the query or the proxy password, also inside arrays and longer text.
      *
      * @param mixed $argument An argument of a call in a trace.
      * @return bool
@@ -734,12 +805,21 @@ final class object_transport_test extends \advanced_testcase {
         if ($argument instanceof \Throwable || $argument instanceof MessageInterface) {
             return true;
         }
-        if (is_string($argument)) {
-            return str_contains($argument, self::SECRET);
+        // The object of a pre-signed URL holds it. Other objects (a stream, a closure with the test case) are not read.
+        if ($argument instanceof object_url) {
+            return true;
         }
         if (is_array($argument)) {
             foreach ($argument as $item) {
                 if (self::argument_holds_secret($item)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (is_string($argument)) {
+            foreach ([self::SECRET, 'X-Amz-Expires', self::PROXYPASSWORD] as $needle) {
+                if (str_contains($argument, $needle)) {
                     return true;
                 }
             }
@@ -749,14 +829,27 @@ final class object_transport_test extends \advanced_testcase {
 
     public function test_the_url_and_the_options_are_marked_sensitive_where_they_are_passed_on(): void {
         $marked = [];
-        foreach ([[object_url::class, 'parse'], [guarded_options::class, 'apply']] as [$class, $name]) {
+        $methods = [
+            [object_url::class, 'parse'],
+            [guarded_options::class, 'apply'],
+            [object_transport::class, 'put_file'],
+            [object_transport::class, 'get_to_file'],
+            [object_transport::class, 'request'],
+        ];
+        foreach ($methods as [$class, $name]) {
             foreach ((new \ReflectionMethod($class, $name))->getParameters() as $parameter) {
                 if ($parameter->getAttributes(\SensitiveParameter::class) !== []) {
                     $marked[$name][] = $parameter->getName();
                 }
             }
         }
-        $this->assertSame(['parse' => ['url'], 'apply' => ['url', 'options']], $marked);
+        $this->assertSame([
+            'parse' => ['url'],
+            'apply' => ['url', 'options'],
+            'put_file' => ['url'],
+            'get_to_file' => ['url'],
+            'request' => ['url', 'given'],
+        ], $marked);
     }
 
     public function test_the_file_is_read_into_place_and_true_is_returned(): void {
