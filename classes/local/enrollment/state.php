@@ -36,13 +36,14 @@ final class state {
     /**
      * @var string[] Settings that hold the registration (the signing key is kept by signing_keys), in the order in which
      *     they are removed. They are removed one by one, outside a transaction, so a failure can stop the removal half-way.
-     *     The list ends with the connection URL, the site ID and the site name, in that order. The site ID is what makes
-     *     the site read as registered, and the removal form asks for the site name: while the site ID is there, the name
-     *     is there too, so that the removal can be confirmed and run again. A registered site keeps its connection URL
-     *     as long as possible. Once the site ID is gone, the site reads as not registered, and a later registration
-     *     removes every stored value first.
+     *     The list starts with the key for the names of the chunks (dedup_key), which belongs to the registration: a new
+     *     registration gets a new key. It ends with the connection URL, the site ID and the site name, in that order. The
+     *     site ID is what makes the site read as registered, and the removal form asks for the site name: while the site
+     *     ID is there, the name is there too, so that the removal can be confirmed and run again. A registered site keeps
+     *     its connection URL as long as possible. Once the site ID is gone, the site reads as not registered, and a later
+     *     registration removes every stored value first.
      */
-    private const NAMES = ['platformname', 'encryptionkey', 'enrolledat', 'clockskew',
+    private const NAMES = ['dedupsecret', 'platformname', 'encryptionkey', 'enrolledat', 'clockskew',
         'backupsettings', 'backupsettingsseq', 'backupsettingssite', 'awsranges', 'awsrangesseq', 'awsrangesendpoint',
         'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'endpoint', 'siteid', 'sitename'];
 

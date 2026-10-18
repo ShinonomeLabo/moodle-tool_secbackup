@@ -64,6 +64,9 @@
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
             ]
         },
+        "LessThan": {
+            "ignore": ["tool_secbackup\\local\\crypto\\padme::length::41"]
+        },
         "PregMatchRemoveCaret": {
             "ignore": ["tool_secbackup\\local\\crypto\\base64url::decode::46"]
         },

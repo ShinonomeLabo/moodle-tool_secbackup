@@ -20,7 +20,7 @@ use tool_secbackup\local\plugin_exception;
 
 /**
  * A key could not be read or saved. The error code is one of publickey_prefix, publickey_base64, publickey_length,
- * signingkey_corrupt and signingkey_savefailed.
+ * signingkey_corrupt, signingkey_savefailed, dedupkey_corrupt and dedupkey_savefailed.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.

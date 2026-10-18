@@ -18,6 +18,7 @@ namespace tool_secbackup\local\enrollment;
 
 use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
+use tool_secbackup\local\crypto\dedup_key;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 
@@ -113,7 +114,9 @@ final class state_test extends \advanced_testcase {
 
     public function test_clear(): void {
         self::save();
+        dedup_key::load_or_create();
         state::clear();
+        $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
         $this->assertFalse(state::load()->is_enrolled());
         $state = state::load();
         $this->assertSame('', $state->endpoint_url());
@@ -124,6 +127,14 @@ final class state_test extends \advanced_testcase {
         $this->assertNull($state->enrolled_at());
         $this->assertNull($state->clock_skew());
         $this->assertNull(signing_keys::load());
+    }
+
+    public function test_a_new_registration_drops_the_key_for_names(): void {
+        self::save();
+        $key = dedup_key::load_or_create();
+        self::save();
+        $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
+        $this->assertNotSame($key, dedup_key::load_or_create());
     }
 
     public function test_numbers_that_are_not_numbers_read_as_unknown(): void {
