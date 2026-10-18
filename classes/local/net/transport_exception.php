@@ -32,7 +32,7 @@ class transport_exception extends plugin_exception {
     /**
      * Constructor.
      *
-     * @param string $errorcode One of the dns_* or transport_* language strings.
+     * @param string $errorcode One of the dns_*, transport_* or object_* language strings.
      * @param string|null $debuginfo Short technical detail without secrets, such as "cURL error 60".
      */
     public function __construct(string $errorcode, ?string $debuginfo = null) {

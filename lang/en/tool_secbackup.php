@@ -184,6 +184,9 @@ If you did not expect this, check the connection settings of the plugin.
 $string['message_reenrolled_subject'] = 'This site was registered again with {$a->platform}';
 $string['messageprovider:connection'] = 'Changes to the connection with the backup service';
 $string['notifier_system'] = 'The system';
+$string['object_incomplete'] = 'The data that was sent to or read from the storage was not as long as expected, so it was discarded.';
+$string['object_rejected'] = 'The storage did not accept the request. The address for the transfer may have expired.';
+$string['object_url_invalid'] = 'The backup service gave an address for the storage that this plugin does not accept. Nothing was sent.';
 $string['page_connect'] = 'Connection settings';
 $string['page_diagnostics'] = 'Connection diagnostics';
 $string['page_status'] = 'Status';

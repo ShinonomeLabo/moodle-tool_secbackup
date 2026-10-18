@@ -16,9 +16,7 @@
 
 namespace tool_secbackup\local\net;
 
-use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
-use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Psr7\Utils;
 use Psr\Http\Message\ResponseInterface;
@@ -40,15 +38,6 @@ final class transport {
 
     /** @var string User agent of the requests: the name of the plugin and nothing of the site. */
     private const USER_AGENT = 'tool_secbackup';
-
-    /** @var int[] curl error numbers of failed TLS handshakes and certificate checks. */
-    private const TLS_ERRORS = [35, 51, 58, 60, 77, 83, 90, 91];
-
-    /**
-     * @var int[] curl error numbers of failed or timed-out connections. 97 is a failed handshake with a SOCKS proxy, which
-     *     libcurl before 7.73.0 reports as 7.
-     */
-    private const CONNECT_ERRORS = [5, 6, 7, 28, 52, 55, 56, 97];
 
     /** @var developer_settings Developer settings. */
     private developer_settings $settings;
@@ -169,26 +158,22 @@ final class transport {
                 },
             ],
         ];
-        if (!$this->settings->skip_network_checks()) {
-            // Only an HTTP proxy looks the name up. With a SOCKS5 proxy this server does it, so its answer is checked and pinned.
-            $pinned = $this->guard->check($endpoint->host(), proxy_settings::resolves_names($url), aws_ranges::SERVICE_CLOUDFRONT);
-            $options['verify'] = self::roots_file();
-            // A folder without "<hash>.0" files: curl must not add the system's CA directory to the bundled roots.
-            $options['curl'][CURLOPT_CAPATH] = dirname(self::roots_file());
-            if ($pinned !== null) {
-                $options['curl'][CURLOPT_RESOLVE] = [$endpoint->host() . ':' . $endpoint->port() . ':' . $pinned];
-            }
-        }
-        $config = $this->handler === null ? [] : ['mock' => $this->handler];
-        if ($this->settings->allow_private_hosts()) {
-            $config['ignoresecurity'] = true;
-        }
+        $options = guarded_options::apply(
+            $this->settings,
+            $this->guard,
+            $url,
+            $endpoint->host(),
+            $endpoint->port(),
+            aws_ranges::SERVICE_CLOUDFRONT,
+            $options
+        );
+        $config = guarded_options::client_config($this->settings, $this->handler);
         // Every exception of the HTTP client is replaced here, where the headers and the body are hidden from its trace: one that
         // was made inside the client holds the arguments of Guzzle's calls, the request among them.
         try {
             $response = (new \core\http_client($config))->request($method, $url, $options);
         } catch (GuzzleException $e) {
-            throw $toolarge ? new transport_exception('transport_too_large') : self::failure($e);
+            throw $toolarge ? new transport_exception('transport_too_large') : guarded_options::failure($e);
         } catch (\Throwable $e) {
             // PSR-7 refusing a header, a bundle of roots that is missing, an error of PHP: only the class is kept, and the
             // exception is not linked. PSR-7 even puts the refused header value into its message.
@@ -203,34 +188,6 @@ final class transport {
             throw new transport_exception('transport_too_large');
         }
         return new response($response->getStatusCode(), $responsebody, self::retry_after($response->getHeaderLine('Retry-After')));
-    }
-
-    /**
-     * Turns a Guzzle failure into a transport exception without URLs or bodies.
-     *
-     * The type of $e is written the way the PHPDoc checker of moodle-plugin-ci reads the signature (see send()). The
-     * attribute keeps the failure, which holds the request with its signature and body, out of the trace of the exception
-     * made here.
-     *
-     * @param #[|\SensitiveParameter|]|GuzzleException $e The failure.
-     * @return transport_exception
-     */
-    private static function failure(#[\SensitiveParameter] GuzzleException $e): transport_exception {
-        if ($e->getMessage() === get_string('curlsecurityurlblocked', 'admin')) {
-            return new transport_exception('transport_blocked');
-        }
-        $errno = 0;
-        if ($e instanceof RequestException || $e instanceof ConnectException) {
-            $errno = (int) ($e->getHandlerContext()['errno'] ?? 0);
-        }
-        $detail = $errno > 0 ? 'cURL error ' . $errno : get_class($e);
-        if (in_array($errno, self::TLS_ERRORS, true)) {
-            return new transport_exception('transport_tls', $detail);
-        }
-        if ($e instanceof ConnectException || in_array($errno, self::CONNECT_ERRORS, true)) {
-            return new transport_exception('transport_connect', $detail);
-        }
-        return new transport_exception('transport_failed', $detail);
     }
 
     /**

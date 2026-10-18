@@ -31,6 +31,7 @@ use tool_secbackup\tests\network_fakes;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\net\transport::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\net\response::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\net\guarded_options::class)]
 /**
  * Tests for the transport to the service.
  *
@@ -39,6 +40,7 @@ use tool_secbackup\tests\network_fakes;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  * @covers     \tool_secbackup\local\net\transport
  * @covers     \tool_secbackup\local\net\response
+ * @covers     \tool_secbackup\local\net\guarded_options
  */
 final class transport_test extends \advanced_testcase {
     /** @var string A signature as the service gets it: no exception of send() keeps it in its message or in its trace. */
@@ -626,8 +628,8 @@ final class transport_test extends \advanced_testcase {
 
     public function test_the_headers_the_body_and_the_failure_are_marked_sensitive(): void {
         $marked = [];
-        foreach (['send', 'failure'] as $name) {
-            foreach ((new \ReflectionMethod(transport::class, $name))->getParameters() as $parameter) {
+        foreach ([[transport::class, 'send'], [guarded_options::class, 'failure']] as [$class, $name]) {
+            foreach ((new \ReflectionMethod($class, $name))->getParameters() as $parameter) {
                 if ($parameter->getAttributes(\SensitiveParameter::class) !== []) {
                     $marked[$name][] = $parameter->getName();
                 }

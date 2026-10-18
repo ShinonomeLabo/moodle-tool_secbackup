@@ -107,6 +107,15 @@ final class network_fakes {
     }
 
     /**
+     * A guard for the storage, whose answers all pass; it pins 3.5.152.9 (inside the range list's S3 prefix 3.5.152.0/21).
+     *
+     * @return dns_guard
+     */
+    public static function passing_s3_guard(): dns_guard {
+        return self::guard(['3.5.152.1'], ['3.5.152.2'], ['3.5.152.9', '3.5.152.8']);
+    }
+
+    /**
      * Turns Moodle's HTTP security list off. With rules, its checks look host names up on the network.
      * Call it from a test that resets the site after the test.
      */

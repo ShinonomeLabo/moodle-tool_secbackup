@@ -81,6 +81,7 @@ final class fake_service {
      * - sitename and platformname: the names the enrolment answer gives.
      * - instructions: the signed instruction envelopes that the status answer carries, by kind.
      * - awsranges: the content that GET /aws-ranges gives, or null for none.
+     * - objects: the bodies that PUT /_s3/<key> stored, by key (base64, so that the state can be kept as JSON).
      *
      * @return array
      */
@@ -97,6 +98,7 @@ final class fake_service {
             'status' => 'active',
             'instructions' => [],
             'awsranges' => null,
+            'objects' => [],
             'requests' => [],
             'lastbody' => null,
             'lastheaders' => null,
@@ -126,6 +128,9 @@ final class fake_service {
                 return [403, [], self::error('ip_not_allowed', ['ip' => '198.51.100.7'])];
             case 'unexpected':
                 return [500, ['Content-Type' => 'text/html'], '<html>error</html>'];
+        }
+        if (str_starts_with($path, '/_s3/')) {
+            return $this->object($method, substr($path, strlen('/_s3/')), $headers, $body);
         }
         if ($method === 'POST' && $path === $this->basepath . '/enroll') {
             return $this->enroll($host, $path, $headers, $body);
@@ -199,8 +204,42 @@ final class fake_service {
                 $headers,
                 (string) $request->getBody()
             );
+            // A bare handler does not fill the sink option of a request; the MockHandler of Guzzle does.
+            if (isset($options['sink']) && is_string($options['sink'])) {
+                file_put_contents($options['sink'], $body);
+            }
             return \GuzzleHttp\Promise\Create::promiseFor(new \GuzzleHttp\Psr7\Response($status, $responseheaders, $body));
         };
+    }
+
+    /**
+     * The storage: PUT /_s3/<key> keeps a body, GET gives it back.
+     *
+     * A real storage refuses a PUT whose signed headers differ from the request, so does this one: Content-Length and
+     * x-amz-checksum-sha256 must match the body, and both object-lock headers must be there (MinIO does not check them).
+     *
+     * @param string $method HTTP method.
+     * @param string $key Key of the object.
+     * @param string[] $headers Headers by lower-case name.
+     * @param string $body Body.
+     * @return array
+     */
+    private function object(string $method, string $key, array $headers, string $body): array {
+        if ($method === 'PUT') {
+            if (
+                ($headers['content-length'] ?? null) !== (string) strlen($body)
+                || ($headers['x-amz-checksum-sha256'] ?? null) !== base64_encode(hash('sha256', $body, true))
+                || !isset($headers['x-amz-object-lock-mode'], $headers['x-amz-object-lock-retain-until-date'])
+            ) {
+                return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+            }
+            $this->state['objects'][$key] = base64_encode($body);
+            return [200, [], ''];
+        }
+        if ($method === 'GET' && isset($this->state['objects'][$key])) {
+            return [200, [], (string) base64_decode($this->state['objects'][$key], true)];
+        }
+        return [404, [], '<Error><Code>NoSuchKey</Code></Error>'];
     }
 
     /**
