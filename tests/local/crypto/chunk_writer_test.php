@@ -46,6 +46,9 @@ final class chunk_writer_test extends \basic_testcase {
     /** @var string Name of the chunk of the tests. */
     private const NAME = '5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a';
 
+    /** @var int Bytes of the payload of one_item_chunk(). */
+    private const ONE_ITEM_PAYLOAD = 1000;
+
     /** @var int Tag of a frame that does not end the item. */
     private const MESSAGE = SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_MESSAGE;
 
@@ -170,9 +173,9 @@ final class chunk_writer_test extends \basic_testcase {
      */
     private static function one_item_chunk(): array {
         $path = make_request_directory() . '/chunk';
-        $payload = random_bytes(1000);
+        $payload = random_bytes(self::ONE_ITEM_PAYLOAD);
         $writer = self::writer($path);
-        $writer->add_item($payload, 1000);
+        $writer->add_item($payload, self::ONE_ITEM_PAYLOAD);
         $writer->finish();
         return [$path, $payload];
     }
@@ -1137,16 +1140,23 @@ final class chunk_writer_test extends \basic_testcase {
      * @return array
      */
     public static function failing_read_provider(): array {
+        $abytes = SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_ABYTES;
+        // The end of the payload frame: the header of the chunk, the header of the stream, the frame of the length prefix
+        // and the frame of the payload (1151 for a payload of 1000 bytes).
+        $payloadend = chunk_writer::HEADER + SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_HEADERBYTES
+            + chunk_writer::PREFIX + $abytes + self::ONE_ITEM_PAYLOAD + $abytes;
         return [
             'changed payload' => [fn(string $bytes) => substr_replace($bytes, chr(ord($bytes[600]) ^ 1), 600, 1),
-                'crypto_chunk_corrupt', true],
-            'last frame cut off' => [fn(string $bytes) => substr($bytes, 0, 1152), 'crypto_chunk_truncated', true],
-            'payload cut short' => [fn(string $bytes) => substr($bytes, 0, 1000), 'crypto_chunk_truncated', true],
+                'crypto_chunk_corrupt', true, true],
+            'last frame cut off' => [fn(string $bytes) => substr($bytes, 0, $payloadend), 'crypto_chunk_truncated', true, false],
+            // Shorter than the declared length: refused right after the length prefix.
+            'payload cut short' => [fn(string $bytes) => substr($bytes, 0, 1000), 'crypto_chunk_truncated', true, false],
             // One byte short of the payload frame: the length passes its check, and the frame ends early inside pull().
-            'payload frame cut short' => [fn(string $bytes) => substr($bytes, 0, 1151), 'crypto_chunk_truncated', true],
+            'payload frame cut short' => [fn(string $bytes) => substr($bytes, 0, $payloadend - 1), 'crypto_chunk_truncated',
+                true, true],
             'changed seal' => [fn(string $bytes) => substr_replace($bytes, chr(ord($bytes[40]) ^ 1), 40, 1),
-                'crypto_chunk_corrupt', false],
-            'header cut off' => [fn(string $bytes) => substr($bytes, 0, 50), 'crypto_chunk_truncated', false],
+                'crypto_chunk_corrupt', false, false],
+            'header cut off' => [fn(string $bytes) => substr($bytes, 0, 50), 'crypto_chunk_truncated', false, false],
         ];
     }
 
@@ -1159,8 +1169,14 @@ final class chunk_writer_test extends \basic_testcase {
      * @param \Closure $damage Changes the bytes of the chunk.
      * @param string $code The expected error code.
      * @param bool $initem Whether the reader opens the chunk and fails on the item.
+     * @param bool $inpull Whether the exception is made inside pull(), whose frame used to hold the state.
      */
-    public function test_the_traces_of_a_damaged_chunk_hide_the_keys(\Closure $damage, string $code, bool $initem): void {
+    public function test_the_traces_of_a_damaged_chunk_hide_the_keys(
+        \Closure $damage,
+        string $code,
+        bool $initem,
+        bool $inpull
+    ): void {
         [$path] = self::one_item_chunk();
         $key = $this->data_key($path);
         $header = (string) file_get_contents($path, false, null, 86, 24);
@@ -1181,6 +1197,7 @@ final class chunk_writer_test extends \basic_testcase {
         } finally {
             ini_set('zend.exception_ignore_args', $previous);
         }
+        $this->assertSame($inpull, in_array('pull', array_column($e->getTrace(), 'function'), true));
         $this->assert_trace_hides($e, [$key, $subkey, self::secret_key(), self::secret_key() . self::public_key()]);
     }
 

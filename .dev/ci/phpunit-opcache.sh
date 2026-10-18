@@ -15,8 +15,12 @@ cache="${1:?cache folder}"
 shift
 "$@" rm -rf "$cache"
 "$@" mkdir -p "$cache"
-# auto_prepend_file is emptied: the coverage collector of the CI job must not record this run.
-"$@" php -d opcache.enable_cli=1 -d opcache.file_update_protection=0 -d "opcache.file_cache=$cache" -d opcache.file_cache_only=1 \
+# Every setting that the run depends on is given here, over any ini file: the CI job writes opcache.enable=0 and
+# opcache.enable_cli=0 for its coverage, and OPcache does not start on the command line unless both are on. The level of the
+# optimiser is the default one, set again: with level 0, OPcache would still compile the reader, and the dead stores would
+# stay. auto_prepend_file is emptied: the coverage collector of the CI job must not record this run.
+"$@" php -d opcache.enable=1 -d opcache.enable_cli=1 -d opcache.optimization_level=0x7FFEBFFF \
+    -d opcache.file_update_protection=0 -d "opcache.file_cache=$cache" -d opcache.file_cache_only=1 \
     -d auto_prepend_file= vendor/bin/phpunit --no-coverage --fail-on-warning --testsuite tool_secbackup_testsuite \
     --filter 'test_the_traces_of_a_damaged_chunk_hide_the_keys|test_the_helper_finds_a_secret_in_a_sensitive_parameter'
 compiled="$("$@" find "$cache" -path '*/classes/local/crypto/chunk_reader.php.bin')"
