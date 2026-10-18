@@ -963,7 +963,7 @@ final class chunk_writer_test extends \basic_testcase {
             $this->fail('A writer was made');
         } catch (key_exception $e) {
             $this->assertSame('publickey_invalid', $e->errorcode);
-            // The exception of libsodium holds the data key in the arguments of its trace, so it is not chained.
+            // The exception of libsodium tells no more than this one does, so it is not chained.
             $this->assertNull($e->getPrevious());
         } finally {
             ini_set('zend.exception_ignore_args', $previous);
@@ -1078,6 +1078,9 @@ final class chunk_writer_test extends \basic_testcase {
     /**
      * Every string among the arguments of the trace of an exception and of the exceptions it chains.
      *
+     * From PHP 8.2 on, an argument marked #[\SensitiveParameter] is a SensitiveParameterValue: its value is looked at
+     * too, since a secret that only the marking hides is still kept in the trace.
+     *
      * @param \Throwable $exception The exception.
      * @return string[]
      */
@@ -1085,15 +1088,29 @@ final class chunk_writer_test extends \basic_testcase {
         $strings = [];
         for ($e = $exception; $e !== null; $e = $e->getPrevious()) {
             foreach ($e->getTrace() as $frame) {
-                $args = $frame['args'] ?? [];
-                array_walk_recursive($args, static function ($value) use (&$strings): void {
-                    if (is_string($value)) {
-                        $strings[] = $value;
-                    }
-                });
+                self::collect_strings($frame['args'] ?? [], $strings);
             }
         }
         return $strings;
+    }
+
+    /**
+     * Adds the strings in a value, in its arrays and in the values of its SensitiveParameterValue objects.
+     *
+     * @param mixed $value The value.
+     * @param string[] $strings The strings found so far.
+     */
+    private static function collect_strings(mixed $value, array &$strings): void {
+        if ($value instanceof \SensitiveParameterValue) {
+            $value = $value->getValue();
+        }
+        if (is_string($value)) {
+            $strings[] = $value;
+        } else if (is_array($value)) {
+            foreach ($value as $item) {
+                self::collect_strings($item, $strings);
+            }
+        }
     }
 
     /**
@@ -1125,6 +1142,8 @@ final class chunk_writer_test extends \basic_testcase {
                 'crypto_chunk_corrupt', true],
             'last frame cut off' => [fn(string $bytes) => substr($bytes, 0, 1152), 'crypto_chunk_truncated', true],
             'payload cut short' => [fn(string $bytes) => substr($bytes, 0, 1000), 'crypto_chunk_truncated', true],
+            // One byte short of the payload frame: the length passes its check, and the frame ends early inside pull().
+            'payload frame cut short' => [fn(string $bytes) => substr($bytes, 0, 1151), 'crypto_chunk_truncated', true],
             'changed seal' => [fn(string $bytes) => substr_replace($bytes, chr(ord($bytes[40]) ^ 1), 40, 1),
                 'crypto_chunk_corrupt', false],
             'header cut off' => [fn(string $bytes) => substr($bytes, 0, 50), 'crypto_chunk_truncated', false],
@@ -1163,6 +1182,53 @@ final class chunk_writer_test extends \basic_testcase {
             ini_set('zend.exception_ignore_args', $previous);
         }
         $this->assert_trace_hides($e, [$key, $subkey, self::secret_key(), self::secret_key() . self::public_key()]);
+    }
+
+    public function test_the_helper_finds_a_secret_in_a_sensitive_parameter(): void {
+        // A control for trace_strings(): an argument that only #[\SensitiveParameter] hides is found.
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $e = (static fn(#[\SensitiveParameter] string $secret): \Exception => new \Exception('control'))('hidden secret');
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+        $this->assertContains('hidden secret', self::trace_strings($e));
+    }
+
+    public function test_a_writer_cannot_be_cloned(): void {
+        $path = make_request_directory() . '/chunk';
+        $writer = self::writer($path);
+        $writer->add_item('x', 1);
+        try {
+            $copy = clone $writer;
+            $this->fail('The writer was cloned');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('must not be cloned', $e->getMessage());
+        }
+        // PHP destroys the copy that __clone() refused; that must not give up the chunk of the original.
+        gc_collect_cycles();
+        $this->assertFileExists($path . '.part');
+        $writer->add_item('y', 1);
+        $info = $writer->finish();
+        $reader = self::reader($path);
+        $this->assertSame('x', $reader->read_item(86));
+        $this->assertSame('y', $reader->read_item($info->items[1]['offset']));
+    }
+
+    public function test_a_reader_cannot_be_cloned(): void {
+        [$path, $payload] = self::one_item_chunk();
+        $reader = self::reader($path);
+        signing_keys_test::$wiped = [];
+        try {
+            $copy = clone $reader;
+            $this->fail('The reader was cloned');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('must not be cloned', $e->getMessage());
+        }
+        // The refused copy does not close the file of the original or wipe its key.
+        gc_collect_cycles();
+        $this->assertSame([], signing_keys_test::$wiped);
+        $this->assertSame($payload, $reader->read_item(86));
     }
 
     public function test_debug_output_hides_the_keys(): void {

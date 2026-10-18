@@ -59,3 +59,20 @@ Infection runs PHPUnit only, and PHPUnit always runs with `PHPUNIT_TEST` true.
 | File:line | Mutator | Test |
 |---|---|---|
 | classes/local/trust/developer_settings.php:76 | LogicalAnd (`defined('PHPUNIT_TEST') && PHPUNIT_TEST` to `\|\|`) | Outside PHPUnit, Moodle defines `PHPUNIT_TEST` as false, so the mutant reads the developer settings from `$CFG`, which the database and the caches can write. `tests/behat/developer_settings.feature` puts settings there and fails on the mutant (applied by hand and run on 5.3 PostgreSQL). |
+
+## Checks that the PHPUnit run of Infection does not make
+
+Infection runs PHPUnit without the optimiser of OPcache: Moodle's PHPUnit bootstrap calls `opcache_reset()`
+(`string_manager_standard::reset_caches()`), and on the command line the reset stays pending until the process ends, so
+no class of the plugin is optimised there even with `opcache.enable_cli=1`. The optimiser removes dead stores. An
+assignment that was meant to clear a secret parameter before an exception is made (`$sitesecretkey = ''` in the
+constructor of `chunk_reader`) is one, so the secret stayed in the trace, and no PHPUnit run saw it. `unset()` is kept.
+The trace tests of the chunk reader therefore run once more with OPcache compiling to a file cache, which a reset does not
+stop: `.dev/ci/phpunit-opcache.sh` (CI: the step "PHPUnit trace tests with OPcache" of every row of the job `test`, so also
+Moodle 4.5 with PHP 8.1, where `#[\SensitiveParameter]` does nothing; locally: `.dev/ci/run.sh`, or by hand
+`.dev/ci/phpunit-opcache.sh /tmp/secbk-opcache .dev/env/run.sh <ver> <db>`). It fails unless OPcache did compile the reader.
+
+Backup payloads (rows of the database, bytes of files) can be arguments in the trace of an exception of the writer, such
+as `temp_write_failed`, when `zend.exception_ignore_args` is off. It is on in php.ini-production, and Moodle's handlers
+print no arguments. They are data of the site, not secrets of the plugin. What the code must keep is narrower: no byte of
+a payload goes into an exception message, a debuginfo string, a log line or an event.

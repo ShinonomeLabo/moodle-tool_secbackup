@@ -76,6 +76,8 @@ if [ "$browser" = chrome ]; then
     step grunt grunt_equivalent
     # PHPUnit (--fail-on-warning), Behat and the command line scripts, with coverage; fails when a test fails.
     step tests-and-coverage "$repo/.dev/coverage/run.sh" "$secbk_ver" "$secbk_db"
+    # The trace tests of the chunk reader with OPcache (the step "PHPUnit trace tests with OPcache").
+    step phpunit-opcache "$repo/.dev/ci/phpunit-opcache.sh" /tmp/secbk-opcache "$repo/.dev/env/run.sh" "$secbk_ver" "$secbk_db"
     cp -R "$repo/.dev/coverage/out/$name" "$out/coverage" 2>/dev/null || true
     # The last run of the step "Command line scripts": the diagnostics under open_basedir.
     step open-basedir "$repo/.dev/ci/diagnose-open-basedir.sh" /var/www/html /var/www/moodledata "$plugin/cli/diagnose.php" \

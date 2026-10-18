@@ -189,7 +189,7 @@ final class chunk_writer {
             try {
                 $sealed = sodium_crypto_box_seal($this->key, $sitepublickey);
             } catch (\SodiumException $e) {
-                // The exception is not chained: the arguments in its trace include the data key.
+                // Not chained: libsodium's message ("internal error") tells no more than the error code does.
                 throw new key_exception('publickey_invalid');
             }
             $this->write(self::MAGIC . chr(self::VERSION) . chr($this->type) . $sealed);
@@ -477,6 +477,19 @@ final class chunk_writer {
      */
     public function __debuginfo(): array {
         return ['path' => $this->path, 'name' => $this->name, 'type' => $this->type, 'size' => $this->size];
+    }
+
+    /**
+     * Refuses to be copied: the copy would share the part file and the keys, and destroying it would give up the chunk of
+     * the original.
+     *
+     * PHP destroys the refused copy at once, so the copy first marks itself as ended, which makes its destructor do nothing.
+     *
+     * @throws \coding_exception Always.
+     */
+    public function __clone() {
+        $this->open = false;
+        throw new \coding_exception('A chunk writer must not be cloned.');
     }
 
     /**

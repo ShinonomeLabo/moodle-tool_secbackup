@@ -29,7 +29,7 @@ use tool_secbackup\local\plugin_exception;
  *
  * Anybody who can change a chunk at the storage can make these exceptions, so their traces must not show a secret: the
  * data key and the state of the secretstream stay in properties and are never passed to a method of this class, and the
- * constructor clears its parameter with the site's secret key before anything can throw. The state of an item is wiped when
+ * constructor unsets its parameter with the site's secret key before anything can throw. The state of an item is wiped when
  * read_item() returns or throws, and the data key and the file are let go when the reader is destroyed.
  *
  * @package    tool_secbackup
@@ -89,11 +89,12 @@ final class chunk_reader {
         string $siteid,
         string $name
     ) {
-        // The trace of an exception shows the value that a parameter has when the exception is made, and
-        // #[\SensitiveParameter] hides it only from PHP 8.2 on: the key goes into a local variable, and the parameter is
-        // cleared before anything below can throw.
+        // The trace of an exception shows the parameters as they are when the exception is made, and #[\SensitiveParameter]
+        // hides them only from PHP 8.2 on. So the key moves to a local variable and the parameter is unset before anything
+        // below can throw. An assignment such as $sitesecretkey = '' would not do: it is a dead store, which the optimiser
+        // of OPcache removes.
         $secretkey = $sitesecretkey;
-        $sitesecretkey = '';
+        unset($sitesecretkey);
         if (
             strlen($secretkey) !== SODIUM_CRYPTO_BOX_SECRETKEYBYTES
             || strlen($sitepublickey) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES
@@ -257,6 +258,20 @@ final class chunk_reader {
      */
     public function __debuginfo(): array {
         return ['path' => $this->path, 'type' => $this->type, 'size' => $this->size];
+    }
+
+    /**
+     * Refuses to be copied: the copy would share the file and the data key, and destroying it would close the file and
+     * wipe the key of the original.
+     *
+     * PHP destroys the refused copy at once, so the copy first lets go of the file and the key.
+     *
+     * @throws \coding_exception Always.
+     */
+    public function __clone() {
+        $this->handle = null;
+        $this->key = null;
+        throw new \coding_exception('A chunk reader must not be cloned.');
     }
 
     /**

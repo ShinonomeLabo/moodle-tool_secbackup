@@ -255,6 +255,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci phpunit --fail-on-warning --coverage-pcov --coverage-clover
 
+      # The trace tests of the chunk reader once more, with OPcache, whose optimiser the run above lacks
+      # (.dev/ci/phpunit-opcache.sh says why): the traces are checked as a web server with OPcache would make them.
+      - name: PHPUnit trace tests with OPcache
+        if: ${{ !cancelled() }}
+        working-directory: moodle
+        run: bash "$GITHUB_WORKSPACE/plugin/.dev/ci/phpunit-opcache.sh" "$RUNNER_TEMP/opcache"
+
       # The Behat site is served by the web server of PHP, which has one worker unless it is told otherwise, and a page of
       # Moodle asks for many files and AJAX calls at once, so the server gets several workers.
       - name: Behat features
