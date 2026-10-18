@@ -208,6 +208,7 @@ $string['privacy:metadata:core_message'] = 'The plugin tells the site administra
 $string['privacy:metadata:service'] = 'The plugin sends encrypted backups of this site to the Shinonome LMS Backup service.';
 $string['privacy:metadata:service:sitedata'] = 'The whole site, including the personal data of all users (everything in the backup).';
 $string['publickey_base64'] = 'The public key contains characters that are not allowed. Copy it again from the platform screen.';
+$string['publickey_invalid'] = 'The public key of this site cannot be used for encryption. Copy it again from the platform screen and register the site again.';
 $string['publickey_length'] = 'The public key is not complete. Copy the whole key again from the platform screen.';
 $string['publickey_prefix'] = 'The public key must start with "secbk1:". Copy it again from the platform screen.';
 $string['receipt_mismatch'] = 'The receipt of the backup service does not match the backup that this site sent. The backup is not counted as stored.';

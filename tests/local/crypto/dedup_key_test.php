@@ -52,7 +52,7 @@ final class dedup_key_test extends \advanced_testcase {
         $this->assertSame($key, dedup_key::load_or_create());
     }
 
-    public function test_two_sites_get_different_keys(): void {
+    public function test_forget_makes_the_next_call_create_a_new_key(): void {
         $this->resetAfterTest();
         $first = dedup_key::load_or_create();
         dedup_key::forget();

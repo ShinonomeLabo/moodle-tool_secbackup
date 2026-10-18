@@ -366,10 +366,12 @@ final class chunk_writer_test extends \basic_testcase {
         // Given up before any item: there is no state yet.
         $this->assertSame([$key], signing_keys_test::$wiped);
 
+        $donekey = $this->data_key($dir . '/done');
         signing_keys_test::$wiped = [];
         self::reader($dir . '/done');
-        // The key pair that opened the seal: the secret key, then the public key.
-        $this->assertSame([self::secret_key() . self::public_key()], signing_keys_test::$wiped);
+        // The key pair that opened the seal (the secret key, then the public key), then the data key, when the reader,
+        // which is not kept, is destroyed.
+        $this->assertSame([self::secret_key() . self::public_key(), $donekey], signing_keys_test::$wiped);
     }
 
     public function test_the_digest_sees_the_payload_of_a_string_too(): void {
@@ -658,7 +660,8 @@ final class chunk_writer_test extends \basic_testcase {
         $frame = str_repeat("\0", 1048576);
         return [
             'negative length' => [[["\xff\xff\xff\xff\xff\xff\xff\xff", $m], ['', $f]], '', 'crypto_chunk_corrupt'],
-            'item ended by the length prefix' => [[[pack('J', 5), $f]], '', 'crypto_chunk_corrupt'],
+            // The bytes after it could hold the payload, so it is the tag that is wrong.
+            'item ended by the length prefix' => [[[pack('J', 5), $f]], str_repeat('x', 22), 'crypto_chunk_corrupt'],
             'length prefix pushed' => [[[pack('J', 1), $p], ['a', $f]], '', 'crypto_chunk_corrupt'],
             'item ended inside the payload' => [[[pack('J', 1048577), $m], [str_repeat('a', 1048576), $f], ['a', $f]], '',
                 'crypto_chunk_corrupt'],
@@ -668,6 +671,9 @@ final class chunk_writer_test extends \basic_testcase {
             'bytes after a full last frame' => [[[pack('J', 1), $m], ['a', $m], [$frame, $f]], 'x', 'crypto_chunk_corrupt'],
             'a frame too short to be one' => [[[pack('J', 1), $m], ['a', $m]], str_repeat('x', 16), 'crypto_chunk_corrupt'],
             'length beyond the end' => [[[pack('J', 1 << 40), $m]], '', 'crypto_chunk_truncated'],
+            // Refused right after the length prefix: decrypting first would find the bytes that follow not authentic.
+            'length beyond the rest of the file' => [[[pack('J', 1 << 40), $m]], str_repeat('x', 2097152),
+                'crypto_chunk_truncated'],
             'padding without its last frame' => [[[pack('J', 1), $m], ['a', $m], ["\0", $m]], '', 'crypto_chunk_truncated'],
             'two frames of padding' => [[[pack('J', 1), $m], ['a', $m], [$frame, $m], ["\0\0\0", $f]], '', 'a'],
             'a full last frame of padding' => [[[pack('J', 1), $m], ['a', $m], [$frame, $f]], '', 'a'],
@@ -809,6 +815,7 @@ final class chunk_writer_test extends \basic_testcase {
                 $this->fail("$case: the item was added");
             } catch (plugin_exception $e) {
                 $this->assertSame('crypto_chunk_sourceshort', $e->errorcode, $case);
+                $this->assertNull($e->debuginfo, $case);
                 $this->assertFileDoesNotExist($dir . '/chunk.part', $case);
             }
             fclose($source);
@@ -851,15 +858,16 @@ final class chunk_writer_test extends \basic_testcase {
     }
 
     /**
-     * Runs a call that has to fail with temp_write_failed, and checks that no warning of PHP reached any handler.
+     * Runs a call that has to fail with a plugin_exception, and checks that no warning of PHP reached any handler.
      *
      * The handler of the test is in place during the call: the writer must put its own above it and take it away again,
      * which the notice raised afterwards shows. A warning that went to the standard handler of PHP would be the last error.
      *
      * @param \Closure $call The call.
+     * @param string $code The expected error code.
      * @return plugin_exception
      */
-    private function write_failure(\Closure $call): plugin_exception {
+    private function quiet_failure(\Closure $call, string $code = 'temp_write_failed'): plugin_exception {
         $seen = [];
         set_error_handler(static function (int $errno, string $errstr) use (&$seen): bool {
             $seen[] = $errstr;
@@ -879,20 +887,20 @@ final class chunk_writer_test extends \basic_testcase {
         $this->assertNull($last);
         $this->assertSame(['probe'], $seen);
         $this->assertNotNull($failure, 'The call did not fail');
-        $this->assertSame('temp_write_failed', $failure->errorcode);
+        $this->assertSame($code, $failure->errorcode);
         return $failure;
     }
 
     public function test_a_folder_that_does_not_exist(): void {
         $path = make_request_directory() . '/missing/chunk';
-        $e = $this->write_failure(fn() => self::writer($path));
+        $e = $this->quiet_failure(fn() => self::writer($path));
         $this->assertSame('open: fopen(' . $path . '.part): Failed to open stream: No such file or directory', $e->debuginfo);
     }
 
     public function test_a_disk_that_is_full(): void {
         $path = make_request_directory() . '/chunk';
         symlink('/dev/full', $path . '.part');
-        $e = $this->write_failure(fn() => self::writer($path));
+        $e = $this->quiet_failure(fn() => self::writer($path));
         $this->assertSame('write: fwrite(): Write of 86 bytes failed with errno=28 No space left on device', $e->debuginfo);
         $this->assertFalse(is_link($path . '.part'));
     }
@@ -904,7 +912,7 @@ final class chunk_writer_test extends \basic_testcase {
         touch($path . '/inside');
         $writer = self::writer($path);
         $writer->add_item('x', 1);
-        $e = $this->write_failure(fn() => $writer->finish());
+        $e = $this->quiet_failure(fn() => $writer->finish());
         $this->assertSame('rename: rename(' . $path . '.part,' . $path . '): Is a directory', $e->debuginfo);
         $this->assertFileDoesNotExist($path . '.part');
         $this->assertFileExists($path . '/inside');
@@ -933,6 +941,228 @@ final class chunk_writer_test extends \basic_testcase {
         }
         $this->assertCount($open, get_resources('stream'));
         fclose($source);
+    }
+
+    public function test_a_source_that_cannot_be_read(): void {
+        $dir = make_request_directory();
+        // A folder opens as a stream on Linux, and every read of it fails with a warning (EISDIR).
+        $source = fopen($dir, 'rb');
+        $writer = self::writer($dir . '/chunk');
+        $e = $this->quiet_failure(fn() => $writer->add_item($source, 5), 'crypto_chunk_sourceshort');
+        fclose($source);
+        $this->assertStringContainsString('Is a directory', $e->debuginfo);
+        $this->assertFileDoesNotExist($dir . '/chunk.part');
+    }
+
+    public function test_a_public_key_of_low_order_is_refused(): void {
+        $dir = make_request_directory();
+        signing_keys_test::$wiped = [];
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            new chunk_writer($dir . '/chunk', 2, self::NAME, str_repeat("\0", 32), self::SITE);
+            $this->fail('A writer was made');
+        } catch (key_exception $e) {
+            $this->assertSame('publickey_invalid', $e->errorcode);
+            // The exception of libsodium holds the data key in the arguments of its trace, so it is not chained.
+            $this->assertNull($e->getPrevious());
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+        $this->assertFileDoesNotExist($dir . '/chunk.part');
+        $this->assertCount(1, signing_keys_test::$wiped);
+        $this->assert_trace_hides($e, [signing_keys_test::$wiped[0]]);
+    }
+
+    public function test_an_abandoned_writer_removes_its_part_file_and_wipes_its_keys(): void {
+        $dir = make_request_directory();
+        $writer = self::writer($dir . '/chunk');
+        $writer->add_item('x', 1);
+        $key = $this->data_key($dir . '/chunk.part');
+        $open = count(get_resources('stream'));
+        signing_keys_test::$wiped = [];
+        unset($writer);
+        $this->assertFileDoesNotExist($dir . '/chunk.part');
+        $this->assertFileDoesNotExist($dir . '/chunk');
+        $this->assertCount($open - 1, get_resources('stream'));
+        // The data key, then the state of the secretstream.
+        $this->assertCount(2, signing_keys_test::$wiped);
+        $this->assertSame($key, signing_keys_test::$wiped[0]);
+        $this->assertSame(52, strlen(signing_keys_test::$wiped[1]));
+    }
+
+    public function test_abort_gives_up_the_chunk(): void {
+        $dir = make_request_directory();
+        $writer = self::writer($dir . '/chunk');
+        $writer->add_item('x', 1);
+        $key = $this->data_key($dir . '/chunk.part');
+        $open = count(get_resources('stream'));
+        signing_keys_test::$wiped = [];
+        $writer->abort();
+        $this->assertFileDoesNotExist($dir . '/chunk.part');
+        $this->assertCount($open - 1, get_resources('stream'));
+        $this->assertCount(2, signing_keys_test::$wiped);
+        $this->assertSame($key, signing_keys_test::$wiped[0]);
+        // A second abort() does nothing.
+        $writer->abort();
+        $this->assertCount(2, signing_keys_test::$wiped);
+        try {
+            $writer->add_item('y', 1);
+            $this->fail('The writer was used again');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('finished or given up', $e->getMessage());
+        }
+    }
+
+    public function test_abort_after_finish_does_nothing(): void {
+        $path = make_request_directory() . '/chunk';
+        $writer = self::writer($path);
+        $writer->add_item('x', 1);
+        $info = $writer->finish();
+        signing_keys_test::$wiped = [];
+        $writer->abort();
+        unset($writer);
+        $this->assertSame([], signing_keys_test::$wiped);
+        $this->assertSame($info->sha256base64, base64_encode(hash_file('sha256', $path, true)));
+        $this->assertSame('x', self::reader($path)->read_item(86));
+    }
+
+    public function test_a_crafted_writer_does_not_remove_a_file(): void {
+        $dir = make_request_directory();
+        file_put_contents($dir . '/victim', 'kept');
+        $class = chunk_writer::class;
+        $properties = ['open' => 'b:1;', 'part' => 's:' . strlen($dir . '/victim') . ':"' . $dir . '/victim";'];
+        $body = '';
+        foreach ($properties as $name => $value) {
+            $key = "\0" . $class . "\0" . $name;
+            $body .= 's:' . strlen($key) . ':"' . $key . '";' . $value;
+        }
+        try {
+            unserialize('O:' . strlen($class) . ':"' . $class . '":2:{' . $body . '}', ['allowed_classes' => [$class]]);
+            $this->fail('A writer was unserialised');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('must not be unserialised', $e->getMessage());
+        }
+        gc_collect_cycles();
+        $this->assertSame('kept', file_get_contents($dir . '/victim'));
+    }
+
+    public function test_the_reader_wipes_the_state_of_each_item_and_its_data_key(): void {
+        [$path] = self::one_item_chunk();
+        $key = $this->data_key($path);
+        $reader = self::reader($path);
+        signing_keys_test::$wiped = [];
+        $reader->read_item(86);
+        $this->assertCount(1, signing_keys_test::$wiped);
+        $this->assertSame(52, strlen(signing_keys_test::$wiped[0]));
+
+        // When the item is not authentic, too.
+        $bytes = (string) file_get_contents($path);
+        $bytes[600] = chr(ord($bytes[600]) ^ 0x01);
+        file_put_contents($path . '.changed', $bytes);
+        signing_keys_test::$wiped = [];
+        $this->assertSame('crypto_chunk_corrupt', $this->failure_of($path . '.changed'));
+        // The reader that failure_of() made: the key pair, the state of the item, then its data key.
+        $this->assertCount(3, signing_keys_test::$wiped);
+        $this->assertSame(52, strlen(signing_keys_test::$wiped[1]));
+
+        $open = count(get_resources('stream'));
+        signing_keys_test::$wiped = [];
+        $reader->__destruct();
+        $this->assertCount($open - 1, get_resources('stream'));
+        $this->assertSame([$key], signing_keys_test::$wiped);
+        // Destroying it again does nothing.
+        $reader->__destruct();
+        $this->assertSame([$key], signing_keys_test::$wiped);
+    }
+
+    /**
+     * Every string among the arguments of the trace of an exception and of the exceptions it chains.
+     *
+     * @param \Throwable $exception The exception.
+     * @return string[]
+     */
+    private static function trace_strings(\Throwable $exception): array {
+        $strings = [];
+        for ($e = $exception; $e !== null; $e = $e->getPrevious()) {
+            foreach ($e->getTrace() as $frame) {
+                $args = $frame['args'] ?? [];
+                array_walk_recursive($args, static function ($value) use (&$strings): void {
+                    if (is_string($value)) {
+                        $strings[] = $value;
+                    }
+                });
+            }
+        }
+        return $strings;
+    }
+
+    /**
+     * Checks that no argument in the trace of an exception holds one of the secrets.
+     *
+     * @param \Throwable $exception The exception, made while zend.exception_ignore_args was off.
+     * @param string[] $secrets The secrets.
+     */
+    private function assert_trace_hides(\Throwable $exception, array $secrets): void {
+        $this->assertNotEmpty(
+            array_filter($exception->getTrace(), fn($frame) => !empty($frame['args'])),
+            'The trace keeps the arguments, so the check means something.'
+        );
+        foreach (self::trace_strings($exception) as $argument) {
+            foreach ($secrets as $secret) {
+                $this->assertStringNotContainsString($secret, $argument);
+            }
+        }
+    }
+
+    /**
+     * Damage done to the chunk of one_item_chunk() that the reader reports from inside an item, and from its header.
+     *
+     * @return array
+     */
+    public static function failing_read_provider(): array {
+        return [
+            'changed payload' => [fn(string $bytes) => substr_replace($bytes, chr(ord($bytes[600]) ^ 1), 600, 1),
+                'crypto_chunk_corrupt', true],
+            'last frame cut off' => [fn(string $bytes) => substr($bytes, 0, 1152), 'crypto_chunk_truncated', true],
+            'payload cut short' => [fn(string $bytes) => substr($bytes, 0, 1000), 'crypto_chunk_truncated', true],
+            'changed seal' => [fn(string $bytes) => substr_replace($bytes, chr(ord($bytes[40]) ^ 1), 40, 1),
+                'crypto_chunk_corrupt', false],
+            'header cut off' => [fn(string $bytes) => substr($bytes, 0, 50), 'crypto_chunk_truncated', false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failing_read_provider')]
+    /**
+     * The exceptions that a damaged chunk causes show neither a key nor the state of the secretstream in their traces,
+     * which an attacker who can change a chunk at the storage can provoke.
+     *
+     * @dataProvider failing_read_provider
+     * @param \Closure $damage Changes the bytes of the chunk.
+     * @param string $code The expected error code.
+     * @param bool $initem Whether the reader opens the chunk and fails on the item.
+     */
+    public function test_the_traces_of_a_damaged_chunk_hide_the_keys(\Closure $damage, string $code, bool $initem): void {
+        [$path] = self::one_item_chunk();
+        $key = $this->data_key($path);
+        $header = (string) file_get_contents($path, false, null, 86, 24);
+        // The first 32 bytes of the state are the key that the secretstream derives for the item.
+        $subkey = substr(sodium_crypto_secretstream_xchacha20poly1305_init_pull($header, $key), 0, 32);
+        file_put_contents($path, $damage((string) file_get_contents($path)));
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            if ($initem) {
+                $reader = self::reader($path);
+            }
+            try {
+                $initem ? $reader->read_item(86) : self::reader($path);
+                $this->fail('The chunk was read');
+            } catch (plugin_exception $e) {
+                $this->assertSame($code, $e->errorcode);
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', $previous);
+        }
+        $this->assert_trace_hides($e, [$key, $subkey, self::secret_key(), self::secret_key() . self::public_key()]);
     }
 
     public function test_debug_output_hides_the_keys(): void {

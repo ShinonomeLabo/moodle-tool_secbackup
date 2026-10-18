@@ -208,6 +208,7 @@ $string['privacy:metadata:core_message'] = '連携ツールは、バックアッ
 $string['privacy:metadata:service'] = 'この連携ツールは、このサイトを暗号化したバックアップを、あんしんLMSバックアップのサービスへ送ります。';
 $string['privacy:metadata:service:sitedata'] = 'サイト全体 (全利用者の個人データを含む、バックアップの対象のすべて)。';
 $string['publickey_base64'] = '公開鍵に使えない文字が入っています。プラットフォームの画面から、もう一度コピーしてください。';
+$string['publickey_invalid'] = 'このサイトの公開鍵は暗号化に使えません。プラットフォームの画面から、もう一度コピーして登録し直してください。';
 $string['publickey_length'] = '公開鍵が途中で切れています。プラットフォームの画面から、鍵の全体をもう一度コピーしてください。';
 $string['publickey_prefix'] = '公開鍵は「secbk1:」で始まります。プラットフォームの画面から、もう一度コピーしてください。';
 $string['receipt_mismatch'] = 'バックアップのサービスの受領証が、このサイトの送ったバックアップと合いません。保存できたものとは数えません。';

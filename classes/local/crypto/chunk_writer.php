@@ -51,8 +51,11 @@ use tool_secbackup\local\plugin_exception;
  * every item) knows how the item ends. So at most one frame of plaintext is in memory, and the length that add_item()
  * returns is the length of the item without padding; finish() gives the final lengths in chunk_info::$items.
  *
- * The file is written as <path>.part in the same folder and gets its name in finish(). On any failure, the part file is
- * removed and the writer cannot be used again.
+ * The file is written as <path>.part in the same folder and gets its name in finish(). abort() gives the chunk up (for
+ * example when the content of a file does not match its hash), and so does any failure and a writer that is destroyed
+ * before finish(): the part file is removed, the keys are wiped and the writer cannot be used again. The data key and the
+ * state of the secretstream stay in properties and are never passed to a method of this class, so the trace of an
+ * exception does not show them.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -152,6 +155,7 @@ final class chunk_writer {
      * @param string $sitepublickey The site's X25519 encryption public key (32 bytes).
      * @param string $siteid Site ID at the backup service.
      * @throws \coding_exception For a wrong argument.
+     * @throws key_exception With publickey_invalid for a public key that cannot encrypt (a point of low order).
      * @throws plugin_exception With temp_write_failed when the part file cannot be created or written.
      */
     public function __construct(string $path, int $type, string $name, string $sitepublickey, string $siteid) {
@@ -182,7 +186,12 @@ final class chunk_writer {
         $this->open = true;
         $this->key = sodium_crypto_secretstream_xchacha20poly1305_keygen();
         $this->guarded(function () use ($sitepublickey): void {
-            $sealed = sodium_crypto_box_seal($this->key, $sitepublickey);
+            try {
+                $sealed = sodium_crypto_box_seal($this->key, $sitepublickey);
+            } catch (\SodiumException $e) {
+                // The exception is not chained: the arguments in its trace include the data key.
+                throw new key_exception('publickey_invalid');
+            }
             $this->write(self::MAGIC . chr(self::VERSION) . chr($this->type) . $sealed);
         });
     }
@@ -315,12 +324,15 @@ final class chunk_writer {
      * @param int $offset Offset of the frame in a payload given as text.
      * @param int $length Bytes of the frame.
      * @return string
-     * @throws plugin_exception With crypto_chunk_sourceshort when the stream gives fewer bytes.
+     * @throws plugin_exception With crypto_chunk_sourceshort when the stream gives fewer bytes; the debug information is
+     *     the warning of PHP about the failed read, if there was one (none at the end of the stream).
      */
     private static function read($source, int $offset, int $length): string {
-        $data = is_string($source) ? substr($source, $offset, $length) : stream_get_contents($source, $length);
+        $warning = '';
+        $data = is_string($source) ? substr($source, $offset, $length)
+            : self::quietly(static fn() => stream_get_contents($source, $length), $warning);
         if (!is_string($data) || strlen($data) !== $length) {
-            throw new plugin_exception('crypto_chunk_sourceshort');
+            throw new plugin_exception('crypto_chunk_sourceshort', null, $warning === '' ? null : $warning);
         }
         return $data;
     }
@@ -364,6 +376,29 @@ final class chunk_writer {
     }
 
     /**
+     * Gives up the chunk: closes and removes the part file and wipes the keys. It does nothing once the writer has ended,
+     * so it can be called again, and after finish().
+     */
+    public function abort(): void {
+        if (!$this->open) {
+            return;
+        }
+        if (is_resource($this->handle)) {
+            fclose($this->handle);
+        }
+        $part = $this->part;
+        self::quietly(static fn() => unlink($part), $warning);
+        $this->end();
+    }
+
+    /**
+     * Gives up a chunk that was not finished.
+     */
+    public function __destruct() {
+        $this->abort();
+    }
+
+    /**
      * Runs a step of the writing; on any exception, gives up the chunk and throws the exception again.
      *
      * @param \Closure $step The step.
@@ -373,12 +408,7 @@ final class chunk_writer {
         try {
             return $step();
         } catch (\Throwable $e) {
-            if (is_resource($this->handle)) {
-                fclose($this->handle);
-            }
-            $part = $this->part;
-            self::quietly(static fn() => unlink($part), $warning);
-            $this->end();
+            $this->abort();
             throw $e;
         }
     }

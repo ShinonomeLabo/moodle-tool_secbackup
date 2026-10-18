@@ -27,6 +27,11 @@ use tool_secbackup\local\plugin_exception;
  * that does not have the form that chunk_writer writes is crypto_chunk_corrupt; a file that ends before the last frame of the
  * item is crypto_chunk_truncated.
  *
+ * Anybody who can change a chunk at the storage can make these exceptions, so their traces must not show a secret: the
+ * data key and the state of the secretstream stay in properties and are never passed to a method of this class, and the
+ * constructor clears its parameter with the site's secret key before anything can throw. The state of an item is wiped when
+ * read_item() returns or throws, and the data key and the file are let go when the reader is destroyed.
+ *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -53,8 +58,11 @@ final class chunk_reader {
     /** @var int Type of the chunk. */
     private int $type;
 
-    /** @var string Data key of the chunk. */
-    private string $key;
+    /** @var string|null Data key of the chunk, until the reader is destroyed. */
+    private ?string $key = null;
+
+    /** @var string|null State of the secretstream of the item that is being read. */
+    private ?string $state = null;
 
     /** @var string Additional data of every frame. */
     private string $aad;
@@ -81,8 +89,13 @@ final class chunk_reader {
         string $siteid,
         string $name
     ) {
+        // The trace of an exception shows the value that a parameter has when the exception is made, and
+        // #[\SensitiveParameter] hides it only from PHP 8.2 on: the key goes into a local variable, and the parameter is
+        // cleared before anything below can throw.
+        $secretkey = $sitesecretkey;
+        $sitesecretkey = '';
         if (
-            strlen($sitesecretkey) !== SODIUM_CRYPTO_BOX_SECRETKEYBYTES
+            strlen($secretkey) !== SODIUM_CRYPTO_BOX_SECRETKEYBYTES
             || strlen($sitepublickey) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES
         ) {
             throw new \coding_exception('An X25519 key has 32 bytes.');
@@ -103,7 +116,7 @@ final class chunk_reader {
         ) {
             throw self::corrupt();
         }
-        $pair = sodium_crypto_box_keypair_from_secretkey_and_publickey($sitesecretkey, $sitepublickey);
+        $pair = sodium_crypto_box_keypair_from_secretkey_and_publickey($secretkey, $sitepublickey);
         $key = sodium_crypto_box_seal_open(substr($header, 6), $pair);
         sodium_memzero($pair);
         if ($key === false) {
@@ -136,52 +149,60 @@ final class chunk_reader {
             throw new \coding_exception('An item starts at offset 86 or later.');
         }
         fseek($this->handle, $offset);
-        $state = sodium_crypto_secretstream_xchacha20poly1305_init_pull(
+        $this->state = sodium_crypto_secretstream_xchacha20poly1305_init_pull(
             $this->read(SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_HEADERBYTES),
             $this->key
         );
-        [$prefix, $tag] = $this->pull($state, chunk_writer::PREFIX + self::ABYTES);
-        $length = unpack('J', $prefix)[1];
-        if ($length < 0) {
-            throw self::corrupt();
-        }
-        $payload = '';
-        for ($left = $length; $left > 0; $left -= $size) {
-            // The frame before has to leave the item open.
-            if ($tag !== self::MESSAGE) {
+        try {
+            [$prefix, $tag] = $this->pull(chunk_writer::PREFIX + self::ABYTES);
+            $length = unpack('J', $prefix)[1];
+            if ($length < 0) {
                 throw self::corrupt();
             }
-            $size = min(chunk_writer::FRAME, $left);
-            [$plaintext, $tag] = $this->pull($state, $size + self::ABYTES);
-            $payload .= $plaintext;
-        }
-        // An item that is still open has padding: only the last item has, so it runs to the end of the file.
-        while ($tag !== self::FINAL) {
-            if ($tag !== self::MESSAGE) {
-                throw self::corrupt();
-            }
-            $left = $this->size - ftell($this->handle);
-            if ($left === 0) {
+            // The payload takes at least as many bytes as it is long: no need to decrypt up to the end of the file to see
+            // that they are not there.
+            if ($length > $this->size - ftell($this->handle)) {
                 throw new plugin_exception('crypto_chunk_truncated');
             }
-            [$padding, $tag] = $this->pull($state, min(chunk_writer::FRAME + self::ABYTES, $left));
-            if (ltrim($padding, "\0") !== '' || ($tag === self::FINAL && ftell($this->handle) !== $this->size)) {
-                throw self::corrupt();
+            $payload = '';
+            for ($left = $length; $left > 0; $left -= $size) {
+                // The frame before has to leave the item open.
+                if ($tag !== self::MESSAGE) {
+                    throw self::corrupt();
+                }
+                $size = min(chunk_writer::FRAME, $left);
+                [$plaintext, $tag] = $this->pull($size + self::ABYTES);
+                $payload .= $plaintext;
             }
+            // An item that is still open has padding: only the last item has, so it runs to the end of the file.
+            while ($tag !== self::FINAL) {
+                if ($tag !== self::MESSAGE) {
+                    throw self::corrupt();
+                }
+                $left = $this->size - ftell($this->handle);
+                if ($left === 0) {
+                    throw new plugin_exception('crypto_chunk_truncated');
+                }
+                [$padding, $tag] = $this->pull(min(chunk_writer::FRAME + self::ABYTES, $left));
+                if (ltrim($padding, "\0") !== '' || ($tag === self::FINAL && ftell($this->handle) !== $this->size)) {
+                    throw self::corrupt();
+                }
+            }
+            return $payload;
+        } finally {
+            sodium_memzero($this->state);
         }
-        return $payload;
     }
 
     /**
-     * Reads and decrypts one frame.
+     * Reads and decrypts one frame with the state of the item, which it updates.
      *
-     * @param string $state State of the secretstream, updated.
      * @param int $length Bytes of the encrypted frame.
      * @return array [plaintext, tag]
      * @throws plugin_exception With crypto_chunk_corrupt when the frame does not authenticate.
      */
-    private function pull(string &$state, int $length): array {
-        $opened = sodium_crypto_secretstream_xchacha20poly1305_pull($state, $this->read($length), $this->aad);
+    private function pull(int $length): array {
+        $opened = sodium_crypto_secretstream_xchacha20poly1305_pull($this->state, $this->read($length), $this->aad);
         if ($opened === false) {
             throw self::corrupt();
         }
@@ -210,6 +231,20 @@ final class chunk_reader {
      */
     private static function corrupt(): plugin_exception {
         return new plugin_exception('crypto_chunk_corrupt');
+    }
+
+    /**
+     * Closes the file and wipes the data key.
+     *
+     * Also called by hand, it can be called again: the second call does nothing.
+     */
+    public function __destruct() {
+        if (is_resource($this->handle)) {
+            fclose($this->handle);
+        }
+        if ($this->key !== null) {
+            sodium_memzero($this->key);
+        }
     }
 
     /**
