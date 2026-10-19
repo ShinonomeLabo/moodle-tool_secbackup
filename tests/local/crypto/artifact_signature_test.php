@@ -129,6 +129,33 @@ final class artifact_signature_test extends \basic_testcase {
         artifact_signature::index_message($site, $run, $sha, $count);
     }
 
+    public function test_the_key_is_not_in_the_trace_of_a_failed_signature(): void {
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $pair = signing_keypair::generate();
+            try {
+                artifact_signature::manifest($pair, 'x', self::RUN, self::sha());
+                $this->fail('No exception');
+            } catch (\coding_exception $e) {
+                $secret = $pair->export_secret();
+                foreach (\tool_secbackup\tests\trace_strings::of($e) as $string) {
+                    $this->assertStringNotContainsString($secret, $string);
+                    $this->assertStringNotContainsString(base64_encode($secret), $string);
+                }
+                if (PHP_VERSION_ID >= 80200) {
+                    // The pair is passed as a sensitive parameter: the trace keeps a wrapper, not the pair.
+                    foreach ($e->getTrace() as $frame) {
+                        foreach ($frame['args'] ?? [] as $argument) {
+                            $this->assertNotInstanceOf(signing_keypair::class, $argument);
+                        }
+                    }
+                }
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+    }
+
     public function test_the_manifest_message_checks_its_arguments_too(): void {
         $this->expectException(\coding_exception::class);
         artifact_signature::manifest_message(self::SITE, 'x', self::sha());

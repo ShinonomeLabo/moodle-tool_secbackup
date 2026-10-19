@@ -34,7 +34,7 @@ final class artifact_signature {
     /**
      * Signs the manifest.
      *
-     * @param signing_keypair $pair The site's signing key pair.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The site's signing key pair.
      * @param string $siteid Site ID.
      * @param string $runid Run ID.
      * @param string $sha256base64 SHA-256 of the manifest chunk, in standard base64.
@@ -42,7 +42,7 @@ final class artifact_signature {
      * @throws \coding_exception For an argument that is not in its form.
      */
     public static function manifest(
-        signing_keypair $pair,
+        #[\SensitiveParameter] signing_keypair $pair,
         string $siteid,
         string $runid,
         string $sha256base64
@@ -53,7 +53,7 @@ final class artifact_signature {
     /**
      * Signs the index.
      *
-     * @param signing_keypair $pair The site's signing key pair.
+     * @param #[|\SensitiveParameter|]|signing_keypair $pair The site's signing key pair.
      * @param string $siteid Site ID.
      * @param string $runid Run ID.
      * @param string $sha256base64 SHA-256 of the index, in standard base64.
@@ -62,7 +62,7 @@ final class artifact_signature {
      * @throws \coding_exception For an argument that is not in its form.
      */
     public static function index(
-        signing_keypair $pair,
+        #[\SensitiveParameter] signing_keypair $pair,
         string $siteid,
         string $runid,
         string $sha256base64,

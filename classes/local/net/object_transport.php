@@ -97,8 +97,9 @@ final class object_transport {
      *        is required. With If-None-Match the storage answers 412 for an object that is stored already, which is a success.
      * @param string $path File to send.
      * @param int $bandwidthbytespersecond Upper limit of the sending speed; 0 for none.
-     * @throws \coding_exception When a header is not one of the five, is given twice, or is not a plain value, when
-     *         Content-Length is missing or not a number, or when the limit is negative: those are mistakes of the caller.
+     * @throws \coding_exception When a header is not one of the six (the five and If-None-Match), is given twice, or is not
+     *         a plain value, when Content-Length is missing or not a number, or when the limit is negative: those are mistakes
+     *         of the caller.
      * @throws transport_exception With object_incomplete when the file is not as long as Content-Length says (before or after
      *         the sending), with object_rejected when the storage does not answer 2xx, and with the transport_* and dns_*
      *         codes of the connection.

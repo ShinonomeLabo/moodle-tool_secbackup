@@ -86,6 +86,7 @@ final class fake_service {
      *   verify_run() is called; receiptpayload: fields that replace those of the receipt; coremanifests: published lists.
      * - mode (more): run_in_progress, run_limit_reached, run_not_found, run_state_invalid, capacity_recheck_required,
      *   artifact_signature_invalid, core_manifest_not_found, contract_inactive answer every request with that error.
+     * - urllife: seconds that an upload URL stays valid (900 in the contract).
      * - contractinactive: true to refuse only a new run and the upload URLs with contract_inactive (the contract ended).
      *
      * @return array
@@ -109,6 +110,7 @@ final class fake_service {
             'holdverify' => false,
             'receiptpayload' => [],
             'contractinactive' => false,
+            'urllife' => 900,
             'coremanifests' => [],
             'requests' => [],
             'lastbody' => null,
@@ -391,7 +393,7 @@ final class fake_service {
             return $this->core_manifest($data);
         }
         if ($method === 'POST' && $relative === '/runs') {
-            return $this->state['contractinactive'] ? [403, [], self::error('contract_inactive')] : $this->start_run($data);
+            return $this->start_run($data);
         }
         if (preg_match('~^/runs/([0-9a-f-]{36})(?:/(capacity|upload-urls|complete|fail))?\z~', $relative, $m) !== 1) {
             return [404, [], self::error('not_found')];
@@ -461,6 +463,9 @@ final class fake_service {
     private function start_run(mixed $data): array {
         if (!is_array($data) || array_keys($data) !== ['kind'] || $data['kind'] !== 'full') {
             return [422, [], self::error('invalid_request')];
+        }
+        if ($this->state['contractinactive']) {
+            return [403, [], self::error('contract_inactive')];
         }
         foreach ($this->state['runs'] as $id => $run) {
             if (in_array($run['status'], ['started', 'uploading', 'verifying'], true)) {
@@ -569,7 +574,7 @@ final class fake_service {
             $issued[] = $entry + [
                 'url' => $this->storage_url($key),
                 'headers' => $headers,
-                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now() + 900),
+                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now() + $this->state['urllife']),
             ];
         }
         return $this->json(200, ['items' => $issued]);
@@ -631,9 +636,8 @@ final class fake_service {
             return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
         }
         if ($run['estimated'] === null) {
-            // A refused decision is no decision: the service wants a new one before it takes the report.
-            return [409, [], self::error('capacity_recheck_required', ['requested_bytes' => $run['reserved'],
-                'estimated_bytes' => null])];
+            // A refused decision is no decision: the report is a state error, as it is for a run that is not uploading.
+            return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
         }
         $key = (string) base64_decode($this->state['signingkey']);
         $manifesttext = "SECBACKUP-MANIFEST-V1\n" . self::SITE_ID . "\n" . $id . "\n" . $manifest['sha256'];

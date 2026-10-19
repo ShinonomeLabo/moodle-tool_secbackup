@@ -457,13 +457,24 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame(200, self::signed($service, $secret, 'POST', self::RUN . '/fail', '{"code":"contract_inactive"}')[0]);
     }
 
+    public function test_a_body_in_a_wrong_shape_is_refused_before_the_contract_is_looked_at(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
+        $service->state['contractinactive'] = true;
+        $answer = self::signed($service, $secret, 'POST', '/runs', '{"kind":"partial"}');
+        $this->assertSame([422, 'invalid_request'], [$answer[0], self::code($answer)]);
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', '{"items":[]}');
+        $this->assertSame([422, 'invalid_request'], [$answer[0], self::code($answer)]);
+    }
+
     public function test_complete_needs_a_decided_estimate(): void {
         [$service, $secret] = self::enrolled();
         self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
         self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
         $urls = json_encode(['items' => [['kind' => 'index', 'size' => 1, 'sha256' => self::SHA]]]);
         $this->assertSame(200, self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', $urls)[0]);
-        // A refused decision is no decision: the run is uploading, and the report is asked to wait for a new decision.
+        // A refused decision is no decision: the report is a state error, as it is when the run is not uploading.
         self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":2000000000000}');
         $body = json_encode([
             'manifest' => ['sha256' => self::SHA, 'size' => 1, 'signature' => 'x'],
@@ -471,8 +482,8 @@ final class fake_service_test extends \basic_testcase {
             'stats' => [],
         ]);
         $answer = self::signed($service, $secret, 'POST', self::RUN . '/complete', $body);
-        $this->assertSame([409, 'capacity_recheck_required', 1, null], [$answer[0], self::code($answer),
-            $answer[2]['error']['requested_bytes'], $answer[2]['error']['estimated_bytes']]);
+        $this->assertSame([409, 'run_state_invalid', 'uploading'], [$answer[0], self::code($answer),
+            $answer[2]['error']['status']]);
     }
 
     public function test_the_fake_storage_keeps_an_object_that_is_stored_when_the_put_is_conditional(): void {

@@ -56,9 +56,10 @@ final class manifest_builder {
     private $handle = null;
 
     /**
-     * Constructor: counts the lines that a run left in the folder.
+     * Constructor: counts the lines that a run left in the folder, and drops a last line that was cut.
      *
      * @param string $tempdir Temporary folder of the run.
+     * @throws plugin_exception With temp_write_failed when a cut line cannot be dropped.
      */
     public function __construct(string $tempdir) {
         $this->tempdir = rtrim($tempdir, '/');
@@ -135,7 +136,7 @@ final class manifest_builder {
      * Writes the list as a chunk.
      *
      * @param array $header The first line: an object.
-     * @param string $dedupkey The key for names (32 bytes).
+     * @param #[|\SensitiveParameter|]|string $dedupkey The key for names (32 bytes).
      * @param string $runuuid UUID of the run.
      * @param string $sitepublickey The X25519 public key of the site (32 bytes).
      * @param string $siteid Site ID at the backup service.
@@ -143,8 +144,19 @@ final class manifest_builder {
      * @throws \coding_exception When the header is not an object of JSON.
      * @throws plugin_exception With temp_write_failed when a file cannot be written.
      */
-    public function build(array $header, string $dedupkey, string $runuuid, string $sitepublickey, string $siteid): chunk_info {
-        $name = chunk_name::manifest($dedupkey, $runuuid);
+    public function build(
+        array $header,
+        #[\SensitiveParameter] string $dedupkey,
+        string $runuuid,
+        string $sitepublickey,
+        string $siteid
+    ): chunk_info {
+        // The key is a secret: it moves to a variable and the parameter is unset before anything can throw, as the trace of an
+        // exception shows the parameters (and hides them only from PHP 8.2 on).
+        $key = $dedupkey;
+        unset($dedupkey);
+        $name = chunk_name::manifest($key, $runuuid);
+        unset($key);
         $headerline = self::encode($header) . "\n";
         $this->commit();
         $gzip = $this->tempdir . '/manifest.jsonl.gz';
@@ -284,6 +296,13 @@ final class manifest_builder {
             $position += strlen($piece);
         }
         fclose($handle);
+        if ($position > $this->bytes) {
+            // A line that was cut is not part of the list.
+            $bytes = $this->bytes;
+            if (!error_silencer::run(static fn() => self::cut($path, $bytes), $warning)) {
+                throw new plugin_exception('temp_write_failed', null, 'entries_truncate');
+            }
+        }
     }
 
     /**

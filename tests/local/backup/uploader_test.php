@@ -31,6 +31,7 @@ use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\tests\fake_service;
 use tool_secbackup\tests\network_fakes;
+use tool_secbackup\tests\trace_strings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\uploader::class)]
 /**
@@ -69,9 +70,14 @@ final class uploader_test extends \advanced_testcase {
     /** @var string The folder of the temporary files. */
     private string $tempdir;
 
+    /** @var string|false The value of zend.exception_ignore_args before the test. */
+    private $ignoreargs;
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
+        // The traces of the exceptions keep their arguments, so that a test can look for a secret in them.
+        $this->ignoreargs = ini_set('zend.exception_ignore_args', '0');
         network_fakes::no_security_list();
         $this->pair = signing_keypair::generate();
         $this->service = new fake_service(self::API, array_merge(
@@ -79,6 +85,11 @@ final class uploader_test extends \advanced_testcase {
             ['now' => self::NOW, 'signingkey' => base64_encode($this->pair->public_key())]
         ));
         $this->tempdir = make_request_directory();
+    }
+
+    protected function tearDown(): void {
+        ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
+        parent::tearDown();
     }
 
     /**
@@ -103,9 +114,18 @@ final class uploader_test extends \advanced_testcase {
      * @param int $budgetmb Budget of the temporary files in MB, or 0.
      * @param callable|null $diskspace Measure of the disk.
      * @param int $bandwidth Bandwidth setting of this site in Mbps.
+     * @param callable|null $unmade Bytes of the run that are not made yet.
+     * @param callable|null $remove Removes a file.
      * @return array [uploader, run_record, folder]
      */
-    private function start(int $estimate = 1000000, int $budgetmb = 100, ?callable $diskspace = null, int $bandwidth = 0): array {
+    private function start(
+        int $estimate = 1000000,
+        int $budgetmb = 100,
+        ?callable $diskspace = null,
+        int $bandwidth = 0,
+        ?callable $unmade = null,
+        ?callable $remove = null
+    ): array {
         $settings = developer_settings::from_value(['allowprivatehosts' => true, 'skipnetworkchecks' => true]);
         $clock = fn(): int => $this->time;
         $client = new client(
@@ -128,7 +148,10 @@ final class uploader_test extends \advanced_testcase {
             $temp,
             $limits,
             fn(): array => [$endpoint, $this->pair, fake_service::SITE_ID],
-            $clock
+            $clock,
+            0,
+            $unmade,
+            $remove
         );
         return [$uploader, $run, $temp->for_run($run->id()), $client, $endpoint];
     }
@@ -313,6 +336,21 @@ final class uploader_test extends \advanced_testcase {
         $this->assertSame(30000, (int) $this->run_row($run)->estimatedbytes);
     }
 
+    public function test_the_new_size_holds_the_part_of_the_run_that_is_not_made_yet(): void {
+        $unmade = 5000;
+        [$uploader, $run, $folder] = $this->start(25600, 100, null, 0, function () use (&$unmade): int {
+            return $unmade;
+        });
+        for ($i = 0; $i < 300; $i++) {
+            $uploader->queue(self::chunk($folder, $i), 'object');
+        }
+        $uploader->drain($run, true);
+        $bodies = array_values(array_filter($this->seen, fn(string $s) => str_contains($s, '/capacity')));
+        // Granted so far (25,600), what waits (4,400) and what the run has not made yet (5,000).
+        $this->assertSame('{"estimated_bytes":35000}', explode("\n", end($bodies))[1]);
+        $this->assertSame(35000, (int) $this->run_row($run)->estimatedbytes);
+    }
+
     public function test_a_refusal_of_the_new_size_stops_the_run_and_asks_for_no_more_urls(): void {
         [$uploader, $run, $folder] = $this->start(100);
         $this->intercept = function (RequestInterface $request): ?Response {
@@ -474,20 +512,6 @@ final class uploader_test extends \advanced_testcase {
         $this->refuse_puts($status, 1);
         $uploader->drain($run, true);
         $this->assertSame(self::NOW + 900, $uploader->waiting_until());
-    }
-
-    public function test_a_failure_of_the_connection_is_not_a_retry(): void {
-        [$uploader, $run, $folder] = $this->start();
-        $uploader->queue(self::chunk($folder, 1), 'object');
-        $this->intercept = function (RequestInterface $request): ?Response {
-            if ($request->getMethod() === 'PUT') {
-                throw new \GuzzleHttp\Exception\ConnectException('down', $request);
-            }
-            return null;
-        };
-        $e = $this->failure(fn() => $uploader->drain($run, true));
-        $this->assertSame('transport_connect', $e->errorcode);
-        $this->assertStringNotContainsString(self::URL_SECRET, $e->getMessage() . $e->debuginfo);
     }
 
     public function test_the_queue_is_kept_for_the_next_step_without_a_url_in_it(): void {
@@ -702,5 +726,179 @@ final class uploader_test extends \advanced_testcase {
         file_put_contents($chunk->path, 'short');
         $uploader->drain($run, true);
         $this->assertSame(self::NOW + 900, $uploader->waiting_until());
+    }
+
+    public function test_the_urls_asked_for_are_no_more_than_can_be_sent_before_they_expire(): void {
+        // 1 Mbps is 125,000 bytes a second; the URLs live 150 seconds: 30 seconds are left after the 120 of margin, which is
+        // 3.75 MB, so three chunks of 1 MB go in a request.
+        $this->service->state['urllife'] = 150;
+        [$uploader, $run, $folder] = $this->start(100000000, 100, null, 1);
+        for ($i = 0; $i < 3; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        // The first request does not know the life of the URLs yet: it takes the 900 seconds of the contract.
+        $uploader->drain($run, true);
+        $this->assertSame(1, $this->posts('/upload-urls'));
+        for ($i = 3; $i < 15; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame(1 + 4, $this->posts('/upload-urls'));
+        $this->assertSame(15000000, $this->service->state['runs'][$run->run_uuid()]['reserved'], 'Nothing was asked for twice.');
+        $this->assertCount(15, $this->service->state['objects']);
+    }
+
+    public function test_the_speed_of_the_earlier_sends_sets_the_size_of_the_next_request(): void {
+        // A chunk of 1 MB takes 100 seconds: 10,000 bytes a second, and 780 seconds of a URL's life hold 7 chunks.
+        $this->intercept = function (RequestInterface $request): ?Response {
+            if ($request->getMethod() === 'PUT') {
+                $this->time += 100;
+                $this->service->state['now'] = $this->time;
+            }
+            return null;
+        };
+        [$uploader, $run, $folder] = $this->start(100000000);
+        for ($i = 0; $i < 2; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame(1, $this->posts('/upload-urls'));
+        for ($i = 2; $i < 17; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame(1 + 3, $this->posts('/upload-urls'), '15 chunks go in requests of 7, 7 and 1.');
+        $this->assertSame(17000000, $this->service->state['runs'][$run->run_uuid()]['reserved']);
+    }
+
+    public function test_the_batch_never_has_less_than_one_chunk(): void {
+        $this->service->state['urllife'] = 100;
+        [$uploader, $run, $folder] = $this->start(100000000, 100, null, 1);
+        $uploader->queue(self::chunk($folder, 0, 1000), 'object');
+        $uploader->drain($run, true);
+        for ($i = 1; $i < 4; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000), 'object');
+        }
+        // The life is under the margin: there is no time to speak of, and a chunk is asked for at a time.
+        $uploader->drain($run, true);
+        $this->assertSame(1 + 3, $this->posts('/upload-urls'));
+        $this->assertSame(4, count($this->service->state['objects']));
+    }
+
+    public function test_queued_files_stay_inside_the_budget_whatever_their_sizes(): void {
+        [$uploader, $run, $folder] = $this->start(100000000, 1);
+        $budget = 1048576;
+        $temp = new temp_area(new limits(2.0, 256, 500, 5.0, $this->tempdir, 1, 0));
+        foreach ([400000, 100000, 600000, 200000, 700000, 50000, 900000, 300000] as $n => $size) {
+            $uploader->queue(self::chunk($folder, $n, $size), 'object');
+            $uploader->drain($run, false);
+            $this->assertLessThanOrEqual($budget, $temp->used_bytes($run->id()), 'After the chunk number ' . $n);
+        }
+        $uploader->drain($run, true);
+        $this->assertCount(8, $this->service->state['objects']);
+    }
+
+    public function test_a_second_object_with_a_queued_name_is_dropped_with_its_file(): void {
+        [$uploader, , $folder] = $this->start();
+        $first = self::chunk($folder, 1);
+        $uploader->queue($first, 'object');
+        $second = self::chunk($folder, 2);
+        $copy = new chunk_info($second->path, $first->name, $second->size, $second->sha256base64, []);
+        $uploader->queue($copy, 'object');
+        $this->assertSame(1, $uploader->pending());
+        $this->assertFileDoesNotExist($second->path);
+        $this->assertFileExists($first->path);
+        // The same file again is the same chunk: it stays.
+        $uploader->queue($first, 'object');
+        $this->assertFileExists($first->path);
+    }
+
+    public function test_a_file_that_could_not_be_removed_is_remembered_and_removed_at_the_next_drain(): void {
+        $refuse = true;
+        $removed = [];
+        $remove = function (string $path) use (&$refuse, &$removed): bool {
+            if ($refuse) {
+                return false;
+            }
+            $removed[] = $path;
+            return unlink($path);
+        };
+        [$uploader, $run, $folder] = $this->start(1000000, 100, null, 0, null, $remove);
+        $chunk = self::chunk($folder, 1);
+        $uploader->queue($chunk, 'object');
+        $uploader->drain($run, true);
+        $this->assertSame(0, $uploader->pending());
+        $this->assertSame([$chunk->path], $uploader->leftovers());
+        $this->assertStringContainsString('"leftovers"', file_get_contents($folder . '/uploads.json'));
+        // A new step reads it from the folder, and the removal is tried again.
+        $uploader->resume($run);
+        $this->assertSame([$chunk->path], $uploader->leftovers());
+        $uploader->drain($run, false);
+        $this->assertSame([$chunk->path], $uploader->leftovers(), 'Still refused.');
+        $refuse = false;
+        $uploader->drain($run, false);
+        $this->assertSame([], $uploader->leftovers());
+        $this->assertSame([$chunk->path], $removed);
+        $this->assertFileDoesNotExist($folder . '/uploads.json');
+    }
+
+    public function test_a_busy_service_while_the_size_is_checked_again_is_waited_for(): void {
+        [$uploader, $run, $folder] = $this->start(100);
+        for ($i = 0; $i < 3; $i++) {
+            $uploader->queue(self::chunk($folder, $i), 'object');
+        }
+        $this->intercept = function (RequestInterface $request): ?Response {
+            return str_ends_with($request->getUri()->getPath(), '/capacity')
+                ? new Response(503, ['Retry-After' => '90']) : null;
+        };
+        $uploader->drain($run, true);
+        $this->assertSame(self::NOW + 90, $uploader->waiting_until());
+        $this->assertSame(3, $uploader->pending());
+    }
+
+    public function test_a_failure_of_the_connection_to_the_storage_is_a_failed_send_that_is_tried_again(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $chunk = self::chunk($folder, 1);
+        $uploader->queue($chunk, 'object');
+        $this->intercept = function (RequestInterface $request): ?Response {
+            if ($request->getMethod() === 'PUT') {
+                throw new \GuzzleHttp\Exception\ConnectException('down', $request);
+            }
+            return null;
+        };
+        foreach ([0, 900] as $later) {
+            $this->time = self::NOW + $later;
+            $this->service->state['now'] = $this->time;
+            $uploader->drain($run, true);
+            $this->assertSame($this->time + 900, $uploader->waiting_until());
+        }
+        $this->time = self::NOW + 1800;
+        $this->service->state['now'] = $this->time;
+        $e = $this->failure(fn() => $uploader->drain($run, true));
+        $this->assertSame('upload_failed', $e->errorcode);
+        $this->assertSame('transport_connect', $e->debuginfo);
+        $this->assertFileExists($chunk->path);
+    }
+
+    public function test_no_signed_url_is_in_the_trace_of_a_failed_send(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $uploader->queue(self::chunk($folder, 1), 'object');
+        $this->refuse_puts(500, 99);
+        foreach ([0, 900] as $later) {
+            $this->time = self::NOW + $later;
+            $this->service->state['now'] = $this->time;
+            $uploader->drain($run, true);
+        }
+        $this->time = self::NOW + 1800;
+        $this->service->state['now'] = $this->time;
+        $e = $this->failure(fn() => $uploader->drain($run, true));
+        $this->assertSame('upload_failed', $e->errorcode);
+        foreach (trace_strings::of($e) as $string) {
+            $this->assertStringNotContainsString('X-Amz', $string);
+            $this->assertStringNotContainsString('/_s3/', $string);
+            $this->assertStringNotContainsString('0123456789abcdef', $string);
+        }
+        // The closure is the call of this test (failure()), whose class is in the namespace of the plugin too.
+        $this->assertSame([], trace_strings::objects_in_plugin_frames($e, [run_record::class, \Closure::class]));
     }
 }

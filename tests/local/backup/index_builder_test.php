@@ -44,11 +44,64 @@ final class index_builder_test extends \basic_testcase {
         return str_repeat($digit, 64);
     }
 
+    /**
+     * Reads an index the way the backup service does, and returns the chunks by name.
+     *
+     * @param string $gzip The compressed index.
+     * @return array Size by name.
+     */
+    private static function strict_read(string $gzip): array {
+        $context = inflate_init(ZLIB_ENCODING_GZIP);
+        $text = inflate_add($context, $gzip);
+        self::assertNotFalse($text);
+        self::assertSame(ZLIB_STREAM_END, inflate_get_status($context), 'The compressed data ends where it should.');
+        self::assertSame("\n", substr($text, -1), 'The last line has its line feed.');
+        $lines = explode("\n", substr($text, 0, -1));
+        $header = json_decode(array_shift($lines), true);
+        $keys = array_keys($header);
+        sort($keys);
+        self::assertSame(['count', 'run_id', 'site_id', 'v'], $keys);
+        self::assertSame([1, self::SITE, self::RUN], [$header['v'], $header['site_id'], $header['run_id']]);
+        $sizes = [];
+        $previous = null;
+        foreach ($lines as $line) {
+            self::assertMatchesRegularExpression('/^[0-9a-f]{64} [1-9][0-9]{0,15}\z/', $line);
+            [$name, $size] = explode(' ', $line);
+            self::assertTrue($previous === null || strcmp($previous, $name) < 0, 'The names ascend and none is twice.');
+            $previous = $name;
+            $sizes[$name] = (int) $size;
+        }
+        self::assertSame($header['count'], count($sizes));
+        return $sizes;
+    }
+
+    /**
+     * Builds an index and reads it back the strict way.
+     *
+     * @param array $sizes Size by name.
+     * @return array The result of build().
+     */
+    private static function built(array $sizes): array {
+        $built = index_builder::build($sizes, self::SITE, self::RUN);
+        self::assertSame($built['count'], count(self::strict_read($built['gzip'])));
+        return $built;
+    }
+
+    public function test_the_index_of_the_service_s_own_case_is_the_same_bytes_of_text(): void {
+        $a = hash('sha256', 'a');
+        $b = hash('sha256', 'b');
+        [$low, $high] = strcmp($a, $b) < 0 ? [$a, $b] : [$b, $a];
+        $sizes = [$b => 123456789012, $a => 10];
+        $built = index_builder::build($sizes, self::SITE, self::RUN);
+        $expected = json_encode(['v' => 1, 'site_id' => self::SITE, 'run_id' => self::RUN, 'count' => 2], JSON_UNESCAPED_SLASHES)
+            . "\n" . $low . ' ' . $sizes[$low] . "\n" . $high . ' ' . $sizes[$high] . "\n";
+        $this->assertSame($expected, gzdecode($built['gzip']));
+        $this->assertSame($sizes, self::strict_read($built['gzip']));
+    }
+
     public function test_the_index_is_the_header_and_a_line_for_each_chunk_in_the_order_of_the_names(): void {
-        $built = index_builder::build(
-            [self::chunkname('b') => 2048, self::chunkname('a') => 17, self::chunkname('c') => 9007199254740991],
-            self::SITE,
-            self::RUN
+        $built = self::built(
+            [self::chunkname('b') => 2048, self::chunkname('a') => 17, self::chunkname('c') => 9007199254740991]
         );
         $expected = '{"v":1,"site_id":"' . self::SITE . '","run_id":"' . self::RUN . '","count":3}' . "\n"
             . self::chunkname('a') . " 17\n"
@@ -71,7 +124,7 @@ final class index_builder_test extends \basic_testcase {
     }
 
     public function test_an_index_without_chunks_is_the_header_alone(): void {
-        $built = index_builder::build([], self::SITE, self::RUN);
+        $built = self::built([]);
         $header = '{"v":1,"site_id":"' . self::SITE . '","run_id":"' . self::RUN . '","count":0}' . "\n";
         $this->assertSame($header, gzdecode($built['gzip']));
         $this->assertSame(0, $built['count']);
@@ -133,7 +186,7 @@ final class index_builder_test extends \basic_testcase {
         for ($i = 0; $i < index_builder::MAX_COUNT; $i++) {
             $sizes[sprintf('%064x', $i)] = 9007199254740991;
         }
-        $built = index_builder::build($sizes, self::SITE, self::RUN);
+        $built = self::built($sizes);
         $this->assertSame(818399, $built['count']);
         $text = gzdecode($built['gzip']);
         $this->assertLessThanOrEqual(index_builder::MAX_BYTES, strlen($text));
@@ -142,7 +195,11 @@ final class index_builder_test extends \basic_testcase {
 
     public function test_an_index_whose_text_is_over_the_most_bytes_is_a_refusal(): void {
         // Few names cannot reach the limit of the bytes; a lower limit is set for the check.
-        $this->expectException(plugin_exception::class);
-        index_builder::build([self::chunkname('a') => 1], self::SITE, self::RUN, 100);
+        try {
+            index_builder::build([self::chunkname('a') => 1], self::SITE, self::RUN, 100);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('capacity_refused', $e->errorcode);
+        }
     }
 }

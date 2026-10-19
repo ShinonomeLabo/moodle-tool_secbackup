@@ -20,6 +20,7 @@ use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\trace_strings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\manifest_builder::class)]
 /**
@@ -37,9 +38,18 @@ final class manifest_builder_test extends \advanced_testcase {
     /** @var string Run ID of the tests. */
     private const RUN = '22222222-2222-4222-8222-222222222222';
 
+    /** @var string|false The value of zend.exception_ignore_args before the test. */
+    private $ignoreargs;
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
+        $this->ignoreargs = ini_set('zend.exception_ignore_args', '0');
+    }
+
+    protected function tearDown(): void {
+        ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
+        parent::tearDown();
     }
 
     /**
@@ -229,6 +239,35 @@ final class manifest_builder_test extends \advanced_testcase {
         } catch (plugin_exception $e) {
             $this->assertSame('temp_write_failed', $e->errorcode);
             $this->assertStringNotContainsString('missing', (string) $e->debuginfo);
+        }
+    }
+
+    public function test_a_builder_over_a_file_with_a_cut_line_drops_the_cut_line_itself(): void {
+        [$builder, $folder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $builder->commit();
+        file_put_contents($folder . '/entries.jsonl', '{"n":2,"ha', FILE_APPEND);
+        $again = new manifest_builder($folder);
+        $this->assertSame(1, $again->commit());
+        $this->assertSame("{\"n\":1}\n", file_get_contents($folder . '/entries.jsonl'));
+        $again->append(['n' => 3]);
+        $this->assertSame(2, $again->commit());
+        $this->assertSame("{\"n\":1}\n{\"n\":3}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
+    public function test_the_key_for_names_is_not_in_the_trace_of_a_failed_build(): void {
+        [$builder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $key = 'secret-key-for-the-names-1234567';
+        try {
+            // A public key of the wrong length: the chunk cannot be written.
+            $builder->build(['v' => 1], $key, self::RUN, 'short', self::SITE);
+            $this->fail('No exception');
+        } catch (\Throwable $e) {
+            foreach (trace_strings::of($e) as $string) {
+                $this->assertStringNotContainsString($key, $string);
+            }
+            $this->assertSame([], trace_strings::objects_in_plugin_frames($e));
         }
     }
 }

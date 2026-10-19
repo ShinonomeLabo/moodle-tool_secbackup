@@ -901,11 +901,10 @@ final class client_runs_test extends \advanced_testcase {
         $this->assertSame('contract_inactive', $service->state['runs'][$runid]['failure_code']);
     }
 
-    public function test_the_sixth_header_of_an_object_is_taken_only_as_a_star_and_only_for_an_object(): void {
-        $answer = self::good_targets();
-        $answer['items'][0]['headers']['if-none-match'] = '*';
-        $targets = self::targets_from($answer);
-        $this->assertSame('*', $targets[0]->headers()['if-none-match']);
+    public function test_the_sixth_header_of_an_object_is_taken_as_a_star_and_an_index_has_five(): void {
+        $targets = self::targets_from(self::good_targets());
+        $this->assertSame('*', $targets[0]->headers()['If-None-Match']);
+        $this->assertCount(6, $targets[0]->headers());
         $this->assertCount(5, $targets[1]->headers());
     }
 
@@ -924,8 +923,8 @@ final class client_runs_test extends \advanced_testcase {
         ];
         $expires = gmdate('Y-m-d\TH:i:s\Z', self::NOW + 900);
         return ['items' => [
-            ['kind' => 'object', 'name' => self::NAME_A, 'url' => 'https://app.example.test/_s3/o?s=1', 'headers' => $headers,
-                'expires_at' => $expires],
+            ['kind' => 'object', 'name' => self::NAME_A, 'url' => 'https://app.example.test/_s3/o?s=1',
+                'headers' => $headers + ['If-None-Match' => '*'], 'expires_at' => $expires],
             ['kind' => 'index', 'url' => 'https://app.example.test/_s3/i?s=1', 'headers' => ['Content-Length' => '5'] + $headers,
                 'expires_at' => $expires],
         ]];
@@ -965,6 +964,7 @@ final class client_runs_test extends \advanced_testcase {
             'X-Amz-Storage-Class' => 'STANDARD',
             'x-amz-object-lock-mode' => 'COMPLIANCE',
             'x-amz-object-lock-retain-until-date' => '2025-11-22T00:00:00Z',
+            'if-none-match' => '*',
         ];
         $targets = self::targets_from($answer);
         // They are kept as the service wrote them: they are sent as they are.
@@ -1037,6 +1037,9 @@ final class client_runs_test extends \advanced_testcase {
             }),
             'a header more' => $change(static function (array &$a): void {
                 $a['items'][0]['headers']['x-amz-acl'] = 'public-read';
+            }),
+            'an object with five headers' => $change(static function (array &$a): void {
+                unset($a['items'][0]['headers']['If-None-Match']);
             }),
             'if-none-match that is not a star' => $change(static function (array &$a): void {
                 $a['items'][0]['headers']['If-None-Match'] = '"abc"';

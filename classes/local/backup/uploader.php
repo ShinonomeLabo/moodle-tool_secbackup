@@ -65,6 +65,15 @@ final class uploader {
     /** @var int Bytes a second in one megabit a second. */
     private const MBPS = 125000;
 
+    /** @var int Seconds of the life of an upload URL that are kept as margin when a request is sized. */
+    private const LIFE_MARGIN = 120;
+
+    /** @var int Seconds that an upload URL lives, until the service has said otherwise (the contract's 15 minutes). */
+    private const CONTRACT_LIFE = 900;
+
+    /** @var int Bytes a second that are assumed before any send has been measured (64 MiB). */
+    private const FIRST_RATE = 67108864;
+
     /** @var client The client. */
     private client $client;
 
@@ -85,6 +94,31 @@ final class uploader {
 
     /** @var int Bandwidth limit that the backup service set, in Mbps; 0 for none. */
     private int $servicembps;
+
+    /** @var callable|null Gives the bytes of the run that are not made yet; null for none. */
+    private $unmade;
+
+    /** @var callable Removes a file: function (string $path): bool. */
+    private $remove;
+
+    /** @var int Seconds that the upload URLs of the service live, as the last answer showed. */
+    private int $life = self::CONTRACT_LIFE;
+
+    /** @var int Bytes that this uploader has sent, for the speed. */
+    private int $sentbytes = 0;
+
+    /** @var int Seconds that those sends took. */
+    private int $senttime = 0;
+
+    /** @var int The largest chunk that was queued. */
+    private int $largest = 0;
+
+    /** @var string[] Files that were sent and could not be removed. */
+    private array $leftovers = [];
+
+    /** @var upload_target[] Where the chunks of the batch in hand go. Kept here, so that no call of the plugin has them as
+     *      an argument: a trace shows the arguments, and the URLs are secrets. */
+    private array $targets = [];
 
     /** @var array[] The chunks that wait: kind, name, path, size, sha256, attempts. */
     private array $queue = [];
@@ -108,6 +142,9 @@ final class uploader {
      * @param callable|null $link Gives [endpoint, signing_keypair, site ID]; null for the registration of this site.
      * @param callable|null $clock Gives the current UNIX time; null for time().
      * @param int $servicembps Bandwidth limit of the backup service's settings in Mbps; 0 for none.
+     * @param callable|null $unmade Gives the bytes that the run has not made yet (the run's estimate of its remaining chunks);
+     *     null for none. A new size that is asked for holds them.
+     * @param callable|null $remove A seam for tests: function (string $path): bool that removes a file; null for unlink().
      */
     public function __construct(
         client $client,
@@ -116,7 +153,9 @@ final class uploader {
         limits $limits,
         ?callable $link = null,
         ?callable $clock = null,
-        int $servicembps = 0
+        int $servicembps = 0,
+        ?callable $unmade = null,
+        ?callable $remove = null
     ) {
         $this->client = $client;
         $this->objects = $objects;
@@ -125,6 +164,11 @@ final class uploader {
         $this->link = $link ?? [self::class, 'site_link'];
         $this->clock = $clock ?? static fn(): int => time();
         $this->servicembps = $servicembps;
+        $this->unmade = $unmade;
+        $this->remove = $remove ?? static fn(string $path): bool => (bool) error_silencer::run(
+            static fn() => unlink($path),
+            $warning
+        );
     }
 
     /**
@@ -189,10 +233,18 @@ final class uploader {
             && $q['name'] === $item['name']));
         if ($same === []) {
             $this->queue[] = $item;
-        } else if ($kind !== 'object') {
+        } else if ($this->queue[$same[0]]['path'] === $item['path']) {
+            // The same file again.
+            return;
+        } else if ($kind === 'object') {
+            // A chunk that waits has this name: the content is the same, and this file is not needed.
+            $this->discard($item['path']);
+        } else {
             // The manifest and the index are named by the run: the later one replaces the earlier.
+            $this->discard($this->queue[$same[0]]['path']);
             $this->queue[$same[0]] = $item;
         }
+        $this->largest = max($this->largest, $item['size']);
         $this->save();
     }
 
@@ -239,6 +291,15 @@ final class uploader {
     }
 
     /**
+     * Files that were sent and could not be removed. They are tried again at the next drain().
+     *
+     * @return string[]
+     */
+    public function leftovers(): array {
+        return $this->leftovers;
+    }
+
+    /**
      * Until when nothing is sent.
      *
      * @return int|null UNIX time, or null when the uploader is not waiting.
@@ -250,8 +311,10 @@ final class uploader {
     /**
      * Sends what waits.
      *
-     * Without $force the chunks are sent only when a request is full, or when the room that is left in the temporary area is
-     * under half of the budget. A budget of zero is no room at all, so then each chunk is sent at once.
+     * Without $force the chunks are sent only when a request is full, or when the room that is left in the budget of the
+     * temporary area could not hold a chunk as large as the largest one so far. So the queued files stay inside the budget,
+     * except a chunk that is larger than all before it, which is sent at the next call. A budget of zero is no room at all,
+     * so then each chunk is sent at once.
      *
      * @param run_record $run The run; it must have its ID at the backup service.
      * @param bool $force Whether to send everything that waits.
@@ -261,8 +324,10 @@ final class uploader {
      */
     public function drain(run_record $run, bool $force): void {
         $this->load($this->temp->for_run($run->id()));
+        $this->remove_leftovers();
         $now = ($this->clock)();
         if ($this->retryat !== null && $now < $this->retryat) {
+            $this->save();
             return;
         }
         $this->retryat = null;
@@ -275,13 +340,13 @@ final class uploader {
         }
         try {
             while ($this->queue !== []) {
-                $batch = array_slice($this->queue, 0, self::BATCH);
-                $targets = $this->urls($run, $batch);
-                if ($targets === null || !$this->send($run, $batch, $targets)) {
+                $this->targets = $this->urls($run, $this->next_batch()) ?? [];
+                if ($this->targets === [] || !$this->send($run)) {
                     return;
                 }
             }
         } finally {
+            $this->targets = [];
             $this->save();
         }
     }
@@ -293,7 +358,40 @@ final class uploader {
      */
     private function full(): bool {
         $budget = $this->temp->budget_bytes();
-        return count($this->queue) >= self::BATCH || $budget === 0 || $this->pending_bytes() * 2 > $budget;
+        // Wait only while the next chunk, if it is as large as the largest so far, still fits in the budget.
+        return count($this->queue) >= self::BATCH || $budget === 0 || $this->pending_bytes() + $this->largest > $budget;
+    }
+
+    /**
+     * The chunks of the next request for URLs: at most 256, and no more bytes than can be sent before the URLs expire.
+     *
+     * @return array[]
+     */
+    private function next_batch(): array {
+        $window = max(0, $this->life - self::LIFE_MARGIN);
+        $cap = max($this->queue[0]['size'], $this->rate() * $window);
+        $batch = [];
+        $bytes = 0;
+        foreach ($this->queue as $item) {
+            if (count($batch) >= self::BATCH || ($batch !== [] && $bytes + $item['size'] > $cap)) {
+                break;
+            }
+            $batch[] = $item;
+            $bytes += $item['size'];
+        }
+        return $batch;
+    }
+
+    /**
+     * The speed to plan with, in bytes a second: the limit when there is one, otherwise what the earlier sends showed.
+     *
+     * @return int
+     */
+    private function rate(): int {
+        if ($this->bandwidth() > 0) {
+            return $this->bandwidth();
+        }
+        return $this->senttime > 0 ? max(1, intdiv($this->sentbytes, $this->senttime)) : self::FIRST_RATE;
     }
 
     /**
@@ -312,66 +410,155 @@ final class uploader {
         ], $batch);
         $rechecks = 0;
         while (true) {
+            $asked = ($this->clock)();
             try {
-                return $this->client->upload_urls($endpoint, $pair, $siteid, (string) $run->run_uuid(), $items);
+                $targets = $this->client->upload_urls($endpoint, $pair, $siteid, (string) $run->run_uuid(), $items);
+                $this->life = max(1, min(array_map(static fn(upload_target $t): int => $t->expires_at() - $asked, $targets)));
+                return $targets;
             } catch (api_exception $e) {
                 $recheck = $e->errorcode === 'api_capacity_recheck_required' && $e->requestedbytes !== null;
                 if ($recheck && ++$rechecks <= self::MAX_RECHECKS) {
-                    // What the service has given, with everything that has not got an URL yet, the refused batch among it.
-                    $expected = $e->requestedbytes + $this->pending_bytes();
-                    if (!$this->client->capacity($endpoint, $pair, $siteid, (string) $run->run_uuid(), $expected)->continue()) {
-                        throw new plugin_exception('capacity_refused');
+                    if ($this->recheck($run, $e->requestedbytes)) {
+                        continue;
                     }
-                    $run->set_estimate($expected);
-                    continue;
+                    return null;
                 }
                 if ($e->errorcode === 'api_contract_inactive') {
                     throw new plugin_exception('contract_inactive');
                 }
-                if ($e->errorcode === 'api_run_limit_reached' || $e->errorcode === 'api_unavailable') {
-                    $this->wait($run, ($this->clock)() + ($e->retryafter ?? self::DEFAULT_WAIT));
-                    return null;
+                if (!$this->waits($run, $e)) {
+                    throw $e;
                 }
-                throw $e;
+                return null;
             }
         }
     }
 
     /**
-     * Sends a batch.
+     * Asks for the size of the whole run to be decided again.
+     *
+     * The size is what the service has given URLs for, with everything that waits for URLs (the refused batch among it) and
+     * what the run has not made yet.
      *
      * @param run_record $run The run.
-     * @param array[] $batch The chunks.
-     * @param upload_target[] $targets Where each one goes.
+     * @param int $given Bytes that the service has given URLs for.
+     * @return bool False when the run waits (the service is busy).
+     * @throws plugin_exception With capacity_refused.
+     * @throws api_exception For a refusal that is not about waiting.
+     */
+    private function recheck(run_record $run, int $given): bool {
+        [$endpoint, $pair, $siteid] = ($this->link)();
+        $expected = $given + $this->pending_bytes() + ($this->unmade === null ? 0 : max(0, (int) ($this->unmade)()));
+        try {
+            $decision = $this->client->capacity($endpoint, $pair, $siteid, (string) $run->run_uuid(), $expected);
+        } catch (api_exception $e) {
+            if ($this->waits($run, $e)) {
+                return false;
+            }
+            throw $e;
+        }
+        if (!$decision->continue()) {
+            throw new plugin_exception('capacity_refused');
+        }
+        $run->set_estimate($expected);
+        return true;
+    }
+
+    /**
+     * Makes the run wait when the service says that it is busy.
+     *
+     * @param run_record $run The run.
+     * @param api_exception $e The refusal.
+     * @return bool Whether it was about waiting.
+     */
+    private function waits(run_record $run, api_exception $e): bool {
+        if ($e->errorcode !== 'api_run_limit_reached' && $e->errorcode !== 'api_unavailable') {
+            return false;
+        }
+        $this->wait($run, ($this->clock)() + ($e->retryafter ?? self::DEFAULT_WAIT));
+        return true;
+    }
+
+    /**
+     * Sends the batch that $targets holds, in the order of the queue.
+     *
+     * @param run_record $run The run.
      * @return bool False when the run waits.
      * @throws plugin_exception With upload_failed when a chunk failed for the last time.
      */
-    private function send(run_record $run, array $batch, array $targets): bool {
-        foreach (array_values($batch) as $i => $item) {
+    private function send(run_record $run): bool {
+        foreach (array_keys($this->targets) as $i) {
             // The URLs of a long batch expire: the rest is asked for again. The first of a batch is always sent.
-            if ($i > 0 && ($this->clock)() >= $targets[$i]->expires_at() - self::EXPIRY_MARGIN) {
+            if ($i > 0 && ($this->clock)() >= $this->targets[$i]->expires_at() - self::EXPIRY_MARGIN) {
                 return true;
             }
+            $item = $this->queue[0];
+            $began = ($this->clock)();
             try {
-                $this->objects->put_file($targets[$i]->url(), $targets[$i]->headers(), $item['path'], $this->bandwidth());
+                $this->objects->put_file(
+                    $this->targets[$i]->url(),
+                    $this->targets[$i]->headers(),
+                    $item['path'],
+                    $this->bandwidth()
+                );
             } catch (transport_exception $e) {
-                if (!in_array($e->errorcode, ['object_rejected', 'object_incomplete'], true)) {
-                    throw $e;
+                // The exception is made again here, so that nothing of the call with the URL stays in its trace.
+                $code = $e->errorcode;
+                $info = $e->debuginfo;
+                unset($e);
+                if ($code === 'object_url_invalid') {
+                    throw new transport_exception($code, $info);
                 }
-                $this->queue[0]['attempts']++;
-                if ($this->queue[0]['attempts'] >= self::MAX_ATTEMPTS) {
-                    throw new plugin_exception('upload_failed', null, $e->errorcode);
-                }
-                $this->wait($run, ($this->clock)() + self::RETRY_SECONDS);
-                return false;
+                return $this->failed($run, $code);
             }
+            $this->sentbytes += $item['size'];
+            $this->senttime += max(0, ($this->clock)() - $began);
             array_shift($this->queue);
-            error_silencer::run(static fn() => unlink($item['path']), $warning);
+            $this->discard($item['path']);
             if ($item['kind'] === 'object') {
                 $run->add_uploaded($item['size'], 1);
             }
         }
         return true;
+    }
+
+    /**
+     * Counts a failed send of the first chunk of the queue.
+     *
+     * @param run_record $run The run.
+     * @param string $code Error code of the failure.
+     * @return bool False: the run waits.
+     * @throws plugin_exception With upload_failed at the last failure.
+     */
+    private function failed(run_record $run, string $code): bool {
+        $this->queue[0]['attempts']++;
+        if ($this->queue[0]['attempts'] >= self::MAX_ATTEMPTS) {
+            throw new plugin_exception('upload_failed', null, $code);
+        }
+        $this->wait($run, ($this->clock)() + self::RETRY_SECONDS);
+        return false;
+    }
+
+    /**
+     * Removes a file that is not needed any more; a file that stays is remembered.
+     *
+     * @param string $path The file.
+     */
+    private function discard(string $path): void {
+        if (is_file($path) && !($this->remove)($path) && !in_array($path, $this->leftovers, true)) {
+            $this->leftovers[] = $path;
+        }
+    }
+
+    /**
+     * Tries again to remove the files that stayed.
+     */
+    private function remove_leftovers(): void {
+        $left = $this->leftovers;
+        $this->leftovers = [];
+        foreach ($left as $path) {
+            $this->discard($path);
+        }
     }
 
     /**
@@ -401,6 +588,7 @@ final class uploader {
         $text = is_file($path) ? error_silencer::run(static fn() => file_get_contents($path), $warning) : false;
         $data = is_string($text) ? json_decode($text, true, 8) : null;
         if (!is_array($data) || !is_array($data['items'] ?? null)) {
+            $this->largest = max([$this->largest, ...array_column($this->queue, 'size')]);
             return;
         }
         $kept = [];
@@ -416,7 +604,13 @@ final class uploader {
             }
         }
         $this->queue = $kept;
+        $this->largest = max([$this->largest, ...array_column($kept, 'size')]);
         $this->retryat = is_int($data['retryat'] ?? null) ? $data['retryat'] : null;
+        foreach (is_array($data['leftovers'] ?? null) ? $data['leftovers'] : [] as $left) {
+            if (is_string($left) && dirname($left) === $folder && !in_array($left, $this->leftovers, true)) {
+                $this->leftovers[] = $left;
+            }
+        }
     }
 
     /**
@@ -445,11 +639,14 @@ final class uploader {
      */
     private function save(): void {
         $path = $this->folder . '/' . self::QUEUE_FILE;
-        if ($this->queue === []) {
+        if ($this->queue === [] && $this->leftovers === []) {
             error_silencer::run(static fn() => is_file($path) && unlink($path), $warning);
             return;
         }
-        $json = json_encode(['v' => 1, 'retryat' => $this->retryat, 'items' => $this->queue], JSON_UNESCAPED_SLASHES);
+        $json = json_encode(
+            ['v' => 1, 'retryat' => $this->retryat, 'items' => $this->queue, 'leftovers' => $this->leftovers],
+            JSON_UNESCAPED_SLASHES
+        );
         $part = $path . '.part';
         $written = error_silencer::run(static fn() => file_put_contents($part, $json), $warning);
         if ($written !== strlen($json) || !error_silencer::run(static fn() => rename($part, $path), $warning)) {

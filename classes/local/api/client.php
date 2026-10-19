@@ -737,7 +737,7 @@ final class client {
     }
 
     /**
-     * Checks that the headers of an upload URL are exactly the five that it binds (and, for an object, the sixth
+     * Checks that the headers of an upload URL are exactly the five that it binds (and, for an object, also the sixth
      * If-None-Match: *), and that the two that carry the request
      * are what was asked for.
      *
@@ -758,8 +758,9 @@ final class client {
         }
         $expected = self::UPLOAD_HEADERS;
         // An object is bound to a sixth header, which is exactly "*": the storage then refuses to replace a stored object.
-        if (array_key_exists('if-none-match', $lower)) {
-            if ($item['kind'] !== 'object' || $lower['if-none-match'] !== '*') {
+        // The manifest and the index are bound to the five only.
+        if ($item['kind'] === 'object') {
+            if (($lower['if-none-match'] ?? null) !== '*') {
                 throw self::invalid(200, 'headers');
             }
             $expected[] = 'if-none-match';
