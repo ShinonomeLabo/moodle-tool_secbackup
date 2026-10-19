@@ -16,6 +16,8 @@
 
 namespace tool_secbackup\local;
 
+use tool_secbackup\local\crypto\key_exception;
+
 /**
  * Makes an exception again, so that the new one holds nothing of the first one's trace.
  *
@@ -30,15 +32,19 @@ namespace tool_secbackup\local;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class remade_exception {
+    /** @var string[] Classes made again as they are: their constructor takes the error code, the value and the debug information. */
+    private const KEPT = [plugin_exception::class, key_exception::class];
+
     /**
-     * What is kept of an exception: for an exception of the plugin its class, error code, value for the language string
-     * and debug information; for any other only its class.
+     * What is kept of an exception: for a plugin_exception or a key_exception its class, error code, value for the language
+     * string and debug information; for any other class (also another exception of the plugin, whose constructor takes other
+     * arguments) only its class.
      *
      * @param \Throwable $exception The exception.
      * @return array
      */
     public static function parts(\Throwable $exception): array {
-        if ($exception instanceof plugin_exception) {
+        if (in_array($exception::class, self::KEPT, true)) {
             return [
                 'class' => $exception::class,
                 'errorcode' => $exception->errorcode,
@@ -53,8 +59,8 @@ final class remade_exception {
      * The new exception.
      *
      * @param array $parts What parts() gave.
-     * @return \Throwable The same class, error code, value and debug information for an exception of the plugin, with no
-     *     exception chained; a coding_exception that names the class for any other.
+     * @return \Throwable The same class, error code, value and debug information for a plugin_exception or a key_exception,
+     *     with no exception chained; a coding_exception that names the class for any other.
      */
     public static function build(array $parts): \Throwable {
         if (!isset($parts['errorcode'])) {

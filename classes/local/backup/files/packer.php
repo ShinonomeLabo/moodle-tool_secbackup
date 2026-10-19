@@ -19,6 +19,7 @@ namespace tool_secbackup\local\backup\files;
 use tool_secbackup\local\crypto\chunk_info;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_writer;
+use tool_secbackup\local\crypto\key_exception;
 use tool_secbackup\local\error_silencer;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\remade_exception;
@@ -76,6 +77,9 @@ final class packer {
 
     /** @var string Folder of the chunks. */
     private string $tempdir;
+
+    /** @var \HashContext|null SHA-1 of the content of the big file that is being packed. */
+    private ?\HashContext $digest = null;
 
     /** @var array[] The small files that wait for a pack: 'hash', 'data' and 'seq' (their place in the entries). */
     private array $pending = [];
@@ -263,16 +267,18 @@ final class packer {
      */
     private function add_big(string $contenthash, $handle, int $size): array {
         $pieces = intdiv($size + self::PIECE - 1, self::PIECE);
-        $digest = hash_init('sha1');
+        // Held here and not passed to write_piece(): a hash context in the arguments of a call is in the trace of an exception,
+        // and it serialises the last bytes that were hashed.
+        $this->digest = hash_init('sha1');
         $unverified = [];
         $infos = [];
         try {
             for ($piece = 0; $piece < $pieces; $piece++) {
                 $length = min(self::PIECE, $size - $piece * self::PIECE);
-                $unverified[] = $this->write_piece($contenthash, $piece, $handle, $length, $digest);
+                $unverified[] = $this->write_piece($contenthash, $piece, $handle, $length);
             }
             self::expect_end($handle);
-            if (hash_final($digest) !== $contenthash) {
+            if (hash_final($this->digest) !== $contenthash) {
                 throw new plugin_exception('tamper_detected');
             }
             // Only now do the pieces get the names that later runs trust.
@@ -284,6 +290,8 @@ final class packer {
                 error_silencer::run(static fn() => unlink($info->path), $warning);
             }
             throw $e;
+        } finally {
+            $this->digest = null;
         }
         foreach ($infos as $piece => $info) {
             $this->entries[$this->sequence++] = [
@@ -324,15 +332,17 @@ final class packer {
      * @param int $piece Number of the piece, from 0.
      * @param resource $handle The stream, at the first byte of the piece.
      * @param int $length Bytes of content in the piece.
-     * @param \HashContext $digest SHA-1 of the file, updated with the content of the piece.
      * @return chunk_info The piece, in a file with the provisional name (the name of the chunk and ".unverified").
-     * @throws plugin_exception With nfs_slow when the read fails, and with tamper_detected when the file ends early.
+     * @throws plugin_exception With nfs_slow when the read fails, with tamper_detected when the file ends early, and with
+     *     temp_write_failed when the chunk cannot be written.
+     * @throws key_exception With publickey_invalid when the public key of the site cannot encrypt.
+     * @throws \coding_exception For any other error of the writer; it names the class of that error only.
      */
-    private function write_piece(string $contenthash, int $piece, $handle, int $length, \HashContext $digest): chunk_info {
+    private function write_piece(string $contenthash, int $piece, $handle, int $length): chunk_info {
         $name = $this->file_name($contenthash, $piece);
         $writer = $this->new_writer($name, self::UNVERIFIED);
         try {
-            $writer->add_item($handle, $length, $digest);
+            $writer->add_item($handle, $length, $this->digest);
             return $writer->finish();
         } catch (\Throwable $e) {
             $writer->abort();

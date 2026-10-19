@@ -323,6 +323,10 @@ final class block_writer {
         string $sha256,
         #[\SensitiveParameter] string $plain
     ): chunk_info {
+        // The trace of an exception shows the parameters, and #[\SensitiveParameter] does nothing before PHP 8.2 and only wraps
+        // the value after it. So the text moves to a local variable and the parameter is unset before anything can throw.
+        $text = $plain;
+        unset($plain);
         try {
             $name = chunk_name::db($this->dedupkey, $this->runuuid, $table, $from, $to, $sha256);
         } catch (\coding_exception $e) {
@@ -330,7 +334,7 @@ final class block_writer {
             // 8.2, and its message is not made into a hint again with its prefix.
             throw new \coding_exception($e->a);
         }
-        $compressed = gzencode($plain, self::GZIP_LEVEL) ?: throw new \coding_exception('The block cannot be compressed.');
+        $compressed = gzencode($text, self::GZIP_LEVEL) ?: throw new \coding_exception('The block cannot be compressed.');
         $path = $this->tempdir . '/' . $name;
         $writer = new chunk_writer($path, chunk_writer::TYPE_DB, $name, $this->sitepublickey, $this->siteid);
         try {

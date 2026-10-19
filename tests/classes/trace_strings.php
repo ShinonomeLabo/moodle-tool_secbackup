@@ -60,6 +60,49 @@ final class trace_strings {
     }
 
     /**
+     * The classes of the objects that are arguments of calls of the plugin in the trace of an exception, or of one it chains.
+     *
+     * An object in the arguments of the plugin's own code can hold the data that the call worked on (a hash context holds
+     * its last bytes; an exception holds its trace), and a trace is printed and serialised, so the code that makes an
+     * exception for the outside must leave none. A SensitiveParameterValue counts too, unless it is empty.
+     *
+     * @param \Throwable $exception The exception, made while zend.exception_ignore_args was off.
+     * @param string[] $allowed Classes of objects that hold no data of the call (such as the description of a table).
+     * @return string[] Class names, one for each object found.
+     */
+    public static function objects_in_plugin_frames(\Throwable $exception, array $allowed = []): array {
+        $found = [];
+        for ($e = $exception; $e !== null; $e = $e->getPrevious()) {
+            foreach ($e->getTrace() as $frame) {
+                if (str_starts_with($frame['class'] ?? '', 'tool_secbackup\\')) {
+                    self::collect_objects($frame['args'] ?? [], $found);
+                }
+            }
+        }
+        return array_values(array_diff($found, $allowed));
+    }
+
+    /**
+     * Adds the classes of the objects in a value and in its arrays.
+     *
+     * @param mixed $value The value.
+     * @param string[] $found The classes found so far.
+     */
+    private static function collect_objects(mixed $value, array &$found): void {
+        if ($value instanceof \SensitiveParameterValue && $value->getValue() === null) {
+            // The wrapper of a parameter that the function has unset holds nothing (PHP 8.2 and later wrap it still).
+            return;
+        }
+        if (is_object($value)) {
+            $found[] = $value::class;
+        } else if (is_array($value)) {
+            foreach ($value as $item) {
+                self::collect_objects($item, $found);
+            }
+        }
+    }
+
+    /**
      * Whether a value is an exception or an array that holds one.
      *
      * @param mixed $value The value.
@@ -87,8 +130,8 @@ final class trace_strings {
         }
         if ($value instanceof \Throwable) {
             // The message, the arguments of every call in the trace, and the exception that it chains, which are as deep.
-            $strings[] = $value->getMessage();
             for ($e = $value; $e !== null; $e = $e->getPrevious()) {
+                $strings[] = $e->getMessage();
                 foreach ($e->getTrace() as $frame) {
                     self::collect($frame['args'] ?? [], $strings);
                 }

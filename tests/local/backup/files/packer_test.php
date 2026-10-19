@@ -570,6 +570,7 @@ final class packer_test extends \advanced_testcase {
             $this->assertStringNotContainsString('SECRETMARKER', $text);
         }
         $this->assertNull($exception->getPrevious());
+        $this->assertSame([], trace_strings::objects_in_plugin_frames($exception), 'No call of the plugin has an object.');
         $this->assertFalse(
             trace_strings::has_throwable_argument($exception),
             'No call in the trace has the first exception as an argument: its trace holds the content.'

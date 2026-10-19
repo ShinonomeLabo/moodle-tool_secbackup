@@ -978,7 +978,7 @@ final class block_writer_test extends \advanced_testcase {
     public function test_a_block_that_fails_part_way_leaves_neither_its_data_nor_an_exception_in_the_trace(): void {
         $base = self::last_id();
         for ($i = 0; $i < 40; $i++) {
-            self::add_rows(1, bin2hex(random_bytes(300)), $i);
+            self::add_rows(1, 'ROWSECRETVALUE' . bin2hex(random_bytes(300)), $i);
         }
         $export = $this->export();
         try {
@@ -997,8 +997,11 @@ final class block_writer_test extends \advanced_testcase {
                 $this->assertSame('temp_write_failed', $e->errorcode);
                 $this->assertNull($e->getPrevious());
                 $this->assertFalse(trace_strings::has_throwable_argument($e));
+                // The description of the table is an argument of next_block(); it holds no row.
+                $this->assertSame([], trace_strings::objects_in_plugin_frames($e, [\xmldb_table::class]));
                 foreach (array_merge([$e->getMessage(), $e->getTraceAsString()], trace_strings::of($e)) as $text) {
                     $this->assertStringNotContainsString($piece, $text);
+                    $this->assertStringNotContainsString('ROWSECRETVALUE', $text);
                 }
             }
         } finally {
