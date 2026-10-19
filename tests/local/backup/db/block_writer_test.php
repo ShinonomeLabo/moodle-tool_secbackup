@@ -671,15 +671,58 @@ final class block_writer_test extends \advanced_testcase {
         $this->assertStringNotContainsString('"', $this->queries[1]['sql']);
     }
 
-    public function test_the_window_ends_at_the_budget_exactly(): void {
+    public function test_the_end_of_the_window_is_chosen_from_the_sizes(): void {
+        $this->assertNull(block_writer::choose_end([], 100));
+        // The first row is always taken, also when it is over the room.
+        $this->assertSame(7, block_writer::choose_end([7 => 500, 9 => 1], 100));
+        $this->assertSame(9, block_writer::choose_end([7 => 60, 9 => 40, 12 => 1], 100), 'exact fit');
+        $this->assertSame(7, block_writer::choose_end([7 => 60, 9 => 41], 100), 'one byte over');
+        $this->assertSame(12, block_writer::choose_end([7 => 0, 9 => 0, 12 => 100], 100));
+        $this->assertSame(3, block_writer::choose_end([1 => 10, 2 => 10, 3 => 10], 1000));
+    }
+
+    public function test_the_room_of_a_window_leaves_the_header_out(): void {
         $rows = [self::log_row(1), self::log_row(2)];
-        $writer = $this->writer($this->stand_in($rows, [1 => 1, 2 => 1]));
-        $this->assertSame(2, $writer->window_end(self::log_table(), 0));
-        // Rows that together are the budget fit, one byte more does not (the budget leaves room for the header).
-        $reserve = self::header_length(PHP_INT_MAX, PHP_INT_MAX);
-        $limit = block_writer::MAX_BYTES - $reserve;
-        $this->assertSame(2, $this->writer($this->stand_in($rows, [1 => $limit - 10, 2 => 10]))->window_end(self::log_table(), 0));
-        $this->assertSame(1, $this->writer($this->stand_in($rows, [1 => $limit - 10, 2 => 11]))->window_end(self::log_table(), 0));
+        $limit = block_writer::MAX_BYTES - self::header_length(PHP_INT_MAX, PHP_INT_MAX);
+        $this->writer($this->stand_in($rows, [1 => $limit - 10, 2 => 10]))->next_block(self::log_table(), 0);
+        $this->assertSame([0, 2], $this->queries[1]['params']);
+        $this->queries = [];
+        $this->writer($this->stand_in($rows, [1 => $limit - 10, 2 => 11]))->next_block(self::log_table(), 0);
+        $this->assertSame([0, 1], $this->queries[1]['params']);
+    }
+
+    public function test_the_measure_asks_for_few_rows_after_a_small_window(): void {
+        $rows = array_map(static fn(int $id): array => self::log_row($id), range(1, 40));
+        $writer = $this->writer($this->stand_in($rows, array_fill_keys(range(1, 40), 3000000)));
+        $table = self::log_table();
+        $after = 0;
+        for ($i = 0; $i < 3; $i++) {
+            $after = $writer->next_block($table, $after)['to'];
+        }
+        $limits = array_column(array_filter($this->queries, static fn(array $q): bool => str_contains($q['sql'], ' AS sz')), 'num');
+        // Two rows a block: the first block measures a page, the next ones twice the rows of the window, at least 16.
+        $this->assertSame([block_writer::MAX_ROWS, 16, 16], $limits);
+        // Another table starts again with a page, and so does the same table from its first row.
+        $this->queries = [];
+        $other = new \xmldb_table('config');
+        $other->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $writer->next_block($other, 0);
+        $writer->next_block($other, 0);
+        $writer->next_block($table, 0);
+        $limits = array_column(array_filter($this->queries, static fn(array $q): bool => str_contains($q['sql'], ' AS sz')), 'num');
+        $this->assertSame([block_writer::MAX_ROWS, block_writer::MAX_ROWS, block_writer::MAX_ROWS], $limits);
+    }
+
+    public function test_the_measure_grows_with_a_large_window(): void {
+        $rows = array_map(static fn(int $id): array => self::log_row($id), range(1, 120));
+        $writer = $this->writer($this->stand_in($rows));
+        $table = self::log_table();
+        $first = $writer->next_block($table, 0);
+        $this->assertSame(120, $first['rows']);
+        $this->assertNull($writer->next_block($table, $first['to']));
+        $limits = array_column($this->queries, 'num');
+        // 2 x 120 rows is 240 for the measure that follows.
+        $this->assertSame([block_writer::MAX_ROWS, 0, 240], $limits);
     }
 
     public function test_a_row_larger_than_the_budget_is_a_window_of_one_row(): void {
@@ -688,7 +731,7 @@ final class block_writer_test extends \advanced_testcase {
         $block = $writer->next_block(self::log_table(), 0);
         $this->assertSame([0, 1], $this->queries[1]['params']);
         $this->assertSame([1, 1, 1], [$block['rows'], $block['from'], $block['to']]);
-        $this->assertNull($this->writer($this->stand_in([]))->window_end(self::log_table(), 0));
+        $this->assertNull($this->writer($this->stand_in([]))->next_block(self::log_table(), 0));
     }
 
     public function test_the_real_size_decides_the_cut_inside_the_window(): void {
@@ -745,9 +788,13 @@ final class block_writer_test extends \advanced_testcase {
         $this->assertStringContainsString('"stamp"', $this->queries[1]['sql']);
     }
 
-    public function test_rows_that_are_gone_when_they_are_fetched_give_no_block(): void {
-        $block = $this->writer($this->stand_in([self::log_row(1)], [], [1]))->next_block(self::log_table(), 0);
-        $this->assertNull($block);
+    public function test_rows_that_are_gone_when_they_are_fetched_are_an_error(): void {
+        try {
+            $this->writer($this->stand_in([self::log_row(1)], [], [1]))->next_block(self::log_table(), 0);
+            $this->fail('A table was reported as finished while it had rows');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('snapshot', $e->getMessage());
+        }
         $this->assertTrue($this->fetched->closed);
         $this->assertSame([], array_values(array_diff(scandir($this->dir), ['.', '..'])));
     }
@@ -821,13 +868,27 @@ final class block_writer_test extends \advanced_testcase {
                 $this->assertSame('first', $first[1]);
                 $this->assertSame('second', $second[1]);
                 $this->assertSame((int)$first[0] + 1, (int)$second[0]);
-                $this->assertSame((int)$second[0], $writer->window_end($table, 0));
+                $sizes = $this->measured_sizes($writer, $table, 0);
+                $this->assertSame([(int)$first[0], (int)$second[0]], array_keys($sizes));
             } finally {
                 $export->dispose();
             }
         } finally {
             $DB->get_manager()->drop_table($table);
         }
+    }
+
+    /**
+     * The sizes that the measuring query gives, by id.
+     *
+     * @param block_writer $writer The writer.
+     * @param \xmldb_table $table The table.
+     * @param int $afterid The rows with a larger id.
+     * @return int[]
+     */
+    private function measured_sizes(block_writer $writer, \xmldb_table $table, int $afterid): array {
+        $measure = new \ReflectionMethod(block_writer::class, 'measure');
+        return $measure->invoke($writer, $table, $afterid, block_writer::MAX_ROWS);
     }
 
     public function test_a_column_with_no_value_counts_nothing_in_the_measure(): void {
@@ -837,23 +898,36 @@ final class block_writer_test extends \advanced_testcase {
         $ids = self::ids_after($base);
         $export = $this->export();
         try {
-            $writer = $this->writer($export);
-            $this->assertSame($ids[1], $writer->window_end(self::log_table(), $base));
-            $this->assertSame($ids[2], $writer->window_end(self::log_table(), $ids[1]));
-            $this->assertNull($writer->window_end(self::log_table(), $ids[2]));
+            $sizes = $this->measured_sizes($this->writer($export), self::log_table(), $base);
+            $this->assertSame($ids, array_keys($sizes));
+            foreach ($sizes as $size) {
+                $this->assertGreaterThan(3000000, $size);
+                $this->assertLessThan(3000200, $size);
+            }
+            $this->assertSame([], $this->measured_sizes($this->writer($export), self::log_table(), $ids[2]));
         } finally {
             $export->dispose();
         }
     }
 
     public function test_a_value_that_is_not_utf8_stops_the_block_and_closes_the_recordset(): void {
-        $rows = [self::log_row(1, 'ok'), self::log_row(2, "bad\xff")];
+        $bad = ['plugin' => 'secret-hash-4f2a'] + self::log_row(2, "bad\xff");
+        $rows = [self::log_row(1, 'ok'), $bad];
         try {
             $this->writer($this->stand_in($rows))->next_block(self::log_table(), 0);
             $this->fail('A value that is not UTF-8 was written');
         } catch (\JsonException $e) {
             $this->assertTrue($this->measured->closed);
             $this->assertTrue($this->fetched->closed);
+            // The message tells the table and the id, and no value of the row is in the exception, in its trace or behind it.
+            $this->assertStringContainsString('config_log', $e->getMessage());
+            $this->assertStringContainsString('id 2', $e->getMessage());
+            $this->assertNull($e->getPrevious());
+            $this->assertNotEmpty($e->getTrace());
+            foreach (array_merge([$e->getMessage(), $e->getTraceAsString()], trace_strings::of($e)) as $text) {
+                $this->assertStringNotContainsString('secret-hash-4f2a', $text);
+                $this->assertStringNotContainsString('bad', $text);
+            }
         }
         $this->assertSame([], array_values(array_diff(scandir($this->dir), ['.', '..'])));
     }

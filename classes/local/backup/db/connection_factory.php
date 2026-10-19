@@ -49,8 +49,8 @@ final class connection_factory {
      * arguments of connect(), and the password is one of them. Its debug information is that of the driver's exception when
      * that is an exception of Moodle, else the name of its class.
      *
-     * @param \moodle_database|null $driver The driver to connect; by default a new one of the type of the site (a seam for
-     *     tests).
+     * @param \moodle_database|null $driver The driver to connect; by default a new one of the type of the site. It is a seam
+     *     for tests: production passes nothing, and the connection of Moodle ($DB) must never be passed.
      * @return \moodle_database
      * @throws \dml_connection_exception When the database cannot be reached.
      * @throws plugin_exception With db_unsupported for a driver that cannot be loaded.

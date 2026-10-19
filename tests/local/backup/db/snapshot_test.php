@@ -185,19 +185,25 @@ final class snapshot_test extends \advanced_testcase {
         $password = 'wrong-pass-' . bin2hex(random_bytes(6));
         $CFG->dbpass = $password;
         // The driver reports the failure as a PHP warning too.
-        set_error_handler(static fn(int $errno, string $errstr): bool => true);
+        $quiet = static fn(int $errno, string $errstr): bool => true;
+        set_error_handler($quiet);
         try {
             connection_factory::open();
-            $this->fail('The connection was opened with a wrong password');
+            $failure = null;
         } catch (\dml_connection_exception $e) {
-            $trace = $e->getTrace();
-            $this->assertNotEmpty($trace);
-            $this->assert_without_password($e, $password);
+            $failure = $e;
         } finally {
             restore_error_handler();
-            // Some drivers report the failed connection with debugging() too.
-            $this->resetDebugging();
         }
+        // The assertions run with the handler of PHPUnit, not with the one that only hides the warning.
+        $handler = set_error_handler(static fn(int $errno, string $errstr): bool => false);
+        restore_error_handler();
+        $this->assertNotSame($quiet, $handler);
+        // Some drivers report the failed connection with debugging() too.
+        $this->resetDebugging();
+        $this->assertNotNull($failure, 'The connection was opened with a wrong password');
+        $this->assertNotEmpty($failure->getTrace());
+        $this->assert_without_password($failure, $password);
     }
 
     public function test_a_failure_after_the_link_is_up_does_not_show_the_password(): void {

@@ -24,10 +24,13 @@ use tool_secbackup\local\crypto\chunk_writer;
  * Writes the rows of a table as blocks: encrypted chunks of type 1 with the rows in JSON Lines, compressed.
  *
  * The plain text of a block: a first line {"table", "columns": [{"name", "type"}], "from", "to"} and one line, a JSON array
- * in the order of the columns, for each row. Values are as the database layer gives them (text; NULL is null); a column of
- * type binary is a base64 string. The columns are those of the install.xml description of the table, in its order, and
- * the type is the name of the XMLDB type: int, number, float, char, text, binary. The text is compressed with gzip (level
- * 6) and is the one item of the chunk.
+ * in the order of the columns, for each row. The columns are those of the install.xml description of the table, in its
+ * order, and the type is the name that XMLDB gives to the type of the column: int, number, float, char, text, binary and
+ * datetime, or unknown for a type that XMLDB has no name for. Every value is written as the text that the database layer
+ * gives (a number that a driver gives as a number is made into text); NULL is null; the value of a binary column is a base64
+ * string; the value of any other type is written as text, as it is.
+ *
+ * The text is compressed with gzip (level 6) and is the one item of the chunk.
  *
  * A block has at most MAX_ROWS rows and at most MAX_BYTES of plain text, but always one row at least: a row that is larger
  * than MAX_BYTES is a block of its own. The rows are in the order of their id; a block starts after the id that the caller
@@ -60,6 +63,9 @@ final class block_writer {
     /** @var string The mark that MySQL and MariaDB put around the name of a column (a grave accent). */
     private const MYSQL_QUOTE = "\x60";
 
+    /** @var int Fewest rows that a measuring query asks for, after a block. */
+    private const MIN_MEASURE = 16;
+
     /** @var int Bytes that the measuring query counts for a column that is not text, characters or bytes. */
     private const FIXED_COLUMN = 24;
 
@@ -68,6 +74,12 @@ final class block_writer {
 
     /** @var string|null The key for the names of the chunks, until the object is destroyed. */
     private ?string $dedupkey;
+
+    /** @var string Name of the table that the last block was of. */
+    private string $lasttable = '';
+
+    /** @var int How many rows the next measuring query asks for. */
+    private int $measurelimit = self::MAX_ROWS;
 
     /** @var string UUID of the run. */
     private string $runuuid;
@@ -117,33 +129,45 @@ final class block_writer {
     }
 
     /**
-     * The last id of the next block, from the sizes of the rows.
-     *
-     * The rows after $afterid are measured, at most MAX_ROWS of them, and counted from the first until the next one would
-     * take the total over the room that a block has for rows; the first row is always counted.
+     * The sizes of the rows after an id, as the database measures them.
      *
      * @param \xmldb_table $table The table, as its install.xml file describes it; it has an id column.
      * @param int $afterid The rows with a larger id.
-     * @return int|null The id of the last row of the window, or null when no row has a larger id.
-     * @throws \coding_exception For a table without an id column.
+     * @param int $limit The most rows to measure.
+     * @return int[] Bytes by id, in the order of the ids.
      */
-    public function window_end(\xmldb_table $table, int $afterid): ?int {
-        $fields = $this->fields($table);
-        $room = self::MAX_BYTES - strlen($this->header($table, $fields, PHP_INT_MAX, PHP_INT_MAX));
-        $rows = $this->db->get_recordset_sql($this->measuring_sql($table, $fields), [$afterid], 0, self::MAX_ROWS);
+    private function measure(\xmldb_table $table, int $afterid, int $limit): array {
+        $rows = $this->db->get_recordset_sql($this->measuring_sql($table, $this->fields($table)), [$afterid], 0, $limit);
         try {
-            $total = 0;
-            $end = null;
+            $sizes = [];
             foreach ($rows as $row) {
-                $size = (int)$row->sz;
-                if ($end !== null && $total + $size > $room) {
-                    break;
-                }
-                $total += $size;
-                $end = (int)$row->id;
+                $sizes[(int)$row->id] = (int)$row->sz;
             }
         } finally {
             $rows->close();
+        }
+        return $sizes;
+    }
+
+    /**
+     * The last id of a block, from the sizes of the rows.
+     *
+     * The rows are counted from the first until the next one would take the total over the room; the first row is always
+     * counted.
+     *
+     * @param int[] $sizes Bytes by id, in the order of the ids.
+     * @param int $room Bytes that the rows of a block may have.
+     * @return int|null The id of the last row, or null when there are no rows.
+     */
+    public static function choose_end(array $sizes, int $room): ?int {
+        $total = 0;
+        $end = null;
+        foreach ($sizes as $id => $size) {
+            if ($end !== null && $total + $size > $room) {
+                break;
+            }
+            $total += $size;
+            $end = $id;
         }
         return $end;
     }
@@ -157,16 +181,25 @@ final class block_writer {
      *     'to' (first and last id), 'rows', 'plainsha256' (hexadecimal) and 'length' (bytes) of the plain text before the
      *     compression. Null when no row has a larger id; then no file is made.
      * @throws \coding_exception For a table without an id column, or a name that a chunk cannot have.
-     * @throws \JsonException For a value that is not valid UTF-8.
+     * @throws \JsonException For a value that is not valid UTF-8; the message tells the table and the id, not the value.
      * @throws \tool_secbackup\local\plugin_exception With temp_write_failed when the chunk cannot be written.
      */
     public function next_block(\xmldb_table $table, int $afterid): ?array {
-        $end = $this->window_end($table, $afterid);
+        $fields = $this->fields($table);
+        if ($table->getName() !== $this->lasttable || $afterid === 0) {
+            $this->lasttable = $table->getName();
+            $this->measurelimit = self::MAX_ROWS;
+        }
+        $reserve = strlen($this->header($table, $fields, PHP_INT_MAX, PHP_INT_MAX));
+        $sizes = $this->measure($table, $afterid, $this->measurelimit);
+        $end = self::choose_end($sizes, self::MAX_BYTES - $reserve);
         if ($end === null) {
             return null;
         }
-        $fields = $this->fields($table);
-        $length = strlen($this->header($table, $fields, PHP_INT_MAX, PHP_INT_MAX));
+        // The next block is about as large as this one: it needs to measure about as many rows, and no more than a page.
+        $window = array_search($end, array_keys($sizes), true) + 1;
+        $this->measurelimit = max(self::MIN_MEASURE, min(self::MAX_ROWS, 2 * $window));
+        $length = $reserve;
         $lines = [];
         $first = null;
         $last = null;
@@ -176,7 +209,12 @@ final class block_writer {
         );
         try {
             foreach ($rows as $row) {
-                $line = $this->line($fields, $row);
+                try {
+                    $line = $this->line($fields, $row);
+                } catch (\JsonException) {
+                    // New, from the id: the trace of the exception of json_encode() holds the values of the row.
+                    throw new \JsonException('A value of ' . $table->getName() . ' id ' . (int)$row->id . ' is not valid text.');
+                }
                 if ($lines !== [] && $length + strlen($line) > self::MAX_BYTES) {
                     break;
                 }
@@ -189,7 +227,8 @@ final class block_writer {
             $rows->close();
         }
         if ($lines === []) {
-            return null;
+            // The rows were measured, so they are in the snapshot: they cannot be gone, and null would mean that the table is done.
+            throw new \coding_exception('Rows that were measured are gone: the snapshot is broken.');
         }
         $count = count($lines);
         $plain = $this->header($table, $fields, $first, $last) . implode('', $lines);
