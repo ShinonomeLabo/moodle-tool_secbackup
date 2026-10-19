@@ -21,6 +21,7 @@ use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\error_silencer;
 use tool_secbackup\local\net\object_transport;
+use tool_secbackup\local\net\transport_exception;
 use tool_secbackup\local\plugin_exception;
 
 /**
@@ -49,6 +50,9 @@ final class core_diff {
 
     /** @var string[] Files that are not listed in the root. */
     private const SKIPPED_ROOT_FILES = ['config.php', 'config-dist.php'];
+
+    /** @var string Matches a path with an empty part, a "." or ".." part, or a backslash. */
+    private const UNSAFE_PATH = '~(?:^|/)(?:\.|\.\.)?(?:/|$)|\\\\~';
 
     /** @var string The folder of the distribution. */
     private string $root;
@@ -237,8 +241,8 @@ final class core_diff {
      * @param string $tempdir A folder for the temporary file.
      * @return string|null The compressed list, or null.
      * @throws \coding_exception When the temporary folder cannot be used.
-     * @throws plugin_exception From the client and from the transport; core_manifest_invalid for a version.php that cannot be
-     *         used.
+     * @throws plugin_exception From the client and from the transport, except for an object that is too large (null), and
+     *         core_manifest_invalid for a version.php that cannot be used.
      */
     public function fetch_official(
         client $client,
@@ -260,8 +264,16 @@ final class core_diff {
             throw new \coding_exception('The temporary folder cannot be used.');
         }
         try {
-            if (!$objects->get_to_file($ref->url(), $path, $ref->size())) {
-                return null;
+            try {
+                if (!$objects->get_to_file($ref->url(), $path, $ref->size())) {
+                    return null;
+                }
+            } catch (transport_exception $e) {
+                // An object larger than the signed size is not the list that was signed; any other error is not hidden.
+                if ($e->errorcode === 'transport_too_large') {
+                    return null;
+                }
+                throw $e;
             }
             $bytes = (string) file_get_contents($path);
             $signed = hash_equals($ref->sha256(), base64_encode(hash('sha256', $bytes, true)));
@@ -281,13 +293,31 @@ final class core_diff {
     private function excluded(): array {
         $excluded = self::SKIPPED_ROOT_FILES;
         $realroot = realpath($this->root);
-        foreach ($this->plugin_roots() as $dir) {
+        foreach (array_merge($this->plugin_roots(), self::data_folders()) as $dir) {
             $real = realpath($dir);
             if ($realroot !== false && $real !== false && str_starts_with($real, rtrim($realroot, '/') . '/')) {
                 $excluded[] = substr($real, strlen(rtrim($realroot, '/')) + 1);
             }
         }
         return $excluded;
+    }
+
+    /**
+     * The folders of the data of this site and of this plugin: they are not part of the distribution, and when one lies inside
+     * the folder of the distribution the official list does not hold it.
+     *
+     * @return string[]
+     */
+    private static function data_folders(): array {
+        global $CFG;
+        $folders = [];
+        foreach (['dataroot', 'tempdir', 'cachedir', 'localcachedir', 'backuptempdir', 'trashdir', 'secretdataroot'] as $name) {
+            if (isset($CFG->$name) && is_string($CFG->$name) && $CFG->$name !== '') {
+                $folders[] = $CFG->$name;
+            }
+        }
+        $folders[] = limits::current()->tempdir;
+        return $folders;
     }
 
     /**
@@ -366,6 +396,7 @@ final class core_diff {
             if (
                 $seen > $count
                 || preg_match('~^([^\x00-\x1f\x7f]+)\t([0-9a-f]{64})\z~u', $line, $match) !== 1
+                || preg_match(self::UNSAFE_PATH, $match[1]) === 1
                 || ($previous !== null && strcmp($previous, $match[1]) >= 0)
             ) {
                 throw new plugin_exception('core_manifest_invalid', null, 'line ' . ($seen + 1));
@@ -390,7 +421,7 @@ final class core_diff {
         foreach ($local as $path => $hash) {
             $path = (string) $path;
             if ($previous !== null && strcmp($previous, $path) >= 0) {
-                throw new \coding_exception('The paths of the files of this site are in byte order.');
+                throw new \coding_exception('The paths of the files of this site are not in byte order.');
             }
             $previous = $path;
             yield $path => (string) $hash;

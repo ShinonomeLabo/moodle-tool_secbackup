@@ -232,16 +232,62 @@ final class core_diff_test extends \advanced_testcase {
         $this->assertSame($sorted, $keys);
     }
 
+    public function test_data_folders_inside_the_root_are_left_out(): void {
+        global $CFG;
+        $root = self::moodle(['index.php' => 'i', 'moodledata/a.txt' => 'a', 'temp/b.txt' => 'b', 'cache/c.txt' => 'c',
+            'localcache/d.txt' => 'd', 'backuptemp/e.txt' => 'e', 'trash/f.txt' => 'f', 'secret/g.txt' => 'g',
+            'mytemp/h.txt' => 'h', 'moodledata2/k.txt' => 'k']);
+        $CFG->dataroot = $root . '/moodledata';
+        $CFG->tempdir = $root . '/temp';
+        $CFG->cachedir = $root . '/cache';
+        $CFG->localcachedir = $root . '/localcache';
+        $CFG->backuptempdir = $root . '/backuptemp';
+        $CFG->trashdir = $root . '/trash';
+        $CFG->secretdataroot = $root . '/secret';
+        set_config('tempdir', $root . '/mytemp', 'tool_secbackup');
+        $this->assertSame(
+            ['index.php', 'moodledata2/k.txt', 'version.php'],
+            array_keys(self::hashes(new core_diff($root, [])))
+        );
+    }
+
+    public function test_data_folders_outside_the_root_or_not_set_change_nothing(): void {
+        global $CFG;
+        $root = self::moodle(['index.php' => 'i']);
+        $CFG->dataroot = make_request_directory();
+        unset($CFG->secretdataroot);
+        $CFG->tempdir = $root . '/missing';
+        $this->assertSame(['index.php', 'version.php'], array_keys(self::hashes(new core_diff($root, []))));
+    }
+
     public function test_the_root_of_this_site_holds_the_whole_distribution(): void {
         global $CFG;
-        $expected = isset($CFG->root) && is_dir($CFG->root . '/public') ? $CFG->root : $CFG->dirroot;
-        $this->assertSame($expected, core_diff::site_root());
+        // Moodle 5.1 (branch 501) moved the web root to public/.
+        $hasflat = (int) $CFG->branch < 501;
         $diff = new core_diff();
-        foreach ($diff->local_hashes() as $path => $hash) {
-            // The first file only: the whole tree is walked by the backup, and takes a while.
-            $this->assertSame(hash_file('sha256', $expected . '/' . $path), $hash);
-            break;
+        if ($hasflat) {
+            // Moodle 5.0 and before: the folder of the distribution is the web root.
+            $this->assertSame($CFG->dirroot, core_diff::site_root());
+            $this->assertFileExists(core_diff::site_root() . '/version.php');
+        } else {
+            // Moodle 5.1 and later: the folder above public/ is the root and holds it.
+            $this->assertFileExists(core_diff::site_root() . '/public/version.php');
+            $this->assertSame(rtrim($CFG->dirroot, '/'), core_diff::site_root() . '/public');
         }
+        $first = null;
+        $seenpublic = false;
+        $count = 0;
+        foreach ($diff->local_hashes() as $path => $hash) {
+            // The first files only: the whole tree is walked by the backup, and takes a while.
+            $first ??= $path;
+            $this->assertSame(hash_file('sha256', core_diff::site_root() . '/' . $path), $hash);
+            $this->assertStringNotContainsString('admin/tool/secbackup', $path);
+            $seenpublic = $seenpublic || str_starts_with($path, 'public/');
+            if (++$count >= 1500 || ($path >= 'public/admin' && $path !== $first)) {
+                break;
+            }
+        }
+        $this->assertSame(!$hasflat, $seenpublic);
         $this->assertSame([], array_filter($diff->unlisted(), static fn(string $p): bool => !str_starts_with($p, 'hex:')));
     }
 
@@ -294,6 +340,7 @@ final class core_diff_test extends \advanced_testcase {
         return [
             'no version' => ["<?php\n" . $good],
             'version with a letter' => ["<?php\n\$version = 20241007a;\n" . $good],
+            'version with 1 decimal' => ["<?php\n\$version = 2024100703.1;\n" . $good],
             'version too short' => ["<?php\n\$version = 202410;\n" . $good],
             'version with 3 decimals' => ["<?php\n\$version = 2024100703.100;\n" . $good],
             'no release' => ["<?php\n\$version = 2024100703.10;\n"],
@@ -394,8 +441,12 @@ final class core_diff_test extends \advanced_testcase {
 
     public function test_a_local_list_that_is_not_in_order_is_a_mistake_of_the_caller(): void {
         $diff = new core_diff(self::moodle(), []);
-        $this->expectException(\coding_exception::class);
-        $diff->compare(self::official([]), ['b.php' => self::sha('b'), 'a.php' => self::sha('a')]);
+        try {
+            $diff->compare(self::official([]), ['b.php' => self::sha('b'), 'a.php' => self::sha('a')]);
+            $this->fail('A coding_exception was expected.');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('are not in byte order', $e->getMessage());
+        }
     }
 
     public function test_a_list_for_another_version_or_build_is_a_mismatch(): void {
@@ -449,6 +500,14 @@ final class core_diff_test extends \advanced_testcase {
             'hash too short' => [gzencode($header() . "\na\t" . substr($hash, 1) . "\n")],
             'hash too long' => [gzencode($header() . "\na\t" . $hash . "a\n")],
             'hash with a letter g' => [gzencode($header() . "\na\t" . substr($hash, 1) . "g\n")],
+            'path from the root' => [gzencode($header() . "\n/a\t$hash\n")],
+            'path with a backslash' => [gzencode($header() . "\na\\b\t$hash\n")],
+            'path with an empty part' => [gzencode($header() . "\na//b\t$hash\n")],
+            'path ending with a slash' => [gzencode($header() . "\na/\t$hash\n")],
+            'path with a dot part' => [gzencode($header() . "\na/./b\t$hash\n")],
+            'path with a dot dot part' => [gzencode($header() . "\na/../b\t$hash\n")],
+            'path that is dot dot' => [gzencode($header() . "\n..\t$hash\n")],
+            'path that is a dot' => [gzencode($header() . "\n.\t$hash\n")],
             'empty path' => [gzencode($header() . "\n\t$hash\n")],
             'carriage return' => [gzencode($header() . "\na\t$hash\r\n")],
             'empty line between' => [gzencode($header(['count' => 2]) . "\na\t$hash\n\nb\t$hash\n")],
@@ -633,17 +692,39 @@ final class core_diff_test extends \advanced_testcase {
         $this->assertSame([], glob($tempdir . '/*'));
     }
 
-    public function test_an_object_larger_than_signed_is_a_transport_error_that_is_not_hidden(): void {
+    public function test_an_object_larger_than_signed_gives_null_and_leaves_no_file(): void {
         $pair = signing_keypair::generate();
         $service = self::service($pair);
         $gz = self::official(['a.php' => self::sha('a')]);
         $service->publish_core_manifest(self::VERSION, self::BUILD, $gz, ['size' => strlen($gz) - 1]);
         $tempdir = make_request_directory();
+        $this->assertNull(self::fetch($service, $pair, $tempdir));
+        $this->assertSame([], glob($tempdir . '/*'));
+    }
+
+    public function test_another_error_of_the_storage_is_not_hidden(): void {
+        $pair = signing_keypair::generate();
+        $service = self::service($pair);
+        $service->publish_core_manifest(self::VERSION, self::BUILD, self::official([]));
+        [$client] = self::connections($service);
+        $objects = new object_transport(
+            developer_settings::from_value(['allowprivatehosts' => true]),
+            network_fakes::passing_s3_guard(),
+            static fn() => new \GuzzleHttp\Psr7\Response(403, [], '<Error/>')
+        );
+        $tempdir = make_request_directory();
         try {
-            self::fetch($service, $pair, $tempdir);
-            $this->fail('The transport error was expected.');
+            (new core_diff(self::moodle(), []))->fetch_official(
+                $client,
+                endpoint::parse(self::API, developer_settings::from_value(null)),
+                $pair,
+                fake_service::SITE_ID,
+                $objects,
+                $tempdir
+            );
+            $this->fail('The error of the storage was expected.');
         } catch (plugin_exception $e) {
-            $this->assertSame('transport_too_large', $e->errorcode);
+            $this->assertSame('transport_failed', $e->errorcode);
         }
         $this->assertSame([], glob($tempdir . '/*'));
     }
