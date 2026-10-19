@@ -194,6 +194,9 @@ final class snapshot_test extends \advanced_testcase {
         $this->resetAfterTest();
         $password = 'wrong-pass-' . bin2hex(random_bytes(6));
         $CFG->dbpass = $password;
+        // The database does not exist either: a server with trust authentication accepts any password, and the connection
+        // must fail whatever the authentication is, so that the exception it makes is the one that is checked.
+        $CFG->dbname = 'secbk_missing_' . bin2hex(random_bytes(4));
         // The driver reports the failure as a PHP warning too.
         $quiet = static fn(int $errno, string $errstr): bool => true;
         set_error_handler($quiet);
