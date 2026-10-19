@@ -72,11 +72,21 @@ final class block_writer_test extends \advanced_testcase {
     /** @var string Folder of the chunks of a test. */
     private string $dir;
 
+    /** @var string|false The setting of zend.exception_ignore_args before the test. */
+    private string|false $ignoreargs;
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
         $this->preventResetByRollback();
         $this->dir = make_request_directory();
+        // A trace holds the arguments of the calls only while this is off, so the tests of traces need it off.
+        $this->ignoreargs = ini_set('zend.exception_ignore_args', '0');
+    }
+
+    protected function tearDown(): void {
+        ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
+        parent::tearDown();
     }
 
     /**
@@ -1018,6 +1028,10 @@ final class block_writer_test extends \advanced_testcase {
             $this->fail('A key of 31 bytes was accepted');
         } catch (\coding_exception $e) {
             $this->assertStringContainsString('32 bytes', $e->getMessage());
+            $this->assertNotEmpty(
+                array_filter($e->getTrace(), static fn(array $frame): bool => !empty($frame['args'])),
+                'The trace keeps the arguments, so the check means something.'
+            );
             foreach (trace_strings::of($e) as $argument) {
                 $this->assertStringNotContainsString($key, $argument);
             }

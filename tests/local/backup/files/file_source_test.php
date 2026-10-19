@@ -189,10 +189,11 @@ final class file_source_test extends \advanced_testcase {
     }
 
     public function test_pack_gives_the_chunks_and_closes_the_file(): void {
+        global $DB;
         $dir = make_request_directory();
         $content = str_repeat('0123456789', 100);
         $file = $this->make($content);
-        $source = new flaky_file_source($GLOBALS['DB'], fn(int $seconds) => $this->slept[] = $seconds);
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
         $packer = $this->packer($dir);
         $this->assertSame([], $source->pack($file->get_contenthash(), 1000, $packer));
         $infos = $packer->flush();
@@ -221,9 +222,10 @@ final class file_source_test extends \advanced_testcase {
     }
 
     public function test_a_read_that_fails_twice_is_read_again_after_one_and_five_seconds(): void {
+        global $DB;
         $dir = make_request_directory();
         $file = $this->make(str_repeat('abcdefghij', 100));
-        $source = new flaky_file_source($GLOBALS['DB'], fn(int $seconds) => $this->slept[] = $seconds);
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
         failing_stream::fail(2, 300);
         $packer = $this->packer($dir);
         $this->assertSame([], $source->pack($file->get_contenthash(), 1000, $packer));
@@ -237,9 +239,10 @@ final class file_source_test extends \advanced_testcase {
     }
 
     public function test_four_failures_in_a_row_are_nfs_slow_and_leave_nothing(): void {
+        global $DB;
         $dir = make_request_directory();
         $file = $this->make(str_repeat('abcdefghij', 100));
-        $source = new flaky_file_source($GLOBALS['DB'], fn(int $seconds) => $this->slept[] = $seconds);
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
         failing_stream::fail(4, 0);
         $packer = $this->packer($dir);
         try {
@@ -258,9 +261,10 @@ final class file_source_test extends \advanced_testcase {
     }
 
     public function test_a_file_that_opens_only_at_the_third_try_is_read(): void {
+        global $DB;
         $dir = make_request_directory();
         $file = $this->make('content of a file that opens late');
-        $source = new flaky_file_source($GLOBALS['DB'], fn(int $seconds) => $this->slept[] = $seconds);
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
         $source->openfailures = 2;
         $packer = $this->packer($dir);
         $source->pack($file->get_contenthash(), 33, $packer);
@@ -295,13 +299,14 @@ final class file_source_test extends \advanced_testcase {
     }
 
     public function test_a_file_in_the_trash_that_does_not_open_is_nfs_slow_and_read_again(): void {
+        global $DB;
         global $CFG;
         $dir = make_request_directory();
         $file = $this->make('content in the trash that opens late');
         $hash = $file->get_contenthash();
         $CFG->trashdir = make_request_directory();
         rename(self::filedir_path($hash), $CFG->trashdir . '/' . $hash);
-        $source = new flaky_file_source($GLOBALS['DB'], fn(int $seconds) => $this->slept[] = $seconds);
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
         $source->openfailures = 1;
         try {
             $source->open($hash);

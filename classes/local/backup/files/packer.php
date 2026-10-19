@@ -19,6 +19,7 @@ namespace tool_secbackup\local\backup\files;
 use tool_secbackup\local\crypto\chunk_info;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_writer;
+use tool_secbackup\local\error_silencer;
 use tool_secbackup\local\plugin_exception;
 
 /**
@@ -53,6 +54,9 @@ final class packer {
 
     /** @var int Pending bytes of small files at which a pack is written (32 MiB). */
     public const PACK_AT = 33554432;
+
+    /** @var string Added to the name of a piece of a file until the content of the whole file is checked. */
+    public const UNVERIFIED = '.unverified';
 
     /** @var int Bytes that one read of a small file asks for. */
     private const READ = 262144;
@@ -202,7 +206,7 @@ final class packer {
     private static function read_small($handle, int $size): string {
         $data = '';
         while (strlen($data) <= $size) {
-            $part = self::quietly(static fn() => fread($handle, min(self::READ, $size + 1 - strlen($data))), $warning);
+            $part = error_silencer::run(static fn() => fread($handle, min(self::READ, $size + 1 - strlen($data))), $warning);
             if ($part === false || $warning !== '') {
                 throw new plugin_exception('nfs_slow', null, $warning === '' ? null : $warning);
             }
@@ -229,7 +233,7 @@ final class packer {
             $info = $writer->finish();
         } catch (\Throwable $e) {
             $writer->abort();
-            throw $e;
+            throw self::without_trace_of_content($e);
         }
         foreach ($this->pending as $index => $file) {
             $this->entries[$file['seq']] = [
@@ -259,19 +263,24 @@ final class packer {
     private function add_big(string $contenthash, $handle, int $size): array {
         $pieces = intdiv($size + self::PIECE - 1, self::PIECE);
         $digest = hash_init('sha1');
+        $unverified = [];
         $infos = [];
         try {
             for ($piece = 0; $piece < $pieces; $piece++) {
                 $length = min(self::PIECE, $size - $piece * self::PIECE);
-                $infos[] = $this->write_piece($contenthash, $piece, $handle, $length, $digest);
+                $unverified[] = $this->write_piece($contenthash, $piece, $handle, $length, $digest);
             }
             self::expect_end($handle);
             if (hash_final($digest) !== $contenthash) {
                 throw new plugin_exception('tamper_detected');
             }
+            // Only now do the pieces get the names that later runs trust.
+            foreach ($unverified as $info) {
+                $infos[] = $this->publish($info);
+            }
         } catch (\Throwable $e) {
-            foreach ($infos as $info) {
-                self::quietly(static fn() => unlink($info->path), $warning);
+            foreach (array_merge($unverified, $infos) as $info) {
+                error_silencer::run(static fn() => unlink($info->path), $warning);
             }
             throw $e;
         }
@@ -281,13 +290,30 @@ final class packer {
                 'contenthash' => $contenthash,
                 'size' => $size,
                 'chunk' => $info->name,
-                'offset' => 0,
-                'length' => min(self::PIECE, $size - $piece * self::PIECE),
+                'offset' => $info->items[0]['offset'],
+                'length' => $info->items[0]['length'],
                 'piece' => $piece,
                 'pieces' => $pieces,
             ];
         }
         return $infos;
+    }
+
+    /**
+     * Gives a piece that has been checked the name of its chunk.
+     *
+     * @param chunk_info $info The piece, in its file with the provisional name.
+     * @return chunk_info The piece in the file with the name of the chunk.
+     * @throws plugin_exception With temp_write_failed when the file cannot be renamed.
+     */
+    private function publish(chunk_info $info): chunk_info {
+        $final = $this->tempdir . '/' . $info->name;
+        $from = $info->path;
+        $renamed = error_silencer::run(static fn() => rename($from, $final), $warning);
+        if (!$renamed) {
+            throw new plugin_exception('temp_write_failed', null, 'rename: ' . $warning);
+        }
+        return new chunk_info($final, $info->name, $info->size, $info->sha256base64, $info->items);
     }
 
     /**
@@ -298,19 +324,19 @@ final class packer {
      * @param resource $handle The stream, at the first byte of the piece.
      * @param int $length Bytes of content in the piece.
      * @param \HashContext $digest SHA-1 of the file, updated with the content of the piece.
-     * @return chunk_info
+     * @return chunk_info The piece, in a file with the provisional name (the name of the chunk and ".unverified").
      * @throws plugin_exception With nfs_slow when the read fails, and with tamper_detected when the file ends early.
      */
     private function write_piece(string $contenthash, int $piece, $handle, int $length, \HashContext $digest): chunk_info {
         $name = $this->file_name($contenthash, $piece);
-        $writer = $this->new_writer($name);
+        $writer = $this->new_writer($name, self::UNVERIFIED);
         try {
             $writer->add_item($handle, $length, $digest);
             return $writer->finish();
         } catch (plugin_exception $e) {
             $writer->abort();
             if ($e->errorcode !== 'crypto_chunk_sourceshort') {
-                throw $e;
+                throw self::without_trace_of_content($e);
             }
             // A failed read leaves the warning of PHP in the debug information; the plain end of the file does not.
             throw new plugin_exception($e->debuginfo === null ? 'tamper_detected' : 'nfs_slow', null, $e->debuginfo);
@@ -324,7 +350,7 @@ final class packer {
      * @throws plugin_exception With nfs_slow when the read fails, and with tamper_detected for more content than the size.
      */
     private static function expect_end($handle): void {
-        $more = self::quietly(static fn() => fread($handle, 1), $warning);
+        $more = error_silencer::run(static fn() => fread($handle, 1), $warning);
         if ($more === false || $warning !== '') {
             throw new plugin_exception('nfs_slow', null, $warning === '' ? null : $warning);
         }
@@ -334,13 +360,29 @@ final class packer {
     }
 
     /**
+     * An exception of the chunk writer, made again here.
+     *
+     * The trace of the exception of the writer has the arguments of the calls inside it, which are pieces of the content of
+     * the file. The new exception has the same error code, text for the language string and debug information, no chain, and
+     * a trace that starts here, where no argument is content.
+     *
+     * @param \Throwable $e The exception.
+     * @return \Throwable The new exception for an exception of the plugin, the same exception for any other.
+     */
+    private static function without_trace_of_content(\Throwable $e): \Throwable {
+        return $e instanceof plugin_exception ? new ($e::class)($e->errorcode, $e->a, $e->debuginfo) : $e;
+    }
+
+    /**
      * A writer of a chunk of files in the folder of the chunks.
      *
      * @param string $name Name of the chunk.
+     * @param string $suffix Added to the name of the file.
      * @return chunk_writer
      */
-    private function new_writer(string $name): chunk_writer {
-        return new chunk_writer($this->tempdir . '/' . $name, chunk_writer::TYPE_FILES, $name, $this->sitepublickey, $this->siteid);
+    private function new_writer(string $name, string $suffix = ''): chunk_writer {
+        $path = $this->tempdir . '/' . $name . $suffix;
+        return new chunk_writer($path, chunk_writer::TYPE_FILES, $name, $this->sitepublickey, $this->siteid);
     }
 
     /**
@@ -371,26 +413,6 @@ final class packer {
         // The key has 32 bytes (the constructor checked) and every content hash was checked by add(), so this cannot throw
         // and the trace of an exception cannot hold the key.
         return chunk_name::pack($this->dedupkey, $contenthashes);
-    }
-
-    /**
-     * Runs a file operation without letting PHP report its warning, and keeps the text of the warning.
-     *
-     * @param \Closure $operation The operation.
-     * @param string|null $warning Set to the text of the last warning, or to an empty string.
-     * @return mixed What the operation returns.
-     */
-    private static function quietly(\Closure $operation, ?string &$warning): mixed {
-        $warning = '';
-        set_error_handler(static function (int $errno, string $errstr) use (&$warning): bool {
-            $warning = $errstr;
-            return true;
-        });
-        try {
-            return $operation();
-        } finally {
-            restore_error_handler();
-        }
     }
 
     /**

@@ -30,6 +30,7 @@ use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\tests\failing_stream;
+use tool_secbackup\tests\full_disk_stream;
 use tool_secbackup\tests\trace_strings;
 
 defined('MOODLE_INTERNAL') || die();
@@ -74,15 +75,22 @@ final class packer_test extends \advanced_testcase {
     /** @var string Folder of the chunks of a test. */
     private string $dir;
 
+    /** @var string|false The setting of zend.exception_ignore_args before the test. */
+    private string|false $ignoreargs;
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
         $this->dir = make_request_directory();
         failing_stream::register();
+        // A trace holds the arguments of the calls only while this is off, so the tests of traces need it off.
+        $this->ignoreargs = ini_set('zend.exception_ignore_args', '0');
     }
 
     protected function tearDown(): void {
+        ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
         failing_stream::unregister();
+        full_disk_stream::unregister();
         parent::tearDown();
     }
 
@@ -128,7 +136,7 @@ final class packer_test extends \advanced_testcase {
     }
 
     /**
-     * A file of many mebibytes in the temporary folder: random blocks, the last one different.
+     * A file of many mebibytes in the temporary folder: a fresh random block for every mebibyte.
      *
      * @param int $bytes Size of the file.
      * @return array [path, SHA-1 in hexadecimal]
@@ -137,12 +145,8 @@ final class packer_test extends \advanced_testcase {
         $path = make_request_directory() . '/big.bin';
         $handle = fopen($path, 'wb');
         $hash = hash_init('sha1');
-        $block = random_bytes(self::MIB);
         for ($done = 0; $done < $bytes; $done += self::MIB) {
-            $piece = substr($block, 0, min(self::MIB, $bytes - $done));
-            if ($done + self::MIB >= $bytes) {
-                $piece = substr_replace($piece, random_bytes(1), -1);
-            }
+            $piece = random_bytes(min(self::MIB, $bytes - $done));
             hash_update($hash, $piece);
             fwrite($handle, $piece);
         }
@@ -221,11 +225,14 @@ final class packer_test extends \advanced_testcase {
         $this->assertCount(1, $infos);
         $this->assertSame(chunk_name::file(self::key(), $hash, 0), $infos[0]->name);
         $this->assertSame([$infos[0]->name], $this->files());
-        $this->assertSame(file_get_contents($path), self::reader($infos[0])->read_item($infos[0]->items[0]['offset']));
         $this->assertSame([
-            ['t' => 'file', 'contenthash' => $hash, 'size' => 5 * self::MIB, 'chunk' => $infos[0]->name, 'offset' => 0,
-                'length' => 5 * self::MIB, 'piece' => 0, 'pieces' => 1],
+            ['t' => 'file', 'contenthash' => $hash, 'size' => 5 * self::MIB, 'chunk' => $infos[0]->name,
+                'offset' => $infos[0]->items[0]['offset'], 'length' => $infos[0]->items[0]['length'], 'piece' => 0,
+                'pieces' => 1],
         ], $packer->entries());
+        // The entry is enough to read the piece back.
+        $entry = $packer->entries()[0];
+        $this->assertSame(file_get_contents($path), self::reader($infos[0])->read_item($entry['offset']));
         $this->assertSame([], $packer->flush());
     }
 
@@ -250,18 +257,22 @@ final class packer_test extends \advanced_testcase {
         $this->assertCount(3, $infos);
         $sizes = [32 * self::MIB, 32 * self::MIB, 6 * self::MIB];
         $whole = hash_init('sha1');
+        $digests = [];
         $entries = $packer->entries();
         $this->assertCount(3, $entries);
         foreach ($infos as $i => $info) {
             $this->assertSame(chunk_name::file(self::key(), $hash, $i), $info->name);
-            $plain = self::reader($info)->read_item($info->items[0]['offset']);
-            $this->assertSame($sizes[$i], strlen($plain));
-            hash_update($whole, $plain);
             $this->assertSame([
-                't' => 'file', 'contenthash' => $hash, 'size' => 70 * self::MIB, 'chunk' => $info->name, 'offset' => 0,
-                'length' => $sizes[$i], 'piece' => $i, 'pieces' => 3,
+                't' => 'file', 'contenthash' => $hash, 'size' => 70 * self::MIB, 'chunk' => $info->name,
+                'offset' => $info->items[0]['offset'], 'length' => $info->items[0]['length'], 'piece' => $i, 'pieces' => 3,
             ], $entries[$i]);
+            // Every piece is read back through its entry, and the pieces are not alike.
+            $plain = self::reader($info)->read_item($entries[$i]['offset']);
+            $this->assertSame($sizes[$i], strlen($plain));
+            $digests[$i] = md5($plain);
+            hash_update($whole, $plain);
         }
+        $this->assertCount(3, array_unique($digests));
         $this->assertSame($hash, hash_final($whole));
         $this->assertCount(3, $this->files());
     }
@@ -489,6 +500,109 @@ final class packer_test extends \advanced_testcase {
         }
         fclose($handle);
         $this->assertSame([], $this->files());
+    }
+
+    /**
+     * The names in the folder of the chunks that look like the name of a chunk.
+     *
+     * @return string[]
+     */
+    private function chunk_named_files(): array {
+        return array_values(array_filter(
+            $this->files(),
+            static fn(string $name): bool => preg_match('/^[0-9a-f]{64}\z/', $name) === 1
+        ));
+    }
+
+    public function test_no_piece_has_its_final_name_before_the_whole_file_is_checked(): void {
+        [$path, $hash] = $this->big_file(70 * self::MIB);
+        $seen = [];
+        failing_stream::fail(0);
+        failing_stream::$onread = function (int $given) use (&$seen): void {
+            // Snapshot of the folder when the reading of the last piece is under way.
+            if ($given > 40 * self::MIB && $seen === []) {
+                $seen = $this->chunk_named_files();
+            }
+        };
+        $handle = fopen(failing_stream::PROTOCOL . '://' . $path, 'rb');
+        // The stand-in does not fail, but its hook is called; the file is read with the hook in place.
+        $infos = $this->packer()->add($hash, $handle, 70 * self::MIB);
+        fclose($handle);
+        $this->assertSame([], $seen, 'No file with the name of a chunk exists while the file is still being read.');
+        $names = array_map(static fn(chunk_info $info): string => $info->name, $infos);
+        sort($names);
+        $this->assertSame($names, $this->chunk_named_files());
+        foreach ($infos as $info) {
+            $this->assertSame($this->dir . '/' . $info->name, $info->path);
+            $this->assertFileExists($info->path);
+        }
+        $this->assertSame(3, count($this->files()), 'Nothing but the three chunks is left.');
+    }
+
+    public function test_a_failed_check_leaves_no_file_with_the_name_of_a_chunk(): void {
+        [$path, $hash] = $this->big_file(70 * self::MIB);
+        $handle = fopen($path, 'r+b');
+        fseek($handle, 5);
+        fwrite($handle, 'X');
+        rewind($handle);
+        try {
+            $this->packer()->add($hash, $handle, 70 * self::MIB);
+            $this->fail('A changed file was accepted');
+        } catch (plugin_exception $e) {
+            $this->assertSame('tamper_detected', $e->errorcode);
+        }
+        fclose($handle);
+        $this->assertSame([], $this->files());
+    }
+
+    /**
+     * Checks that no argument in the trace of an exception holds the secret content.
+     *
+     * @param \Throwable $exception The exception.
+     */
+    private function assert_trace_has_no_content(\Throwable $exception): void {
+        $this->assertNotEmpty(
+            array_filter($exception->getTrace(), static fn(array $frame): bool => !empty($frame['args'])),
+            'The trace keeps the arguments, so the check means something.'
+        );
+        $texts = array_merge([$exception->getMessage(), $exception->getTraceAsString()], trace_strings::of($exception));
+        foreach ($texts as $text) {
+            $this->assertStringNotContainsString('SECRETMARKER', $text);
+        }
+        $this->assertNull($exception->getPrevious());
+    }
+
+    public function test_a_pack_that_fails_part_way_leaves_no_content_in_the_trace(): void {
+        full_disk_stream::register(300);
+        $packer = $this->packer(full_disk_stream::PROTOCOL . '://' . $this->dir);
+        $content = str_repeat('SECRETMARKER', 100);
+        $packer->add(sha1($content), self::stream($content), strlen($content));
+        try {
+            $packer->flush();
+            $this->fail('A chunk was written to a full disk');
+        } catch (plugin_exception $e) {
+            $this->assertSame('temp_write_failed', $e->errorcode);
+            $this->assert_trace_has_no_content($e);
+            $this->assertNotNull($e->debuginfo);
+        }
+        $this->assertSame([], $this->files());
+    }
+
+    public function test_a_piece_that_fails_part_way_leaves_no_content_in_the_trace(): void {
+        full_disk_stream::register(3000);
+        $content = str_repeat('SECRETMARKER', intdiv(5 * self::MIB, 12));
+        $size = strlen($content);
+        $this->assertGreaterThanOrEqual(4 * self::MIB, $size);
+        $packer = $this->packer(full_disk_stream::PROTOCOL . '://' . $this->dir);
+        try {
+            $packer->add(sha1($content), self::stream($content), $size);
+            $this->fail('A chunk was written to a full disk');
+        } catch (plugin_exception $e) {
+            $this->assertSame('temp_write_failed', $e->errorcode);
+            $this->assert_trace_has_no_content($e);
+        }
+        $this->assertSame([], $this->files());
+        $this->assertSame([], $packer->entries());
     }
 
     public function test_the_pack_that_fails_when_it_fills_up_does_not_keep_the_file_that_filled_it(): void {

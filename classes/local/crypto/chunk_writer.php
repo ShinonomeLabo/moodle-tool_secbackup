@@ -16,6 +16,7 @@
 
 namespace tool_secbackup\local\crypto;
 
+use tool_secbackup\local\error_silencer;
 use tool_secbackup\local\plugin_exception;
 
 /**
@@ -178,7 +179,7 @@ final class chunk_writer {
         $this->aad = self::additional_data($siteid, $name, $type);
         $this->hash = hash_init('sha256');
         $part = $this->part;
-        $handle = self::quietly(static fn() => fopen($part, 'wb'), $warning);
+        $handle = error_silencer::run(static fn() => fopen($part, 'wb'), $warning);
         if ($handle === false) {
             throw self::write_failed('open', $warning);
         }
@@ -293,7 +294,7 @@ final class chunk_writer {
             fclose($this->handle);
             $part = $this->part;
             $path = $this->path;
-            $renamed = self::quietly(static fn() => rename($part, $path), $warning);
+            $renamed = error_silencer::run(static fn() => rename($part, $path), $warning);
             if (!$renamed) {
                 throw self::write_failed('rename', $warning);
             }
@@ -330,7 +331,7 @@ final class chunk_writer {
     private static function read($source, int $offset, int $length): string {
         $warning = '';
         $data = is_string($source) ? substr($source, $offset, $length)
-            : self::quietly(static fn() => stream_get_contents($source, $length), $warning);
+            : error_silencer::run(static fn() => stream_get_contents($source, $length), $warning);
         if (!is_string($data) || strlen($data) !== $length) {
             throw new plugin_exception('crypto_chunk_sourceshort', null, $warning === '' ? null : $warning);
         }
@@ -367,7 +368,7 @@ final class chunk_writer {
      */
     private function write(string $bytes): void {
         $handle = $this->handle;
-        $written = self::quietly(static fn() => fwrite($handle, $bytes), $warning);
+        $written = error_silencer::run(static fn() => fwrite($handle, $bytes), $warning);
         if ($written !== strlen($bytes)) {
             throw self::write_failed('write', $warning);
         }
@@ -387,7 +388,7 @@ final class chunk_writer {
             fclose($this->handle);
         }
         $part = $this->part;
-        self::quietly(static fn() => unlink($part), $warning);
+        error_silencer::run(static fn() => unlink($part), $warning);
         $this->end();
     }
 
@@ -433,26 +434,6 @@ final class chunk_writer {
     private function check_open(): void {
         if (!$this->open) {
             throw new \coding_exception('The chunk was already finished or given up.');
-        }
-    }
-
-    /**
-     * Runs a file operation without letting PHP report its warning, and keeps the text of the warning.
-     *
-     * @param \Closure $operation The operation.
-     * @param string|null $warning Set to the text of the last warning, or to an empty string.
-     * @return mixed What the operation returns.
-     */
-    private static function quietly(\Closure $operation, ?string &$warning): mixed {
-        $warning = '';
-        set_error_handler(static function (int $errno, string $errstr) use (&$warning): bool {
-            $warning = $errstr;
-            return true;
-        });
-        try {
-            return $operation();
-        } finally {
-            restore_error_handler();
         }
     }
 

@@ -16,6 +16,8 @@
 
 namespace tool_secbackup\local\backup\files;
 
+use tool_secbackup\local\crypto\chunk_info;
+use tool_secbackup\local\error_silencer;
 use tool_secbackup\local\plugin_exception;
 
 /**
@@ -148,12 +150,7 @@ class file_source {
      * @return resource|false
      */
     protected function handle_of(\stored_file $file) {
-        set_error_handler(static fn(): bool => true);
-        try {
-            return $file->get_content_file_handle();
-        } finally {
-            restore_error_handler();
-        }
+        return error_silencer::run(static fn() => $file->get_content_file_handle(), $warning);
     }
 
     /**
@@ -165,12 +162,7 @@ class file_source {
      * @return resource|false
      */
     protected function open_path(string $path) {
-        set_error_handler(static fn(): bool => true);
-        try {
-            return fopen($path, 'rb');
-        } finally {
-            restore_error_handler();
-        }
+        return error_silencer::run(static fn() => fopen($path, 'rb'), $warning);
     }
 
     /**

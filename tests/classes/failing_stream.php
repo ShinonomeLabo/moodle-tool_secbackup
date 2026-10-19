@@ -37,6 +37,9 @@ final class failing_stream {
     /** @var int Bytes that a failing stream gives before its read fails. */
     private static int $after = 0;
 
+    /** @var \Closure|null Called with the bytes given so far before each read. */
+    public static ?\Closure $onread = null;
+
     /** @var resource|null Context that PHP sets. */
     public $context;
 
@@ -63,6 +66,7 @@ final class failing_stream {
      */
     public static function unregister(): void {
         self::$failing = 0;
+        self::$onread = null;
         if (in_array(self::PROTOCOL, stream_get_wrappers(), true)) {
             stream_wrapper_unregister(self::PROTOCOL);
         }
@@ -108,6 +112,9 @@ final class failing_stream {
      * @return string|false
      */
     public function stream_read(int $count): string|false {
+        if (self::$onread !== null) {
+            (self::$onread)($this->given);
+        }
         if ($this->fails) {
             if ($this->given >= self::$after) {
                 trigger_error('read of ' . $count . ' bytes failed with errno=116 Stale file handle', E_USER_NOTICE);

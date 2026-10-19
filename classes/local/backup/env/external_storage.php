@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\backup\env;
 
 use tool_secbackup\local\diagnostics\runner;
+use tool_secbackup\local\error_silencer;
 
 /**
  * Tells whether the file store of the site is on an external store.
@@ -71,12 +72,7 @@ final class external_storage {
      * @return string|null Null when it cannot be read (another system than Linux, or no permission); no warning is raised.
      */
     private static function read_mountinfo(): ?string {
-        set_error_handler(static fn(): bool => true);
-        try {
-            $text = file_get_contents('/proc/self/mountinfo');
-        } finally {
-            restore_error_handler();
-        }
+        $text = error_silencer::run(static fn() => file_get_contents('/proc/self/mountinfo'), $warning);
         return $text === false ? null : $text;
     }
 }
