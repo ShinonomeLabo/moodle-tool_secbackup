@@ -28,6 +28,7 @@ use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\full_disk_stream;
 use tool_secbackup\tests\trace_strings;
 
 defined('MOODLE_INTERNAL') || die();
@@ -86,6 +87,7 @@ final class block_writer_test extends \advanced_testcase {
 
     protected function tearDown(): void {
         ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
+        full_disk_stream::unregister();
         parent::tearDown();
     }
 
@@ -971,6 +973,55 @@ final class block_writer_test extends \advanced_testcase {
         } finally {
             $export->dispose();
         }
+    }
+
+    public function test_a_block_that_fails_part_way_leaves_neither_its_data_nor_an_exception_in_the_trace(): void {
+        $base = self::last_id();
+        for ($i = 0; $i < 40; $i++) {
+            self::add_rows(1, bin2hex(random_bytes(300)), $i);
+        }
+        $export = $this->export();
+        try {
+            // The compressed text of the block, as a good write gives it.
+            $good = $this->writer($export)->next_block(self::log_table(), $base);
+            $compressed = $this->compressed_text($good);
+            $this->assertGreaterThan(1000, strlen($compressed));
+            // A part of the compressed text, past its header, that no other text holds.
+            $piece = substr($compressed, 20, 200);
+            full_disk_stream::register(400);
+            $writer = $this->writer($export, full_disk_stream::PROTOCOL . '://' . $this->dir);
+            try {
+                $writer->next_block(self::log_table(), $base);
+                $this->fail('A block was written to a full disk');
+            } catch (plugin_exception $e) {
+                $this->assertSame('temp_write_failed', $e->errorcode);
+                $this->assertNull($e->getPrevious());
+                $this->assertFalse(trace_strings::has_throwable_argument($e));
+                foreach (array_merge([$e->getMessage(), $e->getTraceAsString()], trace_strings::of($e)) as $text) {
+                    $this->assertStringNotContainsString($piece, $text);
+                }
+            }
+        } finally {
+            $export->dispose();
+        }
+    }
+
+    /**
+     * The compressed text that a block holds.
+     *
+     * @param array $block What next_block() gave.
+     * @return string
+     */
+    private function compressed_text(array $block): string {
+        $chunk = $block['chunk'];
+        $reader = new chunk_reader(
+            $chunk->path,
+            sodium_crypto_box_secretkey(self::pair()),
+            sodium_crypto_box_publickey(self::pair()),
+            self::SITE,
+            $chunk->name
+        );
+        return $reader->read_item($chunk->items[0]['offset']);
     }
 
     public function test_no_file_is_left_when_the_folder_cannot_be_written(): void {

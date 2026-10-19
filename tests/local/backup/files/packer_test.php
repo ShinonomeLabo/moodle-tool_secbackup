@@ -570,6 +570,10 @@ final class packer_test extends \advanced_testcase {
             $this->assertStringNotContainsString('SECRETMARKER', $text);
         }
         $this->assertNull($exception->getPrevious());
+        $this->assertFalse(
+            trace_strings::has_throwable_argument($exception),
+            'No call in the trace has the first exception as an argument: its trace holds the content.'
+        );
     }
 
     public function test_a_pack_that_fails_part_way_leaves_no_content_in_the_trace(): void {

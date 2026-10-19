@@ -21,6 +21,7 @@ use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\error_silencer;
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\local\remade_exception;
 
 /**
  * Packs the content of the files of the file store into encrypted chunks of type 2, and checks every file against the
@@ -155,8 +156,8 @@ final class packer {
      *
      * A small file has its entry when its pack is written. The entry of a file of one piece or more:
      * {"t":"file","contenthash","size","chunk","offset","length","piece","pieces"}. For a small file, offset and length are
-     * those of its item in the chunk (chunk_info::$items); for a piece of a big file, offset is 0 and length is the length of
-     * the content of the piece.
+     * those of its item in the chunk (chunk_info::$items), and so are they for a piece of a big file; the length of an
+     * item includes the padding that the last item of a chunk has.
      *
      * @return array[]
      */
@@ -233,7 +234,7 @@ final class packer {
             $info = $writer->finish();
         } catch (\Throwable $e) {
             $writer->abort();
-            throw self::without_trace_of_content($e);
+            throw remade_exception::build(remade_exception::parts($e));
         }
         foreach ($this->pending as $index => $file) {
             $this->entries[$file['seq']] = [
@@ -333,13 +334,15 @@ final class packer {
         try {
             $writer->add_item($handle, $length, $digest);
             return $writer->finish();
-        } catch (plugin_exception $e) {
+        } catch (\Throwable $e) {
             $writer->abort();
-            if ($e->errorcode !== 'crypto_chunk_sourceshort') {
-                throw self::without_trace_of_content($e);
+            $parts = remade_exception::parts($e);
+            if (($parts['errorcode'] ?? '') === 'crypto_chunk_sourceshort') {
+                // A failed read leaves the warning of PHP in the debug information; the plain end of the file does not.
+                $parts['errorcode'] = $parts['debuginfo'] === null ? 'tamper_detected' : 'nfs_slow';
+                $parts['a'] = null;
             }
-            // A failed read leaves the warning of PHP in the debug information; the plain end of the file does not.
-            throw new plugin_exception($e->debuginfo === null ? 'tamper_detected' : 'nfs_slow', null, $e->debuginfo);
+            throw remade_exception::build($parts);
         }
     }
 
@@ -357,20 +360,6 @@ final class packer {
         if ($more !== '') {
             throw new plugin_exception('tamper_detected');
         }
-    }
-
-    /**
-     * An exception of the chunk writer, made again here.
-     *
-     * The trace of the exception of the writer has the arguments of the calls inside it, which are pieces of the content of
-     * the file. The new exception has the same error code, text for the language string and debug information, no chain, and
-     * a trace that starts here, where no argument is content.
-     *
-     * @param \Throwable $e The exception.
-     * @return \Throwable The new exception for an exception of the plugin, the same exception for any other.
-     */
-    private static function without_trace_of_content(\Throwable $e): \Throwable {
-        return $e instanceof plugin_exception ? new ($e::class)($e->errorcode, $e->a, $e->debuginfo) : $e;
     }
 
     /**

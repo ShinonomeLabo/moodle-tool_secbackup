@@ -19,6 +19,7 @@ namespace tool_secbackup\local\backup\db;
 use tool_secbackup\local\crypto\chunk_info;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_writer;
+use tool_secbackup\local\remade_exception;
 
 /**
  * Writes the rows of a table as blocks: encrypted chunks of type 1 with the rows in JSON Lines, compressed.
@@ -337,7 +338,8 @@ final class block_writer {
             return $writer->finish();
         } catch (\Throwable $e) {
             $writer->abort();
-            throw $e;
+            // Made again: the trace of the exception from the writer holds the compressed rows as arguments.
+            throw remade_exception::build(remade_exception::parts($e));
         }
     }
 

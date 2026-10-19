@@ -33,11 +33,21 @@ use tool_secbackup\tests\trace_strings;
  * @covers     \tool_secbackup\local\backup\db\connection_factory
  */
 final class snapshot_test extends \advanced_testcase {
+    /** @var string|false The setting of zend.exception_ignore_args before the test. */
+    private string|false $ignoreargs;
+
     protected function setUp(): void {
         parent::setUp();
         // The export reads on its own connection, which sees only what the test has committed.
         $this->resetAfterTest();
         $this->preventResetByRollback();
+        // A trace holds the arguments of the calls only while this is off, so the tests of traces need it off.
+        $this->ignoreargs = ini_set('zend.exception_ignore_args', '0');
+    }
+
+    protected function tearDown(): void {
+        ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
+        parent::tearDown();
     }
 
     /**
