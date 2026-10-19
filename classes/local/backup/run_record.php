@@ -108,6 +108,16 @@ final class run_record {
     }
 
     /**
+     * The run that has an ID at the backup service.
+     *
+     * @param string $uuid The UUID of the run at the service.
+     * @return self|null
+     */
+    public static function find_by_uuid(string $uuid): ?self {
+        return self::first('runuuid = ?', [$uuid]);
+    }
+
+    /**
      * The latest runs, newest first.
      *
      * @param int $limit How many to return at most.

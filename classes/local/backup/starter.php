@@ -61,9 +61,20 @@ final class starter {
     }
 
     /**
+     * Starts a run at once for the command line, in or out of the window.
+     *
+     * @param int $now The current time.
+     * @param callable|null $verdict A seam for tests, as for maybe_start().
+     * @return string started, or the reason; the same as for start_now().
+     */
+    public static function start_cli(int $now, ?callable $verdict = null): string {
+        return self::decide('cli', false, $now, $verdict);
+    }
+
+    /**
      * Checks everything in order and creates the run.
      *
-     * @param string $trigger What starts the run: schedule or manual.
+     * @param string $trigger What starts the run: schedule, manual or cli.
      * @param bool $inwindow Whether the run has to be due in the schedule.
      * @param int $now The current time.
      * @param callable|null $verdict The watch, or null for the one of this server.
@@ -129,6 +140,8 @@ final class starter {
      */
     private static function start_locked(string $trigger, int $now, ?callable $verdict): string {
         if (run_record::active() !== null) {
+            // A run that lost its task (the queue was cleared, or the task failed for good) gets one again.
+            self::queue_step(true);
             return 'running';
         }
         if (autobackup_watch::busy()) {
@@ -139,7 +152,17 @@ final class starter {
             return 'busy';
         }
         run_record::create($trigger, $now);
+        self::queue_step(false);
         return 'started';
+    }
+
+    /**
+     * Queues the task that steps the active run.
+     *
+     * @param bool $unlessqueued Whether a task that is queued already (waiting for its time) is enough.
+     */
+    private static function queue_step(bool $unlessqueued): void {
+        \core\task\manager::queue_adhoc_task(new \tool_secbackup\task\run_backup(), $unlessqueued);
     }
 
     /**

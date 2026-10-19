@@ -1,0 +1,1370 @@
+<?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
+namespace tool_secbackup\local\backup;
+
+use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\RequestInterface;
+use tool_secbackup\local\backup\files\file_source;
+use tool_secbackup\local\backup\files\packer;
+use tool_secbackup\local\crypto\chunk_name;
+use tool_secbackup\local\crypto\chunk_reader;
+use tool_secbackup\local\crypto\chunk_writer;
+use tool_secbackup\local\crypto\dedup_key;
+use tool_secbackup\local\crypto\key_exception;
+use tool_secbackup\local\diagnostics\system_files;
+use tool_secbackup\tests\fake_service;
+use tool_secbackup\tests\network_fakes;
+use tool_secbackup\tests\run_fixture;
+
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\runner::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\run_context::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\stage\db_stage::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\stage\files_stage::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\stage\tree_stage::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\stage\artifact_stage::class)]
+/**
+ * Tests for a whole run against the fake service and its storage: the stages, the way a run goes on after a stop, the window,
+ * the watch, the temporary files and the receipt.
+ *
+ * @package    tool_secbackup
+ * @copyright  2026 Shinonome Laboratory LLC.
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @covers     \tool_secbackup\local\backup\runner
+ * @covers     \tool_secbackup\local\backup\run_context
+ * @covers     \tool_secbackup\local\backup\stage\db_stage
+ * @covers     \tool_secbackup\local\backup\stage\files_stage
+ * @covers     \tool_secbackup\local\backup\stage\tree_stage
+ * @covers     \tool_secbackup\local\backup\stage\artifact_stage
+ */
+final class runner_test extends \advanced_testcase {
+    /** @var array A sample of the watch in which nothing is wrong. */
+    private const CALM = [
+        'load_per_core' => 0.1,
+        'memory_available_bytes' => 8589934592,
+        'db_ms' => 1.0,
+        'disk_free_bytes' => 107374182400,
+        'disk_total_bytes' => 214748364800,
+        'nfs_mbps' => 100.0,
+        'not_applicable' => [],
+    ];
+
+    /** @var string The site of the fake service. */
+    private const SITE = fake_service::SITE_ID;
+
+    /** @var run_fixture The site and the service. */
+    private run_fixture $fixture;
+
+    /** @var string Folder of the temporary files. */
+    private string $tempdir;
+
+    /** @var string The data root that the run walks. */
+    private string $dataroot;
+
+    /** @var string The folder of the added plugin that the run sends. */
+    private string $plugin;
+
+    /** @var string The folder of the Moodle program that the run compares and sends. */
+    private string $core;
+
+    /** @var string[] Content hash of each file of the site, by name. */
+    private array $hashes = [];
+
+    /** @var int[] What the tests waited, in seconds. */
+    private array $slept = [];
+
+    /** @var string[] The lines of the log. */
+    private array $logged = [];
+
+    /** @var float The timer that the tests move. */
+    private float $tick = 0.0;
+
+    /** @var string[] What the steps of the last finish() returned. */
+    private array $results = [];
+
+    protected function setUp(): void {
+        parent::setUp();
+        $this->resetAfterTest();
+        // The export reads through a connection of its own, which sees only what is committed.
+        $this->preventResetByRollback();
+        $this->fixture = new run_fixture(run_fixture::tokyo('2026-10-19 03:00'));
+        $this->tempdir = make_request_directory();
+        $this->make_site();
+    }
+
+    /**
+     * Makes the content of the site: files of the file store, a data root, an added plugin and a Moodle program.
+     */
+    private function make_site(): void {
+        $fs = get_file_storage();
+        $where = ['contextid' => \context_system::instance()->id, 'component' => 'tool_secbackup', 'filearea' => 'test',
+            'itemid' => 0, 'filepath' => '/'];
+        $contents = [
+            'small1' => str_repeat('a', 1000),
+            'small2' => str_repeat('b', 2000),
+            'small3' => str_repeat('c', 3000),
+            'copy' => str_repeat('a', 1000),
+            'big' => random_bytes(packer::FILE_LIMIT + 1048576),
+            'missing' => 'content that is not in the file store any more',
+        ];
+        foreach ($contents as $name => $content) {
+            $file = $fs->create_file_from_string($where + ['filename' => $name . '.bin'], $content);
+            $this->hashes[$name] = $file->get_contenthash();
+        }
+        global $CFG;
+        $hash = $this->hashes['missing'];
+        unlink($CFG->dataroot . '/filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash);
+        $this->dataroot = make_request_directory();
+        mkdir($this->dataroot . '/lang/ja', 0777, true);
+        file_put_contents($this->dataroot . '/lang/ja/langconfig.php', 'lang');
+        mkdir($this->dataroot . '/secret');
+        file_put_contents($this->dataroot . '/secret/key', 'key');
+        symlink($this->dataroot . '/lang', $this->dataroot . '/link');
+        $this->plugin = make_request_directory();
+        file_put_contents($this->plugin . '/version.php', 'plugin version');
+        file_put_contents($this->plugin . '/lib.php', 'plugin lib');
+        $this->core = make_request_directory();
+        file_put_contents(
+            $this->core . '/version.php',
+            "<?php\n\$version  = 2024100703.10;\n\$release  = '4.5.3+ (Build: 20250113)';\n"
+        );
+        file_put_contents($this->core . '/index.php', 'core index');
+        mkdir($this->core . '/lib');
+        file_put_contents($this->core . '/lib/a.php', 'core a');
+    }
+
+    /**
+     * The limits of the tests.
+     *
+     * @param int $budgetmb Budget of the temporary files in MB.
+     * @param int $bandwidth Bandwidth setting of this site in Mbps.
+     * @param string|null $tempdir Folder of the temporary files; the one of the test when null.
+     * @return limits
+     */
+    private function limits(int $budgetmb = 100, int $bandwidth = 0, ?string $tempdir = null): limits {
+        return new limits(2.0, 256, 500, 5.0, $tempdir ?? $this->tempdir, $budgetmb, $bandwidth);
+    }
+
+    /**
+     * The seams of the tests.
+     *
+     * @return array
+     */
+    private function seams(): array {
+        global $DB;
+        $tables = $DB->get_manager()->get_install_xml_schema();
+        return [
+            'limits' => $this->limits(),
+            'sample' => fn(): array => self::CALM,
+            'sleep' => function (int $seconds): void {
+                $this->slept[] = $seconds;
+            },
+            'hostname' => fn(): string => 'web1',
+            'link' => $this->fixture->link(),
+            'trust' => network_fakes::trust(),
+            'files' => new system_files(make_request_directory()),
+            'log' => function (string $line): void {
+                $this->logged[] = $line;
+            },
+            'tables' => fn(bool $logs): array => [
+                'export' => [$tables->getTable('course'), $tables->getTable('files'), $tables->getTable('user')],
+                'unknown' => ['mystery'],
+                'excluded' => ['sessions'],
+            ],
+            'datarootroots' => fn(): array => ['dataroot' => [$this->dataroot, []]],
+            'coderoots' => fn(): array => ['local_example' => $this->plugin],
+            'corediff' => fn(): core_diff => new core_diff($this->core, []),
+            'external' => fn(): bool => false,
+        ];
+    }
+
+    /**
+     * A runner with the seams of the tests.
+     *
+     * @param array $seams Seams that replace those of the tests.
+     * @return runner
+     */
+    private function runner(array $seams = []): runner {
+        return new runner($this->fixture->client(), $this->fixture->objects(), $this->fixture->clock(), $seams + $this->seams());
+    }
+
+    /**
+     * A timer that says that the budget is used after every unit of work.
+     *
+     * @return callable
+     */
+    private function fast_timer(): callable {
+        return function (): float {
+            $this->tick += 2.0;
+            return $this->tick;
+        };
+    }
+
+    /**
+     * Steps a run until it ends, moving the clock to every time that the run waits for.
+     *
+     * @param runner $runner The runner.
+     * @param run_record $run The run.
+     * @param int $budget Seconds of each step.
+     * @return string What the last step returned: done or aborted. The results of all steps are in $results.
+     */
+    private function finish(runner $runner, run_record $run, int $budget = 600): string {
+        $this->results = [];
+        for ($i = 0; $i < 500; $i++) {
+            $result = $runner->step($run, $budget);
+            $this->results[] = $result;
+            if ($result === 'done' || $result === 'aborted') {
+                return $result;
+            }
+            $next = $run->next_attempt();
+            if ($next !== null && $next > $this->fixture->time) {
+                $this->fixture->set_time($next);
+            }
+        }
+        $this->fail('The run did not end: ' . $run->stage());
+    }
+
+    /**
+     * An object of the fake storage.
+     *
+     * @param string $key Key under the site.
+     * @return string|null
+     */
+    private function stored(string $key): ?string {
+        $objects = $this->fixture->service->state['objects'];
+        $full = 'sites/' . self::SITE . '/' . $key;
+        return isset($objects[$full]) ? (string) base64_decode($objects[$full]) : null;
+    }
+
+    /**
+     * The chunks in the fake storage, by name.
+     *
+     * @return int[] Size by name.
+     */
+    private function stored_chunks(): array {
+        $prefix = 'sites/' . self::SITE . '/objects/';
+        $chunks = [];
+        foreach ($this->fixture->service->state['objects'] as $key => $body) {
+            if (str_starts_with($key, $prefix)) {
+                $chunks[substr($key, strlen($prefix))] = strlen((string) base64_decode($body));
+            }
+        }
+        ksort($chunks);
+        return $chunks;
+    }
+
+    /**
+     * The contents of the file store that a backup holds: every content hash of a file of 1 byte or more, but the missing one.
+     *
+     * @return string[] Sorted.
+     */
+    private function stored_contents(): array {
+        global $DB;
+        $hashes = $DB->get_fieldset_sql('SELECT DISTINCT contenthash FROM {files} WHERE filesize > 0');
+        $hashes = array_values(array_diff($hashes, [$this->hashes['missing']]));
+        sort($hashes);
+        return $hashes;
+    }
+
+    /**
+     * The index of a run, as stored.
+     *
+     * @param string $runid The run.
+     * @return array [header, size by name]
+     */
+    private function index(string $runid): array {
+        $lines = explode("\n", rtrim(gzdecode($this->stored('indexes/' . $runid)), "\n"));
+        $header = json_decode(array_shift($lines), true);
+        $sizes = [];
+        foreach ($lines as $line) {
+            [$name, $size] = explode(' ', $line);
+            $sizes[$name] = (int) $size;
+        }
+        return [$header, $sizes];
+    }
+
+    /**
+     * The list of the generation of a run, decrypted.
+     *
+     * @param string $runid The run.
+     * @return array [header, entries, last line]
+     */
+    private function manifest(string $runid): array {
+        $path = make_request_directory() . '/manifest';
+        file_put_contents($path, $this->stored('manifests/' . $runid));
+        $reader = new chunk_reader(
+            $path,
+            sodium_crypto_box_secretkey($this->fixture->boxpair),
+            sodium_crypto_box_publickey($this->fixture->boxpair),
+            self::SITE,
+            chunk_name::manifest(dedup_key::load_or_create(), $runid)
+        );
+        $this->assertSame(chunk_writer::TYPE_MANIFEST, $reader->type());
+        $lines = explode("\n", rtrim(gzdecode($reader->read_item(chunk_writer::HEADER)), "\n"));
+        $header = json_decode(array_shift($lines), true);
+        $last = json_decode(array_pop($lines), true);
+        return [$header, array_map(static fn(string $line): array => json_decode($line, true), $lines), $last];
+    }
+
+    public function test_a_run_goes_through_every_stage_to_a_verified_receipt(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        $this->assertSame('completed', $run->status());
+        $this->assertSame('done', $run->stage());
+        $runid = $run->run_uuid();
+        $service = $this->fixture->service->state['runs'][$runid];
+        $this->assertSame('completed', $service['status']);
+        $this->assertNotNull($service['receipt']);
+        // Every chunk was sent once, and the index names exactly the chunks in the storage.
+        foreach ($this->fixture->puts() as $key => $count) {
+            $this->assertSame(1, $count, $key);
+        }
+        [$header, $sizes] = $this->index($runid);
+        $this->assertSame(['v' => 1, 'site_id' => self::SITE, 'run_id' => $runid, 'count' => count($sizes)], $header);
+        $this->assertSame($this->stored_chunks(), $sizes);
+        $this->assertSame(count($sizes), $service['index']['count']);
+        // The list of the generation.
+        [$header, $entries, $last] = $this->manifest($runid);
+        $this->assertSame(['end' => true, 'entries' => count($entries)], $last);
+        $this->assertSame(1, $header['v']);
+        $this->assertSame(self::SITE, $header['site_id']);
+        $this->assertSame($runid, $header['run_id']);
+        $this->assertSame('full', $header['kind']);
+        $this->assertSame(['course', 'files', 'user'], $header['db']['tables']);
+        $this->assertSame(['mystery'], $header['db']['unknown_tables']);
+        $this->assertSame(['sessions'], $header['db']['excluded_tables']);
+        $this->assertFalse($header['core_diff']['official']);
+        $this->assertSame([$this->hashes['missing']], $header['missing_files']);
+        $this->assertSame(['dataroot:link'], $header['skipped_links']);
+        $this->assertSame([], $header['unreadable']);
+        $this->assertArrayHasKey('config', $header);
+        $this->assertArrayHasKey('plugins', $header);
+        $this->assertSame('20250113', $header['moodle']['build']);
+        $byt = [];
+        foreach ($entries as $entry) {
+            $byt[$entry['t']][] = $entry;
+            $this->assertArrayHasKey($entry['chunk'], $sizes, 'Every entry refers to a chunk of the index.');
+        }
+        $this->assertSame(['course', 'files', 'user'], array_values(array_unique(array_column($byt['db'], 'table'))));
+        $files = array_values(array_unique(array_column($byt['file'], 'contenthash')));
+        sort($files);
+        $this->assertSame($this->stored_contents(), $files);
+        foreach (['small1', 'small2', 'small3', 'big'] as $name) {
+            $this->assertContains($this->hashes[$name], $files);
+        }
+        $this->assertEqualsCanonicalizing(
+            ['dataroot:lang/ja/langconfig.php', 'dataroot:secret/key'],
+            array_map(static fn(array $e): string => $e['root'] . ':' . $e['path'], $byt['dataroot'])
+        );
+        $this->assertEqualsCanonicalizing(
+            ['core:index.php', 'core:lib/a.php', 'core:version.php', 'local_example:lib.php', 'local_example:version.php'],
+            array_map(static fn(array $e): string => $e['root'] . ':' . $e['path'], $byt['code'])
+        );
+        // No entry twice, and the temporary files are gone.
+        $this->assertSame(count($entries), count(array_unique(array_map('json_encode', $entries))));
+        $this->assertDirectoryDoesNotExist($this->tempdir . '/run-' . $run->id());
+        $this->assertSame([], glob($this->tempdir . '/present-*') ?: []);
+    }
+
+    public function test_a_budget_of_one_second_gives_the_same_backup(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(['timer' => $this->fast_timer()]), $run, 1));
+        $this->assertGreaterThan(20, count($this->results));
+        [$header, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+        [, $entries, $last] = $this->manifest($run->run_uuid());
+        $this->assertSame(['end' => true, 'entries' => count($entries)], $last);
+        $this->assertSame(count($entries), count(array_unique(array_map('json_encode', $entries))));
+        $kinds = array_count_values(array_column($entries, 't'));
+        $this->assertSame(3, count(array_unique(array_column(array_filter($entries, fn($e) => $e['t'] === 'db'), 'table'))));
+        $files = array_values(array_unique(array_column(array_filter($entries, fn($e) => $e['t'] === 'file'), 'contenthash')));
+        sort($files);
+        $this->assertSame($this->stored_contents(), $files);
+        $this->assertSame(2, $kinds['dataroot']);
+        $this->assertSame(5, $kinds['code']);
+        foreach ($this->fixture->puts() as $key => $count) {
+            $this->assertSame(1, $count, $key);
+        }
+    }
+
+    public function test_a_step_that_stops_after_the_database_goes_on_without_sending_twice(): void {
+        global $DB;
+        $run = run_record::create('manual', $this->fixture->time);
+        $broken = fn(\moodle_database $db): file_source => new class ($db) extends file_source {
+            /**
+             * Fails as a step that is stopped does.
+             *
+             * @param string $contenthash Content hash.
+             * @param int $size Size.
+             * @param packer $packer Packer.
+             * @return array|null
+             */
+            public function pack(string $contenthash, int $size, packer $packer): ?array {
+                throw new \RuntimeException('The process was stopped.');
+            }
+        };
+        $first = $this->runner(['filesource' => $broken]);
+        $this->assertSame('continue', $first->step($run, 600));
+        $this->assertSame('files', $run->stage());
+        $this->assertSame('active', $run->status());
+        $this->assertSame(['The backup step failed and is tried again: RuntimeException'], $this->logged);
+        $this->assertSame('RuntimeException', $first->last_error());
+        $committed = $run->entries_committed();
+        $this->assertGreaterThan(0, $committed);
+        // A new runner, as the next task has, goes on from the committed point.
+        $this->assertSame('done', $this->finish($this->runner(), run_record::active()));
+        foreach ($this->fixture->puts() as $key => $count) {
+            $this->assertSame(1, $count, $key);
+        }
+        $runid = $DB->get_field('tool_secbackup_runs', 'runuuid', ['id' => $run->id()]);
+        [, $entries] = $this->manifest($runid);
+        $this->assertSame(count($entries), count(array_unique(array_map('json_encode', $entries))));
+        [, $sizes] = $this->index($runid);
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_step_that_stops_with_files_waiting_for_a_pack_does_them_again_once(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $calls = 0;
+        $flaky = function (\moodle_database $db) use (&$calls): file_source {
+            return new class ($db, $calls) extends file_source {
+                /** @var int Calls so far, shared with the test. */
+                private int $calls;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param \moodle_database $db Connection.
+                 * @param int $calls Calls so far, by reference.
+                 */
+                public function __construct(\moodle_database $db, int &$calls) {
+                    parent::__construct($db);
+                    $this->calls = &$calls;
+                }
+
+                /**
+                 * Fails at the third file, while the first two wait for their pack.
+                 *
+                 * @param string $contenthash Content hash.
+                 * @param int $size Size.
+                 * @param packer $packer Packer.
+                 * @return array|null
+                 */
+                public function pack(string $contenthash, int $size, packer $packer): ?array {
+                    if (++$this->calls === 3) {
+                        throw new \RuntimeException('Stopped.');
+                    }
+                    return parent::pack($contenthash, $size, $packer);
+                }
+            };
+        };
+        $runner = $this->runner(['filesource' => $flaky]);
+        $this->assertSame('done', $this->finish($runner, $run), (string) $run->abort_code());
+        $this->assertContains('continue', $this->results);
+        $this->assertSame(['The backup step failed and is tried again: RuntimeException'], $this->logged);
+        [, $entries] = $this->manifest($run->run_uuid());
+        $this->assertSame(count($entries), count(array_unique(array_map('json_encode', $entries))));
+        $files = array_column(array_filter($entries, fn($e) => $e['t'] === 'file'), 'contenthash');
+        $this->assertSame(count($files), count(array_unique($files)));
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_step_that_stops_after_chunks_were_queued_makes_them_again_and_sends_them(): void {
+        // A second big file: a content always follows the first chunk that is made.
+        get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
+            'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
+            'filename' => 'big2.bin'], random_bytes(packer::FILE_LIMIT + 10));
+        $state = (object) ['armed' => false, 'thrown' => false];
+        $flaky = fn(\moodle_database $db): file_source => new class ($db, $state) extends file_source {
+            /** @var \stdClass Shared with the test: armed and thrown. */
+            private \stdClass $state;
+
+            /**
+             * Constructor.
+             *
+             * @param \moodle_database $db Connection.
+             * @param \stdClass $state Shared with the test: armed and thrown.
+             */
+            public function __construct(\moodle_database $db, \stdClass $state) {
+                parent::__construct($db);
+                $this->state = $state;
+            }
+
+            /**
+             * Stops the step once, at the first file after chunks were made and queued.
+             *
+             * @param string $contenthash Content hash.
+             * @param int $size Size.
+             * @param packer $packer Packer.
+             * @return array|null
+             */
+            public function pack(string $contenthash, int $size, packer $packer): ?array {
+                if ($this->state->armed && !$this->state->thrown) {
+                    $this->state->thrown = true;
+                    throw new \RuntimeException('Stopped.');
+                }
+                $chunks = parent::pack($contenthash, $size, $packer);
+                $this->state->armed = $this->state->armed || ($chunks !== null && $chunks !== []);
+                return $chunks;
+            }
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(['filesource' => $flaky]), $run), (string) $run->abort_code());
+        $this->assertTrue($state->thrown);
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_run_pauses_at_the_end_of_the_window_and_goes_on_in_the_next(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        while ($run->stage() !== 'files') {
+            $this->assertSame('continue', $runner->step($run, 1));
+        }
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:00'));
+        $this->assertSame('paused', $runner->step($run, 1));
+        $this->assertSame('paused', $run->status());
+        $this->assertSame(1, $run->window_misses());
+        $next = schedule::next_slot(settings::current(), self::SITE, run_fixture::tokyo('2026-10-19 05:00'));
+        $this->assertSame($next['start'], $run->next_attempt());
+        // Before the next window nothing happens.
+        $requests = count($this->fixture->requests);
+        $this->assertSame('paused', $runner->step($run, 1));
+        $this->assertCount($requests, $this->fixture->requests);
+        $this->fixture->set_time($next['start']);
+        $this->assertSame('done', $this->finish($runner, $run, 1));
+        $this->assertSame('completed', $run->status());
+    }
+
+    public function test_a_run_that_misses_two_windows_in_a_row_is_stopped(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        while ($run->stage() !== 'db') {
+            $runner->step($run, 1);
+        }
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:00'));
+        $this->assertSame('paused', $runner->step($run, 1));
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-20 05:01'));
+        $this->assertSame('aborted', $runner->step($run, 1));
+        $this->assertSame('window_ended', $run->abort_code());
+        $this->assertSame('window_ended', $this->fixture->service->state['runs'][$run->run_uuid()]['failure_code']);
+    }
+
+    public function test_a_run_that_comes_back_after_a_whole_window_has_passed_is_stopped(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        $runner->step($run, 1);
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-20 12:00'));
+        $this->assertSame('aborted', $runner->step($run, 1));
+        $this->assertSame('window_ended', $run->abort_code());
+    }
+
+    public function test_the_command_line_does_not_stop_at_the_end_of_the_window(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 06:00'));
+        $this->assertSame('done', $this->finish($this->runner(['windows' => false]), $run));
+        $this->assertSame(0, $run->window_misses());
+    }
+
+    public function test_the_command_line_goes_on_with_a_run_that_waits_for_its_window(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        $runner->step($run, 1);
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:00'));
+        $this->assertSame('paused', $runner->step($run, 1));
+        $this->assertSame('done', $this->finish($this->runner(['windows' => false]), $run));
+    }
+
+    public function test_a_watch_that_finds_the_server_busy_stops_the_run_and_keeps_what_was_sent(): void {
+        $samples = 0;
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['sample' => function () use (&$samples): array {
+            return ++$samples > 5 ? ['load_per_core' => 9.0] + self::CALM : self::CALM;
+        }]);
+        $this->assertSame('aborted', $this->finish($runner, $run));
+        $this->assertSame('server_busy', $run->abort_code());
+        $this->assertSame('server_busy', $this->fixture->service->state['runs'][$run->run_uuid()]['failure_code']);
+        $this->assertSame(6, $samples);
+        $this->assertDirectoryDoesNotExist($this->tempdir . '/run-' . $run->id());
+    }
+
+    public function test_the_chunks_that_were_sent_stay_when_the_run_stops(): void {
+        $samples = 0;
+        $run = run_record::create('manual', $this->fixture->time);
+        $sent = [];
+        $runner = $this->runner([
+            'limits' => $this->limits(0),
+            'diskspace' => fn(string $folder): array => [0, 1000],
+            'sample' => function () use (&$samples, &$sent): array {
+                $sent = $this->stored_chunks();
+                return ++$samples > 4 ? ['memory_available_bytes' => 1024] + self::CALM : self::CALM;
+            },
+        ]);
+        $this->assertSame('aborted', ($this->finish($runner, $run)));
+        $this->assertNotEmpty($sent);
+        foreach (array_keys($sent) as $name) {
+            $this->assertArrayHasKey($name, $this->stored_chunks());
+        }
+    }
+
+    public function test_values_that_cannot_be_read_make_the_run_wait_at_most_once_in_five_minutes(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $unknown = ['load_per_core' => null] + self::CALM;
+        $runner = $this->runner([
+            'sample' => fn(): array => $unknown,
+            'sleep' => function (int $seconds): void {
+                $this->slept[] = $seconds;
+                $this->fixture->advance($seconds);
+            },
+        ]);
+        $this->assertSame('done', ($this->finish($runner, $run)));
+        $this->assertSame([30], $this->slept);
+    }
+
+    public function test_a_value_that_does_not_apply_to_the_site_does_not_make_it_wait(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['sample' => fn(): array => ['nfs_mbps' => null, 'not_applicable' => ['nfs_mbps']] + self::CALM]);
+        $this->assertSame('done', ($this->finish($runner, $run)));
+        $this->assertSame([], $this->slept);
+    }
+
+    public function test_with_no_room_only_the_chunk_being_sent_is_in_the_temporary_folder(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $folder = $this->tempdir . '/run-' . $run->id();
+        $most = 0;
+        $this->fixture->intercept = function (RequestInterface $request) use ($folder, &$most) {
+            if ($request->getMethod() === 'PUT') {
+                $files = array_filter(
+                    glob($folder . '/*') ?: [],
+                    static fn(string $path): bool => is_file($path)
+                        && !in_array(basename($path), ['uploads.json', 'entries.jsonl', 'present.gz'], true)
+                );
+                $most = max($most, count($files));
+            }
+            return null;
+        };
+        $runner = $this->runner([
+            'limits' => $this->limits(0),
+            'diskspace' => fn(string $folder): array => [0, 1000],
+        ]);
+        $this->assertSame('done', ($this->finish($runner, $run)));
+        $this->assertSame(1, $most);
+    }
+
+    /**
+     * The chunks that the storage had taken each time the watch looked, while the run read the database.
+     *
+     * @param limits $limits The limits.
+     * @param callable|null $diskspace Measure of the disk.
+     * @return int[] Count of chunks at each look.
+     */
+    private function sent_while_reading_the_database(limits $limits, ?callable $diskspace = null): array {
+        $run = run_record::create('manual', $this->fixture->time);
+        $counts = [];
+        $seams = ['limits' => $limits, 'sample' => function () use ($run, &$counts): array {
+            if ($run->stage() === 'db') {
+                $counts[] = count($this->stored_chunks());
+            }
+            return self::CALM;
+        }];
+        if ($diskspace !== null) {
+            $seams['diskspace'] = $diskspace;
+        }
+        $this->assertSame('done', $this->finish($this->runner($seams), $run));
+        return $counts;
+    }
+
+    public function test_with_room_for_the_database_the_blocks_are_sent_after_the_snapshot(): void {
+        $counts = $this->sent_while_reading_the_database($this->limits(100));
+        $this->assertNotEmpty($counts);
+        $this->assertSame([0], array_values(array_unique($counts)));
+    }
+
+    public function test_without_room_for_the_database_the_blocks_are_sent_while_it_is_read(): void {
+        $counts = $this->sent_while_reading_the_database($this->limits(0), fn(string $folder): array => [0, 1000]);
+        $this->assertGreaterThan(0, max($counts));
+    }
+
+    public function test_another_server_does_not_go_on_with_a_run_whose_files_are_on_one_server(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        $runner->step($run, 1);
+        $this->assertSame('web1', $run->hostname());
+        $stage = $run->stage();
+        $requests = count($this->fixture->requests);
+        $other = $this->runner(['hostname' => fn(): string => 'web2']);
+        $this->assertSame('paused', $other->step($run, 600));
+        $this->assertSame($stage, $run->stage());
+        $this->assertCount($requests, $this->fixture->requests);
+        $this->assertSame('done', ($this->finish($runner, $run)));
+    }
+
+    public function test_a_run_in_the_temporary_folder_of_moodle_can_go_on_on_any_server(): void {
+        global $CFG;
+        $run = run_record::create('manual', $this->fixture->time);
+        $limits = $this->limits(100, 0, $CFG->tempdir . '/tool_secbackup');
+        $this->assertSame('done', ($this->finish($this->runner(['limits' => $limits]), $run)));
+        $this->assertNull($run->hostname());
+    }
+
+    public function test_a_present_list_of_another_site_stops_the_run(): void {
+        $other = '99999999-2222-4333-8444-555555555555';
+        $text = json_encode(['v' => 1, 'site_id' => $other, 'generated_at' => '2026-10-18T00:00:00Z', 'count' => 0]) . "\n";
+        $this->fixture->service->state['objects']['sites/' . self::SITE . '/indexes/present'] = base64_encode(gzencode($text));
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', ($this->finish($this->runner(), $run)));
+        $this->assertSame('signature_invalid', $run->abort_code());
+        $this->assertSame('signature_invalid', $this->fixture->service->state['runs'][$run->run_uuid()]['failure_code']);
+    }
+
+    /**
+     * Writes the present list from what the fake storage holds, as the service does after a verified run.
+     */
+    private function publish_present_list(): void {
+        $chunks = $this->stored_chunks();
+        $text = json_encode(['v' => 1, 'site_id' => self::SITE, 'generated_at' => '2026-10-19T00:00:00Z',
+            'count' => count($chunks)]) . "\n";
+        foreach ($chunks as $name => $size) {
+            $text .= $name . ' ' . $size . "\n";
+        }
+        $this->fixture->service->state['objects']['sites/' . self::SITE . '/indexes/present'] = base64_encode(gzencode($text));
+    }
+
+    public function test_chunks_in_the_present_list_are_not_sent_again_but_are_in_the_index(): void {
+        $first = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $first)));
+        [, $firstentries] = $this->manifest($first->run_uuid());
+        $this->publish_present_list();
+        $before = $this->fixture->puts();
+        $this->fixture->advance(86400);
+        $second = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $second)));
+        $piece = chunk_name::file(dedup_key::load_or_create(), $this->hashes['big'], 0);
+        $after = $this->fixture->puts();
+        $this->assertSame(1, $after['sites/' . self::SITE . '/objects/' . $piece]);
+        // The packs of the small files are the same chunks too.
+        foreach (array_filter($firstentries, fn($e) => $e['t'] === 'file') as $entry) {
+            $this->assertSame($before['sites/' . self::SITE . '/objects/' . $entry['chunk']], 1);
+            $this->assertSame(1, $after['sites/' . self::SITE . '/objects/' . $entry['chunk']]);
+        }
+        [, $sizes] = $this->index($second->run_uuid());
+        $this->assertArrayHasKey($piece, $sizes);
+        [, $entries] = $this->manifest($second->run_uuid());
+        $big = array_values(array_filter($entries, fn($e) => $e['t'] === 'file' && $e['contenthash'] === $this->hashes['big']));
+        $firstbig = array_values(array_filter(
+            $firstentries,
+            fn($e) => $e['t'] === 'file' && $e['contenthash'] === $this->hashes['big']
+        ));
+        $this->assertSame($firstbig, $big);
+        $this->assertSame('completed', $this->fixture->service->state['runs'][$second->run_uuid()]['status']);
+    }
+
+    /**
+     * The bandwidth settings and the limit that the run sends with.
+     *
+     * @return array
+     */
+    public static function bandwidth_provider(): array {
+        return [
+            'both set, the service lower' => [2, 4, 250000],
+            'both set, this site lower' => [8, 4, 500000],
+            'the service only' => [3, 0, 375000],
+            'this site only' => [0, 6, 750000],
+            'neither' => [0, 0, 0],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('bandwidth_provider')]
+    /**
+     * The limit of the upload speed is the smaller of the two settings that are not zero.
+     *
+     * @dataProvider bandwidth_provider
+     * @param int $service Setting of the service in Mbps.
+     * @param int $local Setting of this site in Mbps.
+     * @param int $expected Bytes a second.
+     */
+    public function test_the_upload_speed_is_the_smaller_of_the_two_limits(int $service, int $local, int $expected): void {
+        settings::apply(\tool_secbackup\tests\instruction_factory::make(
+            'settings',
+            2,
+            \tool_secbackup\tests\instruction_factory::settings_body(['bandwidth_mbps' => $service])
+        ));
+        $this->assertSame($expected, $this->runner(['limits' => $this->limits(100, $local)])->bandwidth());
+    }
+
+    public function test_a_contract_that_is_not_active_at_the_start_refuses_the_run(): void {
+        $this->fixture->service->state['contractinactive'] = true;
+        $run = run_record::create('schedule', $this->fixture->time);
+        $this->assertSame('aborted', $this->runner()->step($run, 600));
+        $this->assertSame('refused', $run->status());
+        $this->assertSame('contract_inactive', $run->abort_code());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+        $this->assertSame(0, run_record::consecutive_aborts());
+        $this->assertNull(run_record::active());
+    }
+
+    public function test_the_number_of_runs_of_the_plan_refuses_the_run(): void {
+        $this->fixture->service->state['mode'] = 'run_limit_reached';
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', $this->runner()->step($run, 600));
+        $this->assertSame('refused', $run->status());
+        $this->assertSame('run_limit_reached', $run->abort_code());
+    }
+
+    public function test_a_busy_service_at_the_start_makes_the_run_wait(): void {
+        $this->fixture->service->state['mode'] = 'unavailable';
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('continue', $this->runner()->step($run, 600));
+        $this->assertSame('paused', $run->status());
+        $this->assertSame($this->fixture->time + 120, $run->next_attempt());
+        $this->fixture->service->state['mode'] = '';
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+    }
+
+    public function test_a_contract_that_ends_during_the_run_stops_it(): void {
+        $this->fixture->intercept = function (RequestInterface $request) {
+            if (str_ends_with($request->getUri()->getPath(), '/upload-urls')) {
+                $this->fixture->service->state['contractinactive'] = true;
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', ($this->finish($this->runner(), $run)));
+        $this->assertSame('contract_inactive', $run->abort_code());
+        $this->assertSame('contract_inactive', $this->fixture->service->state['runs'][$run->run_uuid()]['failure_code']);
+    }
+
+    public function test_a_run_of_the_service_that_this_site_lost_is_failed_as_restarted(): void {
+        $lost = $this->fixture->start_at_service();
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+        $this->assertSame('failed', $this->fixture->service->state['runs'][$lost]['status']);
+        $this->assertSame('restarted', $this->fixture->service->state['runs'][$lost]['failure_code']);
+        $this->assertNotSame($lost, $run->run_uuid());
+    }
+
+    public function test_a_run_that_this_site_stopped_without_telling_is_failed_with_its_reason(): void {
+        $stopped = run_record::create('manual', $this->fixture->time);
+        $stopped->set_run_uuid($this->fixture->start_at_service());
+        $stopped->abort('disk_low', $this->fixture->time);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+        $this->assertSame('disk_low', $this->fixture->service->state['runs'][$stopped->run_uuid()]['failure_code']);
+    }
+
+    public function test_the_receipt_is_asked_for_after_30_60_120_300_and_then_every_600_seconds(): void {
+        $this->fixture->service->state['holdverify'] = true;
+        $polls = [];
+        $this->fixture->intercept = function (RequestInterface $request) use (&$polls) {
+            if ($request->getMethod() === 'GET' && preg_match('~/runs/[0-9a-f-]{36}\z~', $request->getUri()->getPath())) {
+                $polls[] = $this->fixture->time;
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner();
+        while ($run->stage() !== 'receipt') {
+            $runner->step($run, 600);
+        }
+        $completed = $this->fixture->time;
+        $this->assertSame($completed + 30, $run->next_attempt());
+        // A step before the time asks nothing.
+        $this->assertSame('continue', $runner->step($run, 600));
+        $this->assertSame([], $polls);
+        foreach ([60, 120, 300, 600, 600, 600] as $wait) {
+            $this->fixture->set_time($run->next_attempt());
+            $this->assertSame('continue', $runner->step($run, 600));
+            $this->assertSame($this->fixture->time + $wait, $run->next_attempt());
+        }
+        $this->assertSame([30, 90, 210, 510, 1110, 1710], array_map(fn($t) => $t - $completed, $polls));
+        $this->fixture->service->verify_run($run->run_uuid());
+        $this->fixture->set_time($run->next_attempt());
+        $this->assertSame('done', $runner->step($run, 600));
+        $this->assertSame('completed', $run->status());
+    }
+
+    public function test_a_run_that_the_service_fails_is_stopped_with_its_reason(): void {
+        $first = true;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$first) {
+            if ($request->getMethod() === 'PUT' && str_contains($request->getUri()->getPath(), '/objects/') && $first) {
+                $first = false;
+                // The storage takes the whole body, says that it stored it, and keeps nothing.
+                $request->getBody()->getContents();
+                return new Response(200);
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', ($this->finish($this->runner(), $run)));
+        $this->assertSame('verify_missing_chunks', $run->abort_code());
+        $this->assertSame(1, $this->fixture->count('POST', '/complete'));
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+    }
+
+    public function test_a_receipt_that_is_not_for_what_was_sent_stops_the_run(): void {
+        $this->fixture->service->state['receiptpayload'] = ['chunk_count' => 999999];
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', ($this->finish($this->runner(), $run)));
+        $this->assertSame('signature_invalid', $run->abort_code());
+        // The service, which completed the run, refuses the report of the stop; the stop is recorded all the same.
+        $this->assertSame('completed', $this->fixture->service->state['runs'][$run->run_uuid()]['status']);
+    }
+
+    public function test_the_report_holds_statistics_that_the_service_takes(): void {
+        $body = null;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$body) {
+            if (str_ends_with($request->getUri()->getPath(), '/complete')) {
+                $body = (string) $request->getBody();
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+        $this->assertLessThanOrEqual(60000, strlen($body));
+        $stats = json_decode($body, true)['stats'];
+        $this->assertNotEmpty($stats['tables']);
+        $this->assertArrayHasKey('course', $stats['tables']);
+        $this->assertContains('manual', $stats['auth_methods']);
+        $this->assertSame(['db', 'files', 'dataroot', 'code'], array_keys($stats['bytes']));
+        $this->assertGreaterThan(packer::FILE_LIMIT, $stats['bytes']['files']);
+        $this->assertSame(strlen('lang') + strlen('key'), $stats['bytes']['dataroot']);
+        $this->assertFalse($stats['core_modified']);
+        $this->assertFalse($stats['external_storage']);
+        $this->assertSame('20250113', $stats['moodle']['build']);
+    }
+
+    public function test_with_the_official_list_only_the_changed_files_of_moodle_are_sent(): void {
+        $locked = $this->core . '/locked';
+        mkdir($locked);
+        file_put_contents($locked . '/file.php', 'unreadable');
+        $official = [
+            'index.php' => hash('sha256', 'the official index'),
+            'lib/a.php' => hash('sha256', 'core a'),
+            'lib/gone.php' => hash('sha256', 'deleted on this site'),
+            'locked/file.php' => hash('sha256', 'unreadable'),
+            'version.php' => hash_file('sha256', $this->core . '/version.php'),
+        ];
+        $text = json_encode(['v' => 1, 'version' => '2024100703.10', 'build' => '20250113',
+            'release' => '4.5.3+ (Build: 20250113)', 'count' => count($official)], JSON_UNESCAPED_SLASHES) . "\n";
+        foreach ($official as $path => $hash) {
+            $text .= $path . "\t" . $hash . "\n";
+        }
+        $this->fixture->service->publish_core_manifest('2024100703.10', '20250113', gzencode($text), ['count' => 5]);
+        file_put_contents($this->core . '/lib/new.php', 'added');
+        $lister = static fn(string $dir) => basename($dir) === 'locked' ? false : scandir($dir);
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['corediff' => fn(): core_diff => new core_diff($this->core, [], \Closure::fromCallable($lister))]);
+        $this->assertSame('done', ($this->finish($runner, $run)));
+        [$header, $entries] = $this->manifest($run->run_uuid());
+        $this->assertSame(
+            ['official' => true, 'modified' => ['index.php'], 'added' => ['lib/new.php'], 'deleted' => ['lib/gone.php']],
+            $header['core_diff']
+        );
+        $this->assertSame(['core:locked'], $header['unreadable']);
+        $core = array_values(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'core'));
+        $this->assertEqualsCanonicalizing(['index.php', 'lib/new.php'], array_column($core, 'path'));
+    }
+
+    public function test_an_official_list_for_another_build_sends_the_whole_program(): void {
+        $text = json_encode(['v' => 1, 'version' => '2024100703.10', 'build' => '20250114',
+            'release' => '4.5.3+ (Build: 20250114)', 'count' => 0], JSON_UNESCAPED_SLASHES) . "\n";
+        $this->fixture->service->publish_core_manifest('2024100703.10', '20250113', gzencode($text), ['count' => 0]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+        [$header, $entries] = $this->manifest($run->run_uuid());
+        $this->assertFalse($header['core_diff']['official']);
+        $core = array_column(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'core'), 'path');
+        $this->assertEqualsCanonicalizing(['index.php', 'lib/a.php', 'version.php'], $core);
+    }
+
+    public function test_an_unexpected_error_is_logged_by_its_class_only_and_the_run_goes_on(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $broken = $this->runner(['corediff' => function (): core_diff {
+            throw new key_exception('dedupkey_corrupt', null, 'secret detail');
+        }]);
+        $results = [];
+        while ($run->stage() !== 'code' || count($results) === 0) {
+            $results[] = $broken->step($run, 600);
+        }
+        $broken->step($run, 600);
+        $this->assertSame('active', $run->status());
+        $this->assertContains(
+            'The backup step failed and is tried again: tool_secbackup\local\crypto\key_exception dedupkey_corrupt',
+            $this->logged
+        );
+        foreach ($this->logged as $line) {
+            $this->assertStringNotContainsString('secret detail', $line);
+        }
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+    }
+
+    public function test_a_run_that_ended_is_left_alone(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $run->finish($this->fixture->time);
+        $this->assertSame('done', $this->runner()->step($run, 600));
+        $aborted = run_record::create('manual', $this->fixture->time);
+        $aborted->abort('disk_low', $this->fixture->time);
+        $this->assertSame('aborted', $this->runner()->step($aborted, 600));
+        $this->assertSame([], $this->fixture->requests);
+    }
+
+    public function test_an_unknown_seam_is_refused(): void {
+        $this->expectException(\coding_exception::class);
+        $this->runner(['nosuchseam' => true]);
+    }
+
+    public function test_the_runner_of_the_site_is_made_with_its_own_parts(): void {
+        $runner = runner::create(false);
+        $run = run_record::create('manual', $this->fixture->time);
+        $run->finish($this->fixture->time);
+        $this->assertSame('done', $runner->step($run, 600));
+    }
+
+    public function test_a_run_whose_receipt_was_verified_but_not_marked_is_completed(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $run->commit('done', [], 0, $this->fixture->time);
+        $this->assertSame('done', $this->runner()->step($run, 600));
+        $this->assertSame('completed', $run->status());
+    }
+
+    public function test_the_window_can_end_while_the_files_are_added(): void {
+        // A second big file: a content always follows the first big one, whose chunk is the first of the stage.
+        get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
+            'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
+            'filename' => 'big2.bin'], random_bytes(packer::FILE_LIMIT + 10));
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['sample' => function () use ($run): array {
+            if ($run->stage() === 'files') {
+                $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:00'));
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('paused', $runner->step($run, 600));
+        $this->assertSame('files', $run->stage());
+        $this->assertSame(1, $run->window_misses());
+        $this->fixture->set_time($run->next_attempt());
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+    }
+
+    public function test_the_window_can_end_while_the_data_root_is_added(): void {
+        file_put_contents($this->dataroot . '/big.bin', random_bytes(series_writer::FILE_LIMIT + 10));
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['sample' => function () use ($run): array {
+            if ($run->stage() === 'dataroot') {
+                $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:00'));
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('paused', $runner->step($run, 600));
+        $this->assertSame('dataroot', $run->stage());
+        $this->fixture->set_time($run->next_attempt());
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [, $entries] = $this->manifest($run->run_uuid());
+        $paths = array_column(array_filter($entries, fn($e) => $e['t'] === 'dataroot'), 'path');
+        $this->assertSame(count($paths), count(array_unique($paths)));
+        $this->assertContains('big.bin', $paths);
+    }
+
+    public function test_a_run_that_finds_its_window_over_inside_the_next_window_goes_on_at_once(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        $runner->step($run, 1);
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-20 04:00'));
+        $this->assertSame('continue', $runner->step($run, 1));
+        $this->assertSame(1, $run->window_misses());
+        $this->assertSame('active', $run->status());
+        $this->assertSame('done', $this->finish($runner, $run, 1));
+    }
+
+    public function test_a_run_started_out_of_the_window_works_until_the_end_of_the_next_one(): void {
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 12:00'));
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->runner(['timer' => $this->fast_timer()])->step($run, 1);
+        $this->assertSame(run_fixture::tokyo('2026-10-20 05:00'), $run->progress()['run']['window_end']);
+    }
+
+    public function test_an_unexpected_refusal_of_the_start_is_tried_again_by_the_next_step(): void {
+        $this->fixture->service->state['mode'] = 'ip_not_allowed';
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('continue', $this->runner()->step($run, 600));
+        $this->assertSame(
+            ['The backup step failed and is tried again: tool_secbackup\local\api\api_exception api_ip_not_allowed_address'],
+            $this->logged
+        );
+        $this->fixture->service->state['mode'] = '';
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+    }
+
+    public function test_a_present_list_that_cannot_be_kept_stops_the_run(): void {
+        $text = json_encode(['v' => 1, 'site_id' => self::SITE, 'generated_at' => '2026-10-19T00:00:00Z', 'count' => 0]) . "\n";
+        $this->fixture->service->state['objects']['sites/' . self::SITE . '/indexes/present'] = base64_encode(gzencode($text));
+        $run = run_record::create('manual', $this->fixture->time);
+        mkdir($this->tempdir . '/run-' . $run->id() . '/present.gz', 0777, true);
+        $this->assertSame('aborted', $this->finish($this->runner(), $run));
+        $this->assertSame('disk_low', $run->abort_code());
+    }
+
+    /**
+     * Answers the request for the capacity with a status and a body.
+     *
+     * @param int $status HTTP status.
+     * @param array $body The body.
+     * @param int $times How many requests are answered this way.
+     */
+    private function answer_capacity(int $status, array $body, int $times = 1): void {
+        $this->fixture->intercept = function (RequestInterface $request) use ($status, $body, &$times) {
+            if (str_ends_with($request->getUri()->getPath(), '/capacity') && $times-- > 0) {
+                return new Response($status, ['Retry-After' => '45'], json_encode($body));
+            }
+            return null;
+        };
+    }
+
+    public function test_a_refused_capacity_stops_the_run(): void {
+        $this->answer_capacity(200, ['decision' => 'refuse', 'limit_bytes' => 10, 'used_bytes' => 5]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', $this->finish($this->runner(), $run));
+        $this->assertSame('capacity_refused', $run->abort_code());
+    }
+
+    public function test_a_busy_service_makes_the_capacity_wait(): void {
+        $this->answer_capacity(503, ['error' => ['code' => 'service_unavailable']]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner();
+        $this->assertSame('continue', $runner->step($run, 600));
+        $this->assertSame('capacity', $run->stage());
+        $this->assertSame($this->fixture->time + 45, $run->next_attempt());
+        $this->assertSame('done', $this->finish($runner, $run));
+    }
+
+    public function test_another_refusal_of_the_capacity_is_tried_again(): void {
+        $this->answer_capacity(500, ['error' => ['code' => 'server_error']]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('continue', $this->runner()->step($run, 600));
+        $this->assertSame('capacity', $run->stage());
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+    }
+
+    public function test_a_send_that_fails_in_any_stage_is_tried_again_in_15_minutes(): void {
+        $failed = [];
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->fixture->intercept = function (RequestInterface $request) use ($run, &$failed) {
+            $stage = $run->stage();
+            if ($request->getMethod() === 'PUT' && !isset($failed[$stage])) {
+                $failed[$stage] = $request->getUri()->getPath();
+                return new Response(500);
+            }
+            return null;
+        };
+        $runner = $this->runner([
+            'windows' => false,
+            'limits' => $this->limits(0),
+            'diskspace' => fn(string $folder): array => [0, 1000],
+        ]);
+        $this->assertSame('done', $this->finish($runner, $run));
+        $this->assertSame(['db', 'files', 'dataroot', 'code', 'manifest', 'index', 'complete'], array_keys($failed));
+        $puts = $this->fixture->puts();
+        $objects = $this->fixture->service->state['objects'];
+        foreach ($failed as $stage => $path) {
+            $key = substr($path, strlen('/_s3/'));
+            $this->assertArrayHasKey($key, $objects, $stage);
+            // Sent again after 15 minutes; a block of the database that the stage made again is sent once more, and the
+            // storage answers that it has it.
+            $this->assertSame($stage === 'db' ? 3 : 2, $puts[$key], $stage);
+        }
+    }
+
+    public function test_a_moodle_program_without_a_version_file_is_described_by_the_settings_of_the_site(): void {
+        global $CFG;
+        unlink($this->core . '/version.php');
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertSame(number_format((float) $CFG->version, 2, '.', ''), $header['moodle']['version']);
+        $this->assertSame((string) $CFG->release, $header['moodle']['release']);
+        $this->assertMatchesRegularExpression('/^\d{8}\z/', $header['moodle']['build']);
+        $this->assertFalse($header['core_diff']['official']);
+    }
+
+    public function test_an_index_that_cannot_be_written_stops_the_run(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        while ($run->stage() !== 'index') {
+            $runner->step($run, 1);
+        }
+        mkdir($this->tempdir . '/run-' . $run->id() . '/index.gz');
+        $this->assertSame('aborted', $runner->step($run, 1));
+        $this->assertSame('disk_low', $run->abort_code());
+    }
+
+    public function test_a_report_whose_answer_was_lost_goes_on_to_the_receipt(): void {
+        $lost = false;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$lost) {
+            if (str_ends_with($request->getUri()->getPath(), '/complete') && !$lost) {
+                $lost = true;
+                $headers = [];
+                foreach ($request->getHeaders() as $name => $values) {
+                    $headers[strtolower($name)] = implode(', ', $values);
+                }
+                // The service takes the report; its answer does not come back.
+                $this->fixture->service->handle(
+                    'POST',
+                    $request->getUri()->getHost(),
+                    $request->getUri()->getPath(),
+                    $headers,
+                    (string) $request->getBody()
+                );
+                return new Response(503);
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        $this->assertSame(2, $this->fixture->count('POST', '/complete'));
+        $this->assertContains('continue', $this->results);
+    }
+
+    public function test_the_report_keeps_a_table_and_a_method_when_nothing_else_fits(): void {
+        $stats = ['users_active_365d' => 1, 'courses' => 1, 'auth_methods' => [],
+            'tables' => (object) ['big' => 50, 'small' => 1, 'middle' => 10], 'bytes' => [], 'duration_seconds' => 1,
+            'moodle' => [], 'core_modified' => false, 'external_storage' => false];
+        $fitted = stage\artifact_stage::fit_report($stats, 10);
+        $this->assertSame(['big' => 50], (array) $fitted['tables']);
+        $this->assertSame(['manual'], $fitted['auth_methods']);
+        $roomy = stage\artifact_stage::fit_report(['auth_methods' => ['ldap']] + $stats, 100000);
+        $this->assertSame(['big' => 50, 'small' => 1, 'middle' => 10], (array) $roomy['tables']);
+        $this->assertSame(['ldap'], $roomy['auth_methods']);
+    }
+
+    public function test_a_completed_run_without_a_receipt_stops_the_run(): void {
+        $this->fixture->intercept = function (RequestInterface $request) {
+            $path = $request->getUri()->getPath();
+            if ($request->getMethod() === 'GET' && preg_match('~/runs/([0-9a-f-]{36})\z~', $path, $m) === 1) {
+                return new Response(200, [], json_encode(['run_id' => $m[1], 'status' => 'completed', 'failure_code' => null,
+                    'receipt' => null]));
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', $this->finish($this->runner(), $run));
+        $this->assertSame('signature_invalid', $run->abort_code());
+    }
+
+    public function test_names_that_a_list_cannot_hold_and_files_that_went_away_are_listed_as_unreadable(): void {
+        file_put_contents($this->dataroot . "/bad\xff.txt", 'x');
+        file_put_contents($this->dataroot . '/a.bin', random_bytes(series_writer::FILE_LIMIT + 10));
+        file_put_contents($this->dataroot . '/ab.txt', 'goes away');
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['sample' => function () use ($run): array {
+            if ($run->stage() === 'dataroot' && is_file($this->dataroot . '/ab.txt')) {
+                unlink($this->dataroot . '/ab.txt');
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('done', $this->finish($runner, $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertSame(['dataroot:hex:' . bin2hex("bad\xff.txt"), 'dataroot:ab.txt'], $header['unreadable']);
+    }
+
+    public function test_an_error_of_the_service_while_the_program_is_compared_is_tried_again(): void {
+        $once = true;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$once) {
+            if (str_ends_with($request->getUri()->getPath(), '/core-manifests') && $once) {
+                $once = false;
+                return new Response(500);
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('continue', $this->runner()->step($run, 600));
+        $this->assertSame('code', $run->stage());
+        $line = 'The backup step failed and is tried again: tool_secbackup\local\api\api_exception api_unexpected';
+        $this->assertSame([$line], $this->logged);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+    }
+
+    public function test_a_folder_of_journals_that_cannot_be_made_stops_the_run(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        mkdir($this->tempdir . '/run-' . $run->id());
+        file_put_contents($this->tempdir . '/run-' . $run->id() . '/journal', 'in the way');
+        $this->assertSame('aborted', $this->runner()->step($run, 600));
+        $this->assertSame('disk_low', $run->abort_code());
+    }
+
+    /**
+     * A step of a run made directly, as the runner makes it.
+     *
+     * @param run_record $run The run.
+     * @return run_context
+     */
+    private function context(run_record $run): run_context {
+        $limits = $this->limits();
+        return new run_context(
+            $run,
+            $this->fixture->client(),
+            $this->fixture->objects(),
+            new temp_area($limits),
+            $limits,
+            $this->fixture->link(),
+            ['clock' => $this->fixture->clock(), 'timer' => fn(): float => 0.0, 'sample' => fn(): array => self::CALM,
+                'sleep' => fn(int $s) => null, 'diskspace' => null, 'pause' => (object) ['at' => null], 'windows' => true],
+            600.0
+        );
+    }
+
+    public function test_a_step_queues_what_the_last_commit_left_waiting_and_removes_what_a_stopped_step_left(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $run->set_run_uuid($this->fixture->start_at_service());
+        $folder = $this->tempdir . '/run-' . $run->id();
+        mkdir($folder);
+        $name = str_repeat('ab', 32);
+        file_put_contents($folder . '/' . $name, 'waiting chunk');
+        file_put_contents($folder . '/stray.part', 'left by a stopped step');
+        file_put_contents($this->tempdir . '/present-0123456789abcdef.records', 'stale');
+        $run->commit('dataroot', ['tosend' => [[
+            'name' => $name, 'path' => $folder . '/' . $name, 'size' => 13,
+            'sha256' => base64_encode(hash('sha256', 'waiting chunk', true)),
+        ], [
+            'name' => str_repeat('cd', 32), 'path' => $folder . '/gone', 'size' => 1,
+            'sha256' => base64_encode(str_repeat('x', 32)),
+        ]]], 0, $this->fixture->time);
+        $context = $this->context($run);
+        $this->assertSame([$folder . '/' . $name], $context->uploader->queued_paths());
+        $this->assertFileExists($folder . '/' . $name);
+        $this->assertFileDoesNotExist($folder . '/stray.part');
+        $this->assertFileDoesNotExist($this->tempdir . '/present-0123456789abcdef.records');
+        $this->assertSame(['run' => $run->id(), 'stage' => 'dataroot'], $context->__debugInfo());
+        $context->close();
+    }
+
+    public function test_a_run_with_more_chunks_than_an_index_holds_is_refused(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $folder = $this->tempdir . '/run-' . $run->id();
+        mkdir($folder . '/journal', 0777, true);
+        file_put_contents($folder . '/journal/chunks.jsonl', str_repeat("x\n", 10));
+        $run->commit('files', ['journals' => ['chunks' => [index_builder::MAX_COUNT + 1, 20]]], 0, $this->fixture->time);
+        $context = $this->context($run);
+        try {
+            $context->commit([]);
+            $this->fail('No exception');
+        } catch (\tool_secbackup\local\plugin_exception $e) {
+            $this->assertSame('capacity_refused', $e->errorcode);
+        } finally {
+            $context->close();
+        }
+    }
+}

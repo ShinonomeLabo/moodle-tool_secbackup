@@ -90,6 +90,36 @@ final class journal_test extends \advanced_testcase {
         $this->assertSame('', file_get_contents($path));
     }
 
+    public function test_a_journal_restored_from_the_committed_figures_cuts_without_reading(): void {
+        [$journal, $path] = self::journal();
+        foreach (['a', 'b', 'c'] as $value) {
+            $journal->append($value);
+        }
+        $journal->commit();
+        $this->assertSame(12, $journal->bytes());
+        $journal->close();
+        $restored = new journal($path, 2, 8);
+        $this->assertSame(2, $restored->lines());
+        $this->assertSame(8, $restored->bytes());
+        $this->assertSame("\"a\"\n\"b\"\n", file_get_contents($path));
+        $restored->append('d');
+        $this->assertSame(['a', 'b', 'd'], iterator_to_array($restored->values(), false));
+        // Nothing committed: whatever a stopped step left is dropped, and a missing file is an empty journal.
+        $this->assertSame(0, (new journal($path, 0, 0))->lines());
+        $this->assertSame('', file_get_contents($path));
+        $this->assertSame(0, (new journal(dirname($path) . '/none.jsonl', 0, 0))->lines());
+    }
+
+    public function test_a_journal_shorter_than_its_committed_figures_is_refused(): void {
+        [$journal, $path] = self::journal();
+        $journal->append('a');
+        $journal->commit();
+        $e = $this->catch_plugin_exception(static fn() => new journal($path, 2, 50));
+        $this->assertSame('temp_write_failed', $e->errorcode);
+        $e = $this->catch_plugin_exception(static fn() => new journal(dirname($path) . '/none.jsonl', 1, 4));
+        $this->assertSame('temp_write_failed', $e->errorcode);
+    }
+
     public function test_truncate_beyond_the_lines_is_refused(): void {
         [$journal] = self::journal();
         $journal->append('a');

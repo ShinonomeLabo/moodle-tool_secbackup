@@ -63,6 +63,33 @@ $string['check_extensions'] = 'PHP extensions';
 $string['check_moodledata'] = 'Data directory';
 $string['check_proxy'] = 'Proxy';
 $string['check_selinux'] = 'SELinux';
+$string['cli_backup_aborted'] = 'The backup was stopped: {$a}';
+$string['cli_backup_continued'] = 'The backup that is running goes on.';
+$string['cli_backup_done'] = 'The backup is complete: the backup service verified it and its receipt was checked.';
+$string['cli_backup_failed'] = 'A step of the backup failed ({$a}). The scheduled task tries it again.';
+$string['cli_backup_heading'] = 'Backup of Shinonome LMS Backup';
+$string['cli_backup_help'] = 'Runs the backup of this site to the backup service until it is complete.
+
+A backup that is running goes on. Without a running backup, nothing is done unless --now is given.
+
+Options:
+--now        Start a backup at once when none is running, in or out of the backup window.
+--quiet      Print only the outcome.
+-h, --help   Print this help.
+
+Exit codes: 0 the backup is complete, 1 it was stopped or did not finish, 2 no backup was run.
+
+Run it as the user that runs cron, for example:
+$ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/backup.php --now
+(Moodle 5.1 and later: public/admin/tool/secbackup/cli/backup.php)';
+$string['cli_backup_locked'] = 'Another process is running a step of the backup. Try again later.';
+$string['cli_backup_none'] = 'No backup is running. Give --now to start one.';
+$string['cli_backup_notstarted'] = 'The backup was not started: {$a}';
+$string['cli_backup_otherserver'] = 'The temporary files of the running backup are on the server {$a}. Run this command on that server.';
+$string['cli_backup_refused'] = 'The backup service did not start the backup: {$a}';
+$string['cli_backup_stage'] = 'Stage: {$a}';
+$string['cli_backup_started'] = 'A backup was started.';
+$string['cli_backup_waiting'] = 'Waiting until {$a}.';
 $string['cli_diagnose_help'] = 'Checks the connection from this server to the backup service.
 
 Options:
@@ -265,6 +292,14 @@ $string['signature_invalid'] = 'The signature or the contents of data from the b
 $string['signingkey_corrupt'] = 'The stored signing key cannot be read. Remove the registration and register the site again.';
 $string['signingkey_missing'] = 'The signing key of this site is missing. Register the site again.';
 $string['signingkey_savefailed'] = 'The signing key could not be encrypted, so it was not saved. Check the encryption key file in the data directory and try again.';
+$string['start_reason_autobackup'] = 'The automated course backups of Moodle are still running. The backup starts when they are done.';
+$string['start_reason_busy'] = 'The server is too busy (load, memory, database or file storage) for a backup now.';
+$string['start_reason_clock'] = 'The clock of this server differs from the clock of the backup service by 5 minutes or more. Correct the time of the server.';
+$string['start_reason_memorylimit'] = 'PHP may use less than 256 MB of memory. Raise memory_limit or the extra memory limit of Moodle.';
+$string['start_reason_notreceived'] = 'The settings of the backup service have not been received yet. Wait for the next status request.';
+$string['start_reason_notregistered'] = 'This site is not registered with the backup service.';
+$string['start_reason_outsidewindow'] = 'It is not the time of a scheduled backup.';
+$string['start_reason_running'] = 'A backup is running already.';
 $string['status_enrolled_at'] = 'Registered on';
 $string['status_last_error'] = 'The last status request failed.';
 $string['status_last_error_code'] = 'The last status request failed ({$a}).';
@@ -276,6 +311,7 @@ $string['status_response_invalid'] = 'The status answer of the service could not
 $string['status_service_status'] = 'Status at the service';
 $string['status_site'] = 'Site name on the platform';
 $string['status_siteid'] = 'Site ID';
+$string['status_start_refused'] = 'The last backup was not started by the backup service.';
 $string['status_unknown'] = 'Not known yet';
 $string['status_unreadable'] = 'Cannot be read.';
 $string['tamper_detected'] = 'The content of a site file does not match the hash it is stored under, so the file may have been changed or damaged. The backup was stopped.';
@@ -283,6 +319,13 @@ $string['task_poll_failed'] = 'The status request failed. See the status page of
 $string['task_poll_notregistered'] = 'The site is not registered, so nothing was asked.';
 $string['task_poll_ok'] = 'The status was received.';
 $string['task_poll_status'] = 'Ask the backup service for the status of this site';
+$string['task_run_backup'] = 'Run the backup of this site';
+$string['task_run_backup_aborted'] = 'The backup was stopped. See the status page of the plugin.';
+$string['task_run_backup_continue'] = 'The backup goes on in the next step.';
+$string['task_run_backup_done'] = 'The backup is complete.';
+$string['task_run_backup_locked'] = 'Another process is running a step of the backup.';
+$string['task_run_backup_none'] = 'No backup is running.';
+$string['task_run_backup_paused'] = 'The backup waits for its next backup window, or for the server that holds its temporary files.';
 $string['temp_write_failed'] = 'A file could not be written in the temporary folder of the plugin. Check the free space and the permissions of the folder.';
 $string['trademark'] = 'The word Moodle and associated Moodle logos are trademarks or registered trademarks of Moodle Pty Ltd or its related affiliates. Shinonome LMS Backup is not affiliated with, endorsed by or sponsored by Moodle Pty Ltd or its related affiliates.';
 $string['transport_blocked'] = 'Moodle\'s HTTP security settings block the connection to the service. In Site administration > General > Security > HTTP security, check that "cURL blocked hosts list" holds neither the host name of the connection URL nor its IP addresses, and that "cURL allowed ports list" is empty or holds 443.';

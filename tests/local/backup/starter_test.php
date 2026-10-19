@@ -320,4 +320,55 @@ final class starter_test extends \advanced_testcase {
         set_config('clockskew', 0, 'tool_secbackup');
         $this->assertSame('started', starter::start_now($noon, [self::class, 'calm']));
     }
+
+    /**
+     * The tasks that step a run, as queued.
+     *
+     * @return \stdClass[]
+     */
+    private static function step_tasks(): array {
+        global $DB;
+        return array_values($DB->get_records('task_adhoc', ['classname' => '\\' . \tool_secbackup\task\run_backup::class]));
+    }
+
+    public function test_a_run_that_starts_gets_a_task_that_steps_it(): void {
+        $this->ready();
+        $this->assertSame([], self::step_tasks());
+        $this->assertSame('started', starter::maybe_start(self::inside(), [self::class, 'calm']));
+        $this->assertCount(1, self::step_tasks());
+        $this->assertSame('tool_secbackup', self::step_tasks()[0]->component);
+    }
+
+    public function test_a_run_that_lost_its_task_gets_one_at_the_next_poll(): void {
+        global $DB;
+        $this->ready();
+        $this->assertSame('started', starter::maybe_start(self::inside(), [self::class, 'calm']));
+        $DB->delete_records('task_adhoc');
+        $this->assertSame('outsidewindow', starter::maybe_start(self::inside() + 60, [self::class, 'calm']));
+        $this->assertSame('running', starter::start_now(self::inside() + 120, [self::class, 'calm']));
+        $this->assertCount(1, self::step_tasks());
+        // A task that waits is not queued twice.
+        $this->assertSame('running', starter::start_now(self::inside() + 180, [self::class, 'calm']));
+        $this->assertCount(1, self::step_tasks());
+    }
+
+    public function test_the_command_line_starts_a_run_in_or_out_of_the_window(): void {
+        $this->ready();
+        $noon = (new \DateTimeImmutable('2026-10-19 12:00', new \DateTimeZone('Asia/Tokyo')))->getTimestamp();
+        $this->assertSame('started', starter::start_cli($noon, [self::class, 'calm']));
+        $this->assertSame('cli', run_record::active()->trigger());
+        $this->assertCount(1, self::step_tasks());
+        $this->assertSame('running', starter::start_cli($noon + 60, [self::class, 'calm']));
+    }
+
+    public function test_every_reason_not_to_start_has_a_text_in_both_languages(): void {
+        foreach (['en', 'ja'] as $lang) {
+            $string = [];
+            include(__DIR__ . '/../../../lang/' . $lang . '/tool_secbackup.php');
+            $reasons = ['notregistered', 'notreceived', 'outsidewindow', 'clock', 'memorylimit', 'running', 'autobackup', 'busy'];
+            foreach ($reasons as $reason) {
+                $this->assertArrayHasKey('start_reason_' . $reason, $string, $lang . ': ' . $reason);
+            }
+        }
+    }
 }

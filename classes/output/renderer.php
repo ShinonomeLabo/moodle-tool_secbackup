@@ -19,6 +19,7 @@ namespace tool_secbackup\output;
 use core\output\notification;
 use html_writer;
 use tool_secbackup\local\api\client;
+use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\enrollment\state;
 use tool_secbackup\local\plugin_exception;
@@ -102,7 +103,24 @@ class renderer extends \plugin_renderer_base {
             [get_string('status_service_status', 'tool_secbackup'), $this->service_status($state->last_poll_status())],
         ];
         return html_writer::table($table) . $this->clock_warning($state->clock_skew()) . $this->poll_error($state)
-            . $this->links();
+            . $this->start_refusal() . $this->links();
+    }
+
+    /**
+     * The refusal of the service to start the latest backup (the number of backups of the plan, or a contract that is not
+     * active), if it was refused.
+     *
+     * @return string
+     */
+    private function start_refusal(): string {
+        $latest = run_record::recent(1);
+        if ($latest === [] || $latest[0]->status() !== 'refused') {
+            return '';
+        }
+        return $this->error_message(
+            get_string('status_start_refused', 'tool_secbackup') . ' '
+                . get_string('api_' . $latest[0]->abort_code(), 'tool_secbackup')
+        );
     }
 
     /**

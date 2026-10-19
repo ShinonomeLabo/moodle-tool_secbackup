@@ -41,30 +41,39 @@ final class journal {
     /** @var int Complete lines in the file. */
     private int $lines = 0;
 
+    /** @var int Bytes of the complete lines. */
+    private int $bytes = 0;
+
     /** @var resource|null The file, open for appending. */
     private $handle = null;
 
     /**
-     * Constructor: counts the lines of the file, and drops a last line that was cut.
+     * Constructor.
+     *
+     * Without figures it counts the lines of the file and drops a last line that was cut. With the figures that a run committed
+     * it cuts the file to them at once, without reading it: a list of millions of lines is not read at every step.
      *
      * @param string $path The file; it may not exist yet.
-     * @throws plugin_exception With temp_write_failed when a cut line cannot be dropped.
+     * @param int|null $lines The committed number of lines, or null to count them.
+     * @param int|null $bytes The committed bytes of those lines; given with $lines.
+     * @throws plugin_exception With temp_write_failed when a cut line cannot be dropped, or the file is shorter than the figures.
      */
-    public function __construct(string $path) {
+    public function __construct(string $path, ?int $lines = null, ?int $bytes = null) {
         $this->path = $path;
-        [$this->lines, $bytes, $size] = $this->scan(PHP_INT_MAX);
-        if ($size > $bytes && !self::cut($path, $bytes)) {
-            throw new plugin_exception('temp_write_failed', null, 'journal_truncate');
+        if ($lines === null || $bytes === null) {
+            [$this->lines, $this->bytes, $size] = $this->scan(PHP_INT_MAX);
+        } else {
+            clearstatcache(true, $path);
+            $size = is_file($path) ? (int) filesize($path) : 0;
+            if ($size < $bytes) {
+                throw new plugin_exception('temp_write_failed', null, 'journal_short');
+            }
+            $this->lines = $lines;
+            $this->bytes = $bytes;
         }
-    }
-
-    /**
-     * The file.
-     *
-     * @return string
-     */
-    public function path(): string {
-        return $this->path;
+        if ($size > $this->bytes) {
+            self::cut($path, $this->bytes) || throw new plugin_exception('temp_write_failed', null, 'journal_truncate');
+        }
     }
 
     /**
@@ -74,6 +83,15 @@ final class journal {
      */
     public function lines(): int {
         return $this->lines;
+    }
+
+    /**
+     * The bytes of the complete lines.
+     *
+     * @return int
+     */
+    public function bytes(): int {
+        return $this->bytes;
     }
 
     /**
@@ -91,11 +109,10 @@ final class journal {
         $line = $json . "\n";
         $handle = $this->open();
         $written = error_silencer::run(static fn() => fwrite($handle, $line), $warning);
-        if ($written !== strlen($line)) {
-            // Part of the line may be in the file: the next truncate_to() or a new journal takes it out.
-            throw new plugin_exception('temp_write_failed', null, 'journal_write');
-        }
+        // Part of the line may be in the file when this fails: the next truncate_to() or a new journal takes it out.
+        $written === strlen($line) || throw new plugin_exception('temp_write_failed', null, 'journal_write');
         $this->lines++;
+        $this->bytes += strlen($line);
     }
 
     /**
@@ -107,9 +124,8 @@ final class journal {
     public function commit(): int {
         if ($this->handle !== null) {
             $handle = $this->handle;
-            if (!error_silencer::run(static fn() => fflush($handle), $warning)) {
-                throw new plugin_exception('temp_write_failed', null, 'journal_flush');
-            }
+            error_silencer::run(static fn() => fflush($handle), $warning)
+                || throw new plugin_exception('temp_write_failed', null, 'journal_flush');
             if (function_exists('fsync')) {
                 error_silencer::run(static fn() => fsync($handle), $warning);
             }
@@ -130,16 +146,16 @@ final class journal {
                 throw new plugin_exception('temp_write_failed', null, 'journal_missing');
             }
             $this->lines = 0;
+            $this->bytes = 0;
             return;
         }
         [$lines, $bytes] = $this->scan($committed);
         if ($lines < $committed) {
             throw new plugin_exception('temp_write_failed', null, 'journal_short');
         }
-        if (!self::cut($this->path, $bytes)) {
-            throw new plugin_exception('temp_write_failed', null, 'journal_truncate');
-        }
+        self::cut($this->path, $bytes) || throw new plugin_exception('temp_write_failed', null, 'journal_truncate');
         $this->lines = $committed;
+        $this->bytes = $bytes;
     }
 
     /**
@@ -158,9 +174,7 @@ final class journal {
         }
         $path = $this->path;
         $handle = error_silencer::run(static fn() => fopen($path, 'rb'), $warning);
-        if ($handle === false || fseek($handle, $offset) !== 0) {
-            throw new plugin_exception('temp_write_failed', null, 'journal_read');
-        }
+        $handle !== false && fseek($handle, $offset) === 0 || throw new plugin_exception('temp_write_failed', null, 'journal_read');
         try {
             $rest = '';
             $position = $offset;
@@ -265,11 +279,8 @@ final class journal {
     private static function cut(string $path, int $length): bool {
         return (bool) error_silencer::run(static function () use ($path, $length): bool {
             $handle = fopen($path, 'r+b');
-            if ($handle === false) {
-                return false;
-            }
-            $done = ftruncate($handle, $length);
-            fclose($handle);
+            $done = $handle !== false && ftruncate($handle, $length);
+            $handle === false || fclose($handle);
             return $done;
         }, $warning);
     }

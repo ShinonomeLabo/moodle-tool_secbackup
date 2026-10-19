@@ -387,4 +387,13 @@ final class run_record_test extends \advanced_testcase {
             run_record::recent(1)[0]->progress()
         );
     }
+
+    public function test_a_run_is_found_by_its_id_at_the_service(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        $run->set_run_uuid('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e11');
+        $run->abort('disk_low', 1001);
+        $this->assertSame($run->id(), run_record::find_by_uuid('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e11')->id());
+        $this->assertNull(run_record::find_by_uuid('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e12'));
+    }
 }

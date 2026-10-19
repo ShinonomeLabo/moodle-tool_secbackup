@@ -235,7 +235,8 @@ final class uploader {
      * Puts a chunk in the queue. The queue is saved before this returns.
      *
      * It only records: it asks the service for nothing, sends nothing, and does not pause the run. A manifest or an index that
-     * is queued again, at the same path or at another, replaces the one that waits. See needs_drain() for the room.
+     * is queued again, at the same path or at another, replaces the one that waits; so does an object that is queued again at
+     * the same path (its file was written again, with new bytes). See needs_drain() for the room.
      *
      * @param chunk_info $chunk The chunk, as the writer returned it. Its file is in the folder of the run.
      * @param string $kind object, manifest or index.
@@ -261,12 +262,16 @@ final class uploader {
         if ($same === []) {
             $this->queue[] = $item;
         } else if ($kind === 'object') {
-            // A chunk that waits has this name, so the content is the same. A file of another path is not needed.
+            // A chunk that waits has this name, so its plain text is the same. A file of another path is not needed.
             if ($this->queue[$same[0]]['path'] !== $item['path']) {
                 $this->discard($item['path']);
                 $this->save();
+                return;
             }
-            return;
+            // The chunk was written again at its path (a step that was done again): the file has new bytes, which the size
+            // and the digest of the request for its URL must be.
+            $item['attempts'] = $this->queue[$same[0]]['attempts'];
+            $this->queue[$same[0]] = $item;
         } else {
             // The manifest and the index are named by the run, and are built again at the same path: the later one replaces
             // the earlier, with its size and its digest. The file stays, unless the earlier one was another file.

@@ -20,9 +20,12 @@ use GuzzleHttp\Promise\Create;
 use Psr\Http\Message\RequestInterface;
 use tool_secbackup\local\api\client;
 use tool_secbackup\local\api\enroll_result;
+use tool_secbackup\local\backup\core_diff;
+use tool_secbackup\local\backup\limits;
 use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
+use tool_secbackup\local\diagnostics\system_files;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\state;
 use tool_secbackup\local\net\object_transport;
@@ -133,7 +136,6 @@ final class run_fixture {
         return function (RequestInterface $request, array $options) use ($inner) {
             $this->requests[] = $request->getMethod() . ' ' . $request->getUri()->getPath();
             $answer = $this->intercept === null ? null : ($this->intercept)($request);
-            $request->getBody()->rewind();
             return $answer === null ? $inner($request, $options) : Create::promiseFor($answer);
         };
     }
@@ -178,6 +180,41 @@ final class run_fixture {
     public function link(): callable {
         $endpoint = endpoint::parse(self::API, developer_settings::from_value(null));
         return fn(): array => [$endpoint, $this->pair, fake_service::SITE_ID];
+    }
+
+    /**
+     * The seams of a runner for a small site: one table, a data root and a plugin of one file each, a Moodle program of a
+     * version file, a calm server and a temporary folder of its own.
+     *
+     * @param array $changes Seams that replace these.
+     * @return array
+     */
+    public function small_seams(array $changes = []): array {
+        global $DB;
+        $dataroot = make_request_directory();
+        file_put_contents($dataroot . '/notes.txt', 'notes');
+        $plugin = make_request_directory();
+        file_put_contents($plugin . '/version.php', 'plugin');
+        $core = make_request_directory();
+        file_put_contents($core . '/version.php', "<?php\n\$version  = 2024100703.10;\n\$release  = '4.5.3+ (Build: 20250113)';\n");
+        $schema = $DB->get_manager()->get_install_xml_schema();
+        return $changes + [
+            'limits' => new limits(2.0, 256, 500, 5.0, make_request_directory(), 100, 0),
+            'sample' => static fn(): array => ['load_per_core' => 0.1, 'memory_available_bytes' => 8589934592, 'db_ms' => 1.0,
+                'disk_free_bytes' => 107374182400, 'disk_total_bytes' => 214748364800, 'nfs_mbps' => 100.0, 'not_applicable' => []],
+            'sleep' => fn(int $seconds) => $this->advance($seconds),
+            'hostname' => static fn(): string => 'web1',
+            'link' => $this->link(),
+            'trust' => network_fakes::trust(),
+            'files' => new system_files(make_request_directory()),
+            'log' => static fn(string $line) => null,
+            'tables' => static fn(bool $logs): array => ['export' => [$schema->getTable('course')], 'unknown' => [],
+                'excluded' => []],
+            'datarootroots' => static fn(): array => ['dataroot' => [$dataroot, []]],
+            'coderoots' => static fn(): array => ['local_example' => $plugin],
+            'corediff' => static fn(): core_diff => new core_diff($core, []),
+            'external' => static fn(): bool => false,
+        ];
     }
 
     /**

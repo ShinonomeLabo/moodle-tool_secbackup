@@ -315,4 +315,41 @@ final class status_page_test extends \advanced_testcase {
         $this->expectException(\required_capability_exception::class);
         new status_page();
     }
+
+    /**
+     * The refusals of the service that stop a backup before it starts.
+     *
+     * @return array
+     */
+    public static function refusal_provider(): array {
+        return [
+            'the number of backups of the plan' => ['run_limit_reached'],
+            'a contract that is not active' => ['contract_inactive'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refusal_provider')]
+    /**
+     * A backup that the service did not start is shown with the reason.
+     *
+     * @dataProvider refusal_provider
+     * @param string $code The error code of the service.
+     */
+    public function test_a_backup_that_the_service_did_not_start_is_shown(string $code): void {
+        $this->resetAfterTest();
+        self::register();
+        \tool_secbackup\local\backup\run_record::create('manual', 1760000000)->refuse($code, 1760000001);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_start_refused', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(s(get_string('api_' . $code, 'tool_secbackup')), $html);
+    }
+
+    public function test_a_backup_that_started_after_a_refusal_hides_it(): void {
+        $this->resetAfterTest();
+        self::register();
+        \tool_secbackup\local\backup\run_record::create('manual', 1760000000)->refuse('contract_inactive', 1760000001);
+        \tool_secbackup\local\backup\run_record::create('manual', 1760000100);
+        $html = (new status_page())->render();
+        $this->assertStringNotContainsString(get_string('status_start_refused', 'tool_secbackup'), $html);
+    }
 }

@@ -63,6 +63,33 @@ $string['check_extensions'] = 'PHP の拡張';
 $string['check_moodledata'] = 'データのフォルダ (moodledata)';
 $string['check_proxy'] = 'プロキシ';
 $string['check_selinux'] = 'SELinux';
+$string['cli_backup_aborted'] = 'バックアップを中止しました: {$a}';
+$string['cli_backup_continued'] = '動いているバックアップを続けます。';
+$string['cli_backup_done'] = 'バックアップが完了しました。バックアップのサービスが確かめ、受領証も確かめました。';
+$string['cli_backup_failed'] = 'バックアップの段の 1 つが失敗しました ({$a})。定期タスクがもう一度試します。';
+$string['cli_backup_heading'] = 'あんしんLMSバックアップのバックアップ';
+$string['cli_backup_help'] = 'このサイトのバックアップを、バックアップのサービスへ、完了するまで進めます。
+
+動いているバックアップがあれば続けます。無ければ、--now を付けたときだけ始めます。
+
+オプション:
+--now        バックアップが動いていなければ、時間帯の内でも外でも、すぐに始める。
+--quiet      結果だけを出す。
+-h, --help   この説明を出す。
+
+終了の値: 0 はバックアップが完了した、1 は中止したか終わらなかった、2 はバックアップを進めなかった。
+
+cron を動かす利用者で実行してください。例:
+$ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/backup.php --now
+(Moodle 5.1 以降: public/admin/tool/secbackup/cli/backup.php)';
+$string['cli_backup_locked'] = 'ほかの処理がバックアップの段を進めています。しばらくしてから、もう一度お試しください。';
+$string['cli_backup_none'] = '動いているバックアップはありません。始めるには --now を付けてください。';
+$string['cli_backup_notstarted'] = 'バックアップを始めませんでした: {$a}';
+$string['cli_backup_otherserver'] = '動いているバックアップの一時ファイルは、サーバ {$a} にあります。そのサーバでこのコマンドを実行してください。';
+$string['cli_backup_refused'] = 'バックアップのサービスがバックアップを始めませんでした: {$a}';
+$string['cli_backup_stage'] = '段階: {$a}';
+$string['cli_backup_started'] = 'バックアップを始めました。';
+$string['cli_backup_waiting'] = '{$a} まで待ちます。';
 $string['cli_diagnose_help'] = 'このサーバからバックアップのサービスへの接続を確かめます。
 
 オプション:
@@ -265,6 +292,14 @@ $string['signature_invalid'] = 'バックアップのサービスから受け取
 $string['signingkey_corrupt'] = '保存した署名用の鍵を読めません。登録を解除してから、もう一度登録してください。';
 $string['signingkey_missing'] = 'このサイトの署名用の鍵が見つかりません。登録し直してください。';
 $string['signingkey_savefailed'] = '署名用の鍵を暗号化できなかったため、保存しませんでした。データのフォルダ (moodledata) にある暗号鍵のファイルを確かめてから、もう一度試してください。';
+$string['start_reason_autobackup'] = 'Moodle のコースの自動バックアップが、まだ動いています。終わってからバックアップを始めます。';
+$string['start_reason_busy'] = 'サーバが混み合っている (負荷、メモリ、データベース、ファイルの保存先) ため、今はバックアップを始めません。';
+$string['start_reason_clock'] = 'このサーバの時計が、バックアップのサービスの時計と 5 分以上ずれています。サーバの時刻を直してください。';
+$string['start_reason_memorylimit'] = 'PHP が使えるメモリが 256 MB より少ない可能性があります。memory_limit か、Moodle の追加のメモリの上限を上げてください。';
+$string['start_reason_notreceived'] = 'バックアップのサービスの設定を、まだ受け取っていません。次の状態の問い合わせを待ってください。';
+$string['start_reason_notregistered'] = 'このサイトは、バックアップのサービスに登録されていません。';
+$string['start_reason_outsidewindow'] = '予定のバックアップの時間帯ではありません。';
+$string['start_reason_running'] = 'バックアップが、すでに動いています。';
 $string['status_enrolled_at'] = '登録した日時';
 $string['status_last_error'] = '最後の状態の問い合わせに失敗しました。';
 $string['status_last_error_code'] = '最後の状態の問い合わせに失敗しました ({$a})。';
@@ -276,6 +311,7 @@ $string['status_response_invalid'] = 'サービスからの状態の応答を読
 $string['status_service_status'] = 'サービスでの状態';
 $string['status_site'] = 'プラットフォームでのサイト名';
 $string['status_siteid'] = 'サイト ID';
+$string['status_start_refused'] = '直近のバックアップは、バックアップのサービスが始めませんでした。';
 $string['status_unknown'] = 'まだ分かりません';
 $string['status_unreadable'] = '読み取れません。';
 $string['tamper_detected'] = 'サイトのファイルの中身が、そのファイルを保存している名前 (ハッシュ) と合っていません。ファイルが書き換えられたか、壊れた可能性があります。バックアップを中止しました。';
@@ -283,6 +319,13 @@ $string['task_poll_failed'] = '状態の問い合わせに失敗しました。�
 $string['task_poll_notregistered'] = 'サイトが登録されていないので、問い合わせませんでした。';
 $string['task_poll_ok'] = '状態を受け取りました。';
 $string['task_poll_status'] = 'バックアップのサービスに、このサイトの状態を問い合わせる';
+$string['task_run_backup'] = 'このサイトのバックアップを進める';
+$string['task_run_backup_aborted'] = 'バックアップを中止しました。連携ツールの状態の画面を確かめてください。';
+$string['task_run_backup_continue'] = 'バックアップは次の段で続けます。';
+$string['task_run_backup_done'] = 'バックアップが完了しました。';
+$string['task_run_backup_locked'] = 'ほかの処理がバックアップの段を進めています。';
+$string['task_run_backup_none'] = '動いているバックアップはありません。';
+$string['task_run_backup_paused'] = 'バックアップは、次の時間帯か、一時ファイルを持つサーバを待っています。';
 $string['temp_write_failed'] = '連携ツールの一時フォルダにファイルを書けませんでした。空き容量とフォルダの権限を確かめてください。';
 $string['trademark'] = 'Moodle という語と関連する Moodle のロゴは、Moodle Pty Ltd またはその関連会社の商標または登録商標です。The word Moodle and associated Moodle logos are trademarks or registered trademarks of Moodle Pty Ltd or its related affiliates. あんしんLMSバックアップは、Moodle Pty Ltd とその関連会社のいずれとも関係がなく、その承認や推奨を受けたものではありません。';
 $string['transport_blocked'] = 'Moodle の HTTP のセキュリティ設定が、接続先への通信を止めています。「サイト管理 > 一般 > セキュリティ > HTTPセキュリティ」で、「cURLブロック済みホスト一覧」に接続先の URL のホスト名とその IP アドレスが入っていないことと、「cURL許可済みポート一覧」が空か、443 を含むことを確かめてください。';

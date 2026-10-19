@@ -1133,4 +1133,21 @@ final class uploader_test extends \advanced_testcase {
         $settings = developer_settings::from_value(['allowprivatehosts' => true, 'skipnetworkchecks' => true]);
         return new object_transport($settings, network_fakes::passing_s3_guard(), $this->network());
     }
+
+    public function test_a_chunk_written_again_at_the_same_path_is_sent_with_its_new_digest(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $first = self::chunk($folder, 1, 300);
+        $uploader->queue($first, 'object');
+        // A step that is done again writes the same chunk again: the same name and path, new bytes.
+        $content = str_repeat('z', 310);
+        file_put_contents($first->path, $content);
+        $again = new chunk_info($first->path, $first->name, 310, base64_encode(hash('sha256', $content, true)), []);
+        $uploader->queue($again, 'object');
+        $this->assertSame(1, $uploader->pending());
+        $this->assertSame(310, $uploader->pending_bytes());
+        $uploader->drain($run, true);
+        $this->assertSame(0, $uploader->pending());
+        $key = 'sites/' . fake_service::SITE_ID . '/objects/' . $first->name;
+        $this->assertSame($content, base64_decode($this->service->state['objects'][$key]));
+    }
 }
