@@ -53,8 +53,8 @@ final class schedule {
             for ($k = 0; $k < $runs; $k++) {
                 $from = $s->window_start() + $k * $step;
                 $start = self::at($midnight, $from + $jitter);
-                // A slot ends with its window, or where the next slot begins if that is earlier.
-                $end = self::at($midnight, $from + min($length, $step));
+                // The settings keep length * runs within a day, so a slot ends with its window before the next one begins.
+                $end = self::at($midnight, $from + $length);
                 if ($start <= $now && $now < $end) {
                     return ['start' => $start, 'end' => $end];
                 }

@@ -385,7 +385,7 @@ final class poller_test extends \advanced_testcase {
      * A poller that notes when the starter is called.
      *
      * @param int $now This server's clock.
-     * @param int[] $calls The times the starter was called with.
+     * @param array[] $calls The time given and the time of the last poll in the state, for each call of the starter.
      * @return poller
      */
     private function poller_with_starter(int $now, array &$calls): poller {
@@ -394,7 +394,7 @@ final class poller_test extends \advanced_testcase {
             static fn(): int => $now,
             network_fakes::trust(),
             static function (int $at) use (&$calls): ?string {
-                $calls[] = $at;
+                $calls[] = [$at, state::load()->last_poll()];
                 return null;
             }
         );
@@ -404,9 +404,8 @@ final class poller_test extends \advanced_testcase {
         $this->register();
         $calls = [];
         $this->assertSame('ok', $this->poller_with_starter(self::NOW, $calls)->run());
-        $this->assertSame([self::NOW], $calls);
-        // The answer was saved before the starter was called.
-        $this->assertSame(self::NOW, state::load()->last_poll());
+        // The answer was saved before the starter was called: it reads the time of the poll from the state.
+        $this->assertSame([[self::NOW, self::NOW]], $calls);
     }
 
     public function test_the_starter_is_not_called_when_the_poll_failed(): void {
@@ -426,8 +425,10 @@ final class poller_test extends \advanced_testcase {
     public function test_the_starter_is_not_called_when_an_instruction_could_not_be_applied(): void {
         $this->register();
         $calls = [];
-        $this->service->state['mode'] = 'site_removed';
+        $this->service->publish_aws_ranges(5, self::ranges_content());
+        $this->service->state['awsranges'] = null;
         $this->assertSame('failed', $this->poller_with_starter(self::NOW, $calls)->run());
+        $this->assertSame('api_unexpected', state::load()->last_poll_error());
         $this->assertSame([], $calls);
     }
 

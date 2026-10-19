@@ -30,19 +30,9 @@ use tool_secbackup\tests\instruction_factory;
  * @covers     \tool_secbackup\local\backup\starter
  */
 final class starter_test extends \advanced_testcase {
-    /** @var string memory_limit before the test. */
-    private string $memory;
-
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
-        $this->memory = (string) ini_get('memory_limit');
-        ini_set('memory_limit', '512M');
-    }
-
-    protected function tearDown(): void {
-        ini_set('memory_limit', $this->memory);
-        parent::tearDown();
     }
 
     /**
@@ -156,7 +146,9 @@ final class starter_test extends \advanced_testcase {
     }
 
     public function test_the_lock_is_released_after_a_start(): void {
+        global $CFG;
         $this->ready();
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
         starter::maybe_start(self::inside(), [self::class, 'calm']);
         $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('start', 0);
         $this->assertNotFalse($lock);
@@ -164,7 +156,9 @@ final class starter_test extends \advanced_testcase {
     }
 
     public function test_the_lock_is_released_when_the_check_fails(): void {
+        global $CFG;
         $this->ready();
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
         $this->expectException(\RuntimeException::class);
         try {
             starter::maybe_start(self::inside(), static function (): ?string {
@@ -210,10 +204,15 @@ final class starter_test extends \advanced_testcase {
         $this->assertSame([], run_record::recent(1));
     }
 
-    public function test_the_watch_of_this_server_is_used_by_default(): void {
+    public function test_the_watch_of_this_server_with_the_stored_limits_is_used_by_default(): void {
         $this->ready();
-        // What the server really says is not known here; the run starts or the server is busy, and nothing else.
-        $this->assertContains(starter::maybe_start(self::inside()), ['started', 'busy']);
+        // No server has a billion MB of memory left, so the default watch must say that the server is busy.
+        set_config('minmemorymb', '1000000000', 'tool_secbackup');
+        set_config('loadpercore', '1000000', 'tool_secbackup');
+        set_config('maxdbms', '1000000', 'tool_secbackup');
+        set_config('minnfsmbps', '0', 'tool_secbackup');
+        $this->assertSame('busy', starter::start_now(self::inside()));
+        $this->assertSame([], run_record::recent(1));
     }
 
     /**
@@ -253,42 +252,72 @@ final class starter_test extends \advanced_testcase {
     }
 
     /**
-     * Values of memory_limit and what they give.
+     * The limit of the PHP ini, the extra limit of Moodle and whether the run is held back.
      *
      * @return array[]
      */
     public static function memory_limits(): array {
         return [
-            '128M' => ['128M', 'memorylimit'],
-            '255M' => ['255M', 'memorylimit'],
-            '1G' => ['1G', 'started'],
-            '256M' => ['256M', 'started'],
-            'no limit' => ['-1', 'started'],
+            'a web request with the default and the usual extra' => ['128M', '512M', false],
+            'the extra limit is too small as well' => ['128M', '64M', true],
+            '255M both' => ['255M', '255M', true],
+            '256M is enough' => ['256M', '128M', false],
+            'the extra limit is the larger' => ['64M', '300M', false],
+            'the ini value is the larger' => ['1G', '64M', false],
+            'no limit in the ini' => ['-1', '64M', false],
+            'no extra limit' => ['64M', '-1', false],
+            'a value in bytes' => ['134217728', '134217728', true],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('memory_limits')]
     /**
-     * A memory limit under 256 MB holds the start back; no limit does not.
+     * The run has the larger of the two limits, and under 256 MB it is held back.
      *
      * @dataProvider memory_limits
-     * @param string $limit The ini value.
-     * @param string $expected The answer.
+     * @param string $ini The ini value.
+     * @param string $extra The extra limit of Moodle.
+     * @param bool $expected Whether the run is held back.
      */
-    public function test_the_memory_limit_must_be_256_mb_or_more(string $limit, string $expected): void {
+    public function test_the_memory_the_run_will_have_must_be_256_mb_or_more(string $ini, string $extra, bool $expected): void {
+        $this->assertSame($expected, starter::memory_limit_too_low($ini, $extra));
+    }
+
+    public function test_the_extra_limit_of_moodle_is_read_and_defaults_to_512m(): void {
+        global $CFG;
         $this->ready();
-        ini_set('memory_limit', $limit);
-        $this->assertSame($expected, starter::maybe_start(self::inside(), [self::class, 'calm']));
+        // With the usual extra limit no ini value of the caller can hold the start back.
+        unset($CFG->extramemorylimit);
+        $this->assertSame('started', starter::maybe_start(self::inside(), [self::class, 'calm']));
+    }
+
+    public function test_a_small_ini_value_and_a_small_extra_limit_hold_the_start_back(): void {
+        global $CFG;
+        $this->ready();
+        $current = (string) ini_get('memory_limit');
+        // PHP does not lower the limit below what is in use, e.g. when coverage is measured.
+        if (memory_get_usage(true) > 200 * 1048576) {
+            $this->markTestSkipped('More than 200 MB is in use.');
+        }
+        $CFG->extramemorylimit = '64M';
+        ini_set('memory_limit', '200M');
+        try {
+            $this->assertSame('memorylimit', starter::maybe_start(self::inside(), [self::class, 'calm']));
+            $this->assertSame('memorylimit', starter::start_now(self::inside(), [self::class, 'calm']));
+        } finally {
+            ini_set('memory_limit', $current);
+        }
+        $CFG->extramemorylimit = '512M';
+        $this->assertSame('started', starter::maybe_start(self::inside(), [self::class, 'calm']));
     }
 
     public function test_the_reasons_come_in_order(): void {
         $this->ready();
         $noon = (new \DateTimeImmutable('2026-10-19 12:00', new \DateTimeZone('Asia/Tokyo')))->getTimestamp();
         set_config('clockskew', 900, 'tool_secbackup');
-        ini_set('memory_limit', '128M');
         $this->assertSame('outsidewindow', starter::maybe_start($noon, [self::class, 'calm']));
         $this->assertSame('clock', starter::start_now($noon, [self::class, 'calm']));
         set_config('clockskew', 0, 'tool_secbackup');
-        $this->assertSame('memorylimit', starter::start_now($noon, [self::class, 'calm']));
+        $this->assertSame('started', starter::start_now($noon, [self::class, 'calm']));
     }
 }

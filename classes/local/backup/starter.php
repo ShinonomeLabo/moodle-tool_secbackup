@@ -39,8 +39,8 @@ final class starter {
      * Starts the run of the schedule when one is due.
      *
      * @param int $now The current time.
-     * @param callable|null $verdict Function () that returns why the server is too busy, or null; the watch of this server
-     *     (monitor) when null.
+     * @param callable|null $verdict A seam for tests: function () that returns why the server is too busy, or null. The
+     *     watch of this server (monitor) with the stored limits when null.
      * @return string started, or the reason: notregistered, notreceived, outsidewindow, clock, memorylimit, running,
      *     autobackup or busy.
      */
@@ -52,8 +52,8 @@ final class starter {
      * Starts a run at once, in or out of the window (the button of the status page).
      *
      * @param int $now The current time.
-     * @param callable|null $verdict Function () that returns why the server is too busy, or null; the watch of this server
-     *     (monitor) when null.
+     * @param callable|null $verdict A seam for tests: function () that returns why the server is too busy, or null. The
+     *     watch of this server (monitor) with the stored limits when null.
      * @return string started, or the reason; the same as for maybe_start() but never outsidewindow.
      */
     public static function start_now(int $now, ?callable $verdict = null): string {
@@ -85,8 +85,8 @@ final class starter {
         if ($skew !== null && abs($skew) >= self::MAX_SKEW) {
             return 'clock';
         }
-        $memory = ini_get('memory_limit');
-        if ($memory !== '-1' && get_real_size($memory) < self::MIN_MEMORY) {
+        global $CFG;
+        if (self::memory_limit_too_low((string) ini_get('memory_limit'), (string) ($CFG->extramemorylimit ?? ''))) {
             return 'memorylimit';
         }
         $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('start', 0);
@@ -98,6 +98,25 @@ final class starter {
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * Whether the memory the run will have is less than 256 MB.
+     *
+     * The run goes on in cron, which raises the limit to the extra limit of Moodle when that is larger than the ini value,
+     * and the button of the status page runs in a web request, whose ini value is the lower one. So the run is judged by
+     * the larger of the two, not by the limit of the caller.
+     *
+     * @param string $ini The memory_limit of PHP; -1 is no limit.
+     * @param string $extra The extra memory limit of Moodle ($CFG->extramemorylimit); empty for the default of 512M.
+     * @return bool
+     */
+    public static function memory_limit_too_low(string $ini, string $extra): bool {
+        $extra = $extra === '' ? '512M' : $extra;
+        if ($ini === '-1' || $extra === '-1') {
+            return false;
+        }
+        return max(get_real_size($ini), get_real_size($extra)) < self::MIN_MEMORY;
     }
 
     /**

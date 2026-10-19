@@ -34,7 +34,15 @@ final class autobackup_watch {
      * @return bool True when a course backup task is queued or running, or the automated backup task is running.
      */
     public static function busy(): bool {
-        if (manager::get_adhoc_tasks(course_backup_task::class) !== []) {
+        global $DB;
+        // Moodle keeps a task that has no attempts left for four weeks but never runs it again, so it does not count.
+        if (
+            $DB->record_exists_select(
+                'task_adhoc',
+                'classname = ? AND (attemptsavailable IS NULL OR attemptsavailable > 0)',
+                ['\\' . course_backup_task::class]
+            )
+        ) {
             return true;
         }
         foreach (manager::get_running_tasks() as $running) {
@@ -48,8 +56,13 @@ final class autobackup_watch {
     /**
      * What is known of the automated backup of this site.
      *
-     * @return array{backup_auto_active: int, weekdays: string, hour: int, minute: int, lastduration: int|null} The setting of
-     *     Moodle, and how long the last round took in seconds (null when no course has been backed up).
+     * The hour and the minute are the wall time in the time zone of the server (timezone), not in UTC. The duration runs from
+     * the first start to the last end of the courses that were started within a day of the latest start; while a round is
+     * going on (busy() is true) it can reach back into the round before.
+     *
+     * @return array{backup_auto_active: int, weekdays: string, hour: int, minute: int, timezone: string,
+     *     lastduration: int|null} The setting of Moodle, and how long the last round took in seconds (null when no course
+     *     has been backed up).
      */
     public static function describe(): array {
         global $DB;
@@ -71,6 +84,7 @@ final class autobackup_watch {
             'weekdays' => (string) get_config('backup', 'backup_auto_weekdays'),
             'hour' => (int) get_config('backup', 'backup_auto_hour'),
             'minute' => (int) get_config('backup', 'backup_auto_minute'),
+            'timezone' => \core_date::get_server_timezone(),
             'lastduration' => $duration,
         ];
     }

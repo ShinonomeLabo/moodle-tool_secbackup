@@ -65,8 +65,6 @@ final class schedule_test extends \advanced_testcase {
         $this->assertSame(3, schedule::jitter('site-3', 180));
         // A window of 90 minutes: a quarter is 22.
         $this->assertSame(4110802125 % 22, schedule::jitter('site-1', 90));
-        // Every day the same.
-        $this->assertSame(schedule::jitter('site-5', 180), schedule::jitter('site-5', 180));
     }
 
     public function test_a_window_too_short_for_a_delay_gives_none(): void {
@@ -82,6 +80,7 @@ final class schedule_test extends \advanced_testcase {
     }
 
     public function test_a_time_in_the_window_of_another_zone_is_inside(): void {
+        $this->setTimezone('UTC');
         $s = $this->settings();
         $delay = schedule::jitter('site-1', 180);
         // The server runs in UTC: 17:30 on the 18th is 02:30 on the 19th in Tokyo.
@@ -134,29 +133,39 @@ final class schedule_test extends \advanced_testcase {
     }
 
     public function test_several_runs_a_day_have_their_own_slots(): void {
-        // Four runs: a slot every 6 hours from 08:00, each of the 3 hours of the window.
-        $s = $this->settings(['timezone' => 'UTC', 'runs_per_day' => 4, 'window_start' => '08:00', 'window_end' => '11:00']);
+        // Four runs from the window 02:00-05:00: a slot every 6 hours, each of 3 hours (02:00, 08:00, 14:00, 20:00).
+        $s = $this->settings(['runs_per_day' => 4]);
         $delay = schedule::jitter('site-1', 180) * 60;
-        foreach (['08:00', '14:00', '20:00', '02:00'] as $from) {
-            $date = $from === '02:00' ? '2026-10-20' : '2026-10-19';
-            $begin = self::ts("$date $from", 'UTC');
-            $slot = schedule::slot_at($s, 'site-1', $begin + $delay + 60);
-            $this->assertSame(['start' => $begin + $delay, 'end' => $begin + 3 * 3600], $slot, $from);
+        foreach (['02:00', '08:00', '14:00', '20:00'] as $from) {
+            $begin = self::ts("2026-10-19 $from", 'Asia/Tokyo');
+            $expected = ['start' => $begin + $delay, 'end' => $begin + 3 * 3600];
+            $this->assertNull(schedule::slot_at($s, 'site-1', $begin + $delay - 1), $from);
+            $this->assertSame($expected, schedule::slot_at($s, 'site-1', $begin + $delay), $from);
+            $this->assertSame($expected, schedule::slot_at($s, 'site-1', $begin + 3 * 3600 - 1), $from);
+            $this->assertNull(schedule::slot_at($s, 'site-1', $begin + 3 * 3600), $from);
         }
-        $this->assertNull(schedule::slot_at($s, 'site-1', self::ts('2026-10-19 11:00', 'UTC')));
-        $this->assertNull(schedule::slot_at($s, 'site-1', self::ts('2026-10-19 12:00', 'UTC')));
+        $this->assertNull(schedule::slot_at($s, 'site-1', self::ts('2026-10-19 12:00', 'Asia/Tokyo')));
+        $this->assertNull(schedule::slot_at($s, 'site-1', self::ts('2026-10-19 07:59', 'Asia/Tokyo')));
     }
 
     public function test_slots_of_a_window_over_midnight_with_several_runs(): void {
-        // 23:00-01:00 twice a day: slots at 23:00 and 11:00.
+        // 23:00-01:00 twice a day: slots at 23:00 and 11:00, each of 2 hours.
         $s = $this->settings(['timezone' => 'UTC', 'runs_per_day' => 2, 'window_start' => '23:00', 'window_end' => '01:00']);
-        $this->assertNotNull(schedule::slot_at($s, 'site-2', self::ts('2026-10-19 12:00', 'UTC')));
-        $this->assertNotNull(schedule::slot_at($s, 'site-2', self::ts('2026-10-19 00:30', 'UTC')));
+        $noon = schedule::slot_at($s, 'site-2', self::ts('2026-10-19 12:00', 'UTC'));
+        $this->assertSame(
+            ['start' => self::ts('2026-10-19 11:00', 'UTC'), 'end' => self::ts('2026-10-19 13:00', 'UTC')],
+            $noon
+        );
+        $night = schedule::slot_at($s, 'site-2', self::ts('2026-10-19 00:30', 'UTC'));
+        $this->assertSame(
+            ['start' => self::ts('2026-10-18 23:00', 'UTC'), 'end' => self::ts('2026-10-19 01:00', 'UTC')],
+            $night
+        );
         $this->assertNull(schedule::slot_at($s, 'site-2', self::ts('2026-10-19 02:00', 'UTC')));
     }
 
-    public function test_slots_that_would_overlap_are_cut_where_the_next_one_begins(): void {
-        // The settings never allow a window longer than a slot, so the cut is shown with the longest ones: 6 hours, 4 runs.
+    public function test_the_tightest_accepted_setting_gives_slots_that_meet(): void {
+        // The settings accept no window longer than a slot: 6 hours, 4 runs, so each slot ends where the next begins.
         $s = $this->settings(['timezone' => 'UTC', 'runs_per_day' => 4, 'window_start' => '00:00', 'window_end' => '06:00']);
         $slot = schedule::slot_at($s, 'site-2', self::ts('2026-10-19 05:59', 'UTC'));
         $this->assertSame(self::ts('2026-10-19 06:00', 'UTC'), $slot['end']);

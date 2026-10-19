@@ -54,7 +54,8 @@ final class poller {
      * @param client|null $client API client; null for the one of this site.
      * @param callable|null $clock Returns the current UNIX time; null for time().
      * @param sec_trust|null $trust Trusted response keys, which verify the instructions; null for the ones of this site.
-     * @param callable|null $starter Function (int $now) that starts a backup run when one is due; null for starter::maybe_start().
+     * @param callable|null $starter A seam for tests: function (int $now) called after a poll that succeeded; null for
+     *     starter::maybe_start().
      */
     public function __construct(
         ?client $client = null,

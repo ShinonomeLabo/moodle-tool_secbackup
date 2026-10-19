@@ -59,6 +59,27 @@ final class autobackup_watch_test extends \advanced_testcase {
         $this->assertTrue(autobackup_watch::busy());
     }
 
+    public function test_a_course_backup_with_no_attempts_left_does_not(): void {
+        global $DB;
+        $task = new course_backup_task();
+        $task->set_custom_data(['courseid' => 2]);
+        \core\task\manager::queue_adhoc_task($task);
+        // Moodle keeps a task that failed for good, but never runs it again.
+        $DB->set_field('task_adhoc', 'attemptsavailable', 0, ['classname' => '\\' . course_backup_task::class]);
+        $this->assertFalse(autobackup_watch::busy());
+        $DB->set_field('task_adhoc', 'attemptsavailable', 1, ['classname' => '\\' . course_backup_task::class]);
+        $this->assertTrue(autobackup_watch::busy());
+        $DB->set_field('task_adhoc', 'attemptsavailable', null, ['classname' => '\\' . course_backup_task::class]);
+        $this->assertTrue(autobackup_watch::busy());
+    }
+
+    public function test_another_queued_task_does_not(): void {
+        $task = new \core\task\asynchronous_backup_task();
+        $task->set_custom_data(['backupid' => 'abc']);
+        \core\task\manager::queue_adhoc_task($task);
+        $this->assertFalse(autobackup_watch::busy());
+    }
+
     public function test_the_running_automated_backup_makes_it_busy(): void {
         global $DB;
         $name = '\\' . automated_backup_task::class;
@@ -82,6 +103,7 @@ final class autobackup_watch_test extends \advanced_testcase {
             'weekdays' => '0111110',
             'hour' => 3,
             'minute' => 30,
+            'timezone' => \core_date::get_server_timezone(),
             'lastduration' => null,
         ], autobackup_watch::describe());
     }
