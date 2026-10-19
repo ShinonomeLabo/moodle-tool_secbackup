@@ -428,6 +428,47 @@ final class series_writer_test extends \advanced_testcase {
         $this->assertSame([], $this->files());
     }
 
+    public function test_a_path_that_is_now_a_link_a_pipe_a_socket_or_a_folder_is_not_opened(): void {
+        $this->put('real', 'content');
+        symlink($this->base . '/real', $this->base . '/link');
+        symlink($this->base . '/nothing', $this->base . '/dangling');
+        mkdir($this->base . '/folder');
+        $this->assertTrue(posix_mkfifo($this->base . '/pipe', 0600));
+        $server = stream_socket_server('unix://' . $this->base . '/sock', $errno, $errstr);
+        $this->assertNotFalse($server);
+        $writer = $this->writer();
+        foreach (['link', 'dangling', 'folder', 'pipe', 'sock'] as $name) {
+            $this->assertSame([], $writer->add('dataroot', $this->base, $name));
+        }
+        $this->assertSame([], $writer->flush());
+        $this->assertSame(
+            ['dataroot:link', 'dataroot:dangling', 'dataroot:folder', 'dataroot:pipe', 'dataroot:sock'],
+            $writer->unreadable()
+        );
+        $this->assertSame([], $writer->entries());
+        $this->assertSame([], $this->files());
+        fclose($server);
+    }
+
+    public function test_a_refused_copy_does_not_close_the_chunk_of_the_original(): void {
+        $this->put('a', 'first');
+        $this->put('b', 'second');
+        $writer = $this->writer();
+        $writer->add('dataroot', $this->base, 'a');
+        try {
+            $copy = clone $writer;
+            $this->fail('A writer was cloned');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('cloned', $e->getMessage());
+        }
+        unset($e);
+        gc_collect_cycles();
+        $writer->add('dataroot', $this->base, 'b');
+        $infos = $writer->flush();
+        $this->assertCount(1, $infos);
+        $this->assertSame(['first', 'second'], self::content_of($writer->entries(), $infos));
+    }
+
     public function test_a_small_file_that_cannot_be_read_is_unreadable_and_the_others_stay(): void {
         $this->put('a', 'aaa');
         $this->put('b', 'bbb');

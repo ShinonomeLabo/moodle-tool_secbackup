@@ -216,7 +216,10 @@ final class series_writer {
      */
     private function add_file(string $root, string $base, string $path): void {
         $full = $base . '/' . $path;
-        $handle = error_silencer::run(static fn() => fopen($full, 'rb'), $warning);
+        // A path that is now a link, a pipe, a socket or a folder is not opened: opening a pipe would wait for ever.
+        $lstat = error_silencer::run(static fn() => lstat($full), $warning);
+        $handle = $lstat !== false && ($lstat['mode'] & 0170000) === 0100000
+            ? error_silencer::run(static fn() => fopen($full, 'rb'), $warning) : false;
         $stat = $handle === false ? false : fstat($handle);
         if ($handle === false || $stat === false || ($stat['mode'] & 0170000) !== 0100000) {
             $this->note_unreadable($root, $path);
@@ -534,7 +537,9 @@ final class series_writer {
      * @throws \coding_exception Always.
      */
     public function __clone() {
+        // The destructor of the copy must touch nothing of the original: not its key and not its open chunk.
         $this->dedupkey = null;
+        $this->writer = null;
         throw new \coding_exception('A series writer must not be cloned.');
     }
 

@@ -124,6 +124,10 @@ final class tree_walker {
                 $this->unreadable['hex:' . bin2hex($path)] = true;
                 continue;
             }
+            if ($after !== null && strcmp($path, $after) <= 0 && !self::may_hold_later_paths($path, $after)) {
+                // Not before the page and not a folder that holds it: not worth a call of lstat() in a folder of many names.
+                continue;
+            }
             $stat = error_silencer::run(fn() => lstat($this->root . '/' . $path), $warning);
             if ($stat === false) {
                 $this->unreadable[$path] = true;

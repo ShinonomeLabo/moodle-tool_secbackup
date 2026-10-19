@@ -28,13 +28,35 @@ final class code_source {
     /**
      * The folders of the plugins that do not come with Moodle.
      *
+     * A plugin whose folder is missing from the disk (core lists it with no folder) has no root, and neither has a plugin whose
+     * folder lies inside the folder of another one (a subplugin): the walk of the outer folder covers it. Of two plugins with
+     * the same folder, the first component is the root.
+     *
+     * @param object[]|null $plugins Plugins by component instead of those of Moodle, for tests.
      * @return string[] Folder by component, such as "tool_secbackup", sorted by component.
      */
-    public static function roots(): array {
+    public static function roots(?array $plugins = null): array {
+        $plugins ??= self::plugins();
+        ksort($plugins, SORT_STRING);
+        $real = [];
+        foreach ($plugins as $component => $plugin) {
+            $resolved = $plugin->is_standard() || !is_string($plugin->rootdir) ? false : realpath($plugin->rootdir);
+            if ($resolved !== false && is_dir($resolved)) {
+                $real[$component] = rtrim($resolved, '/');
+            }
+        }
         $roots = [];
-        foreach (self::plugins() as $component => $plugin) {
-            if (!$plugin->is_standard()) {
-                $roots[$component] = $plugin->rootdir;
+        foreach ($real as $component => $dir) {
+            $covered = false;
+            foreach ($real as $other => $outer) {
+                $inside = str_starts_with($dir, $outer . '/') || ($dir === $outer && strcmp($other, $component) < 0);
+                if ($other !== $component && $inside) {
+                    $covered = true;
+                    break;
+                }
+            }
+            if (!$covered) {
+                $roots[$component] = $plugins[$component]->rootdir;
             }
         }
         return $roots;

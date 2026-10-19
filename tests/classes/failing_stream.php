@@ -146,6 +146,18 @@ final class failing_stream {
     }
 
     /**
+     * Gives the status of a path, for lstat() and file_exists() on a URL of this protocol.
+     *
+     * @param string $path The URL.
+     * @param int $flags Flags of PHP.
+     * @return array|false
+     */
+    public function url_stat(string $path, int $flags): array|false {
+        $real = substr($path, strlen(self::PROTOCOL . '://'));
+        return file_exists($real) || is_link($real) ? lstat($real) : false;
+    }
+
+    /**
      * Closes the file.
      */
     public function stream_close(): void {

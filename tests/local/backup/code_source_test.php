@@ -74,4 +74,72 @@ final class code_source_test extends \advanced_testcase {
         sort($sorted, SORT_STRING);
         $this->assertSame($sorted, $components);
     }
+
+    public function test_a_plugin_that_is_missing_from_the_disk_has_no_root_but_has_a_version(): void {
+        $this->resetAfterTest();
+        set_config('version', 2026010100, 'local_ghost');
+        \core_plugin_manager::reset_caches();
+        $this->assertArrayNotHasKey('local_ghost', code_source::roots());
+        $byname = array_column(code_source::versions(), null, 'component');
+        $this->assertSame(
+            ['component' => 'local_ghost', 'version' => '2026010100', 'standard' => false],
+            $byname['local_ghost']
+        );
+        foreach (code_source::roots() as $dir) {
+            $this->assertIsString($dir);
+            $this->assertDirectoryExists($dir);
+        }
+    }
+
+    /**
+     * A stand-in for a plugin.
+     *
+     * @param string|null $rootdir Its folder.
+     * @return object
+     */
+    private static function plugin(?string $rootdir): object {
+        return new class ($rootdir) {
+            /** @var string|null Folder. */
+            public ?string $rootdir;
+
+            /**
+             * Constructor.
+             *
+             * @param string|null $rootdir Folder.
+             */
+            public function __construct(?string $rootdir) {
+                $this->rootdir = $rootdir;
+            }
+
+            /**
+             * Added plugins only are given.
+             *
+             * @return bool
+             */
+            public function is_standard(): bool {
+                return false;
+            }
+        };
+    }
+
+    public function test_a_plugin_inside_the_folder_of_another_is_not_a_root_of_its_own(): void {
+        $base = realpath(make_request_directory());
+        foreach (['parent/sub/child', 'parentx', 'other'] as $dir) {
+            mkdir($base . '/' . $dir, 0777, true);
+        }
+        symlink($base . '/parent', $base . '/viaLink');
+        $plugins = [
+            'local_child' => self::plugin($base . '/parent/sub/child'),
+            'local_linked' => self::plugin($base . '/viaLink/sub'),
+            'local_other' => self::plugin($base . '/other'),
+            'local_parent' => self::plugin($base . '/parent'),
+            'local_parentx' => self::plugin($base . '/parentx'),
+            'local_same' => self::plugin($base . '/other'),
+            'local_gone' => self::plugin($base . '/gone'),
+            'local_null' => self::plugin(null),
+        ];
+        $roots = code_source::roots($plugins);
+        $this->assertSame(['local_other', 'local_parent', 'local_parentx'], array_keys($roots));
+        $this->assertSame($base . '/parent', $roots['local_parent']);
+    }
 }

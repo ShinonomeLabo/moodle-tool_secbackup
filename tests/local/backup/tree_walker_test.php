@@ -81,12 +81,43 @@ final class tree_walker_test extends \advanced_testcase {
         $expected = $names;
         usort($expected, 'strcmp');
         $this->assertSame($expected, self::all($walker));
+        $this->assertSame($expected, self::all($walker, 1));
     }
 
     public function test_directories_sort_by_their_name_and_a_slash(): void {
         $root = $this->tree(['a-c' => '1', 'a/b' => '2', 'a.d' => '3', 'a0' => '4']);
         $paths = array_column((new tree_walker($root, []))->next(null, 100), 'path');
         $this->assertSame(['a-c', 'a.d', 'a/b', 'a0'], $paths);
+        $this->assertSame(['a-c', 'a.d', 'a/b', 'a0'], self::all(new tree_walker($root, []), 1));
+    }
+
+    public function test_folders_that_hold_only_smaller_paths_are_not_listed(): void {
+        $root = $this->tree(['a/1' => '1', 'b/1' => '2', 'c/1' => '3', 'c/2' => '4', 'd/1' => '5', 'd/sub/2' => '6']);
+        $listed = [];
+        $lister = static function (string $dir) use (&$listed, $root): array|false {
+            $listed[] = substr($dir, strlen($root));
+            return self::list_dir($dir);
+        };
+        $walker = new tree_walker($root, [], $lister);
+        $this->assertSame(['c/2', 'd/1'], array_column($walker->next('c/1', 2), 'path'));
+        $this->assertSame(['', '/c', '/d'], $listed);
+        $listed = [];
+        $this->assertSame(['d/sub/2'], array_column($walker->next('d/1', 5), 'path'));
+        $this->assertSame(['', '/d', '/d/sub'], $listed);
+    }
+
+    public function test_names_that_are_before_the_page_are_not_looked_at(): void {
+        $root = $this->tree(['b' => '1', 'c' => '2', 'x/y' => '3']);
+        // A name that is gone would be noted if it were looked at; "a" and "b" are before the page, "x" holds the page.
+        $lister = static fn(string $dir): array|false => $dir === $root
+            ? array_merge(self::list_dir($dir), ['a']) : self::list_dir($dir);
+        $walker = new tree_walker($root, [], $lister);
+        $this->assertSame(['x/y'], array_column($walker->next('x', 5), 'path'));
+        $this->assertSame([], $walker->unreadable());
+        $this->assertSame(['c'], array_column($walker->next('b', 1), 'path'));
+        $this->assertSame([], $walker->unreadable());
+        $this->assertSame(['b', 'c', 'x/y'], array_column($walker->next(null, 10), 'path'));
+        $this->assertSame(['a'], $walker->unreadable());
     }
 
     public function test_pages_continue_after_a_path_and_prune_what_is_smaller(): void {
@@ -158,6 +189,7 @@ final class tree_walker_test extends \advanced_testcase {
         $root = $this->tree(['f' => '1']);
         $server = stream_socket_server('unix://' . $root . '/sock', $errno, $errstr);
         $this->assertNotFalse($server);
+        $this->assertTrue(posix_mkfifo($root . '/pipe', 0600));
         $walker = new tree_walker($root, []);
         $this->assertSame(['f'], self::all($walker));
         $this->assertSame([], $walker->skipped());
