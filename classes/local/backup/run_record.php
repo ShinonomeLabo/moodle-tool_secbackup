@@ -173,6 +173,15 @@ final class run_record {
     }
 
     /**
+     * When the run was started.
+     *
+     * @return int UNIX time.
+     */
+    public function started_at(): int {
+        return (int) $this->row->timecreated;
+    }
+
+    /**
      * What started the run.
      *
      * @return string

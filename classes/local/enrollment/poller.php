@@ -20,6 +20,7 @@ use tool_secbackup\local\api\api_exception;
 use tool_secbackup\local\api\client;
 use tool_secbackup\local\api\instruction;
 use tool_secbackup\local\backup\settings;
+use tool_secbackup\local\backup\starter;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\net\aws_ranges;
@@ -44,17 +45,27 @@ final class poller {
     /** @var callable Returns the current UNIX time. */
     private $clock;
 
+    /** @var callable Function (int $now) that starts a backup run when one is due; starter::maybe_start() by default. */
+    private $starter;
+
     /**
      * Constructor.
      *
      * @param client|null $client API client; null for the one of this site.
      * @param callable|null $clock Returns the current UNIX time; null for time().
      * @param sec_trust|null $trust Trusted response keys, which verify the instructions; null for the ones of this site.
+     * @param callable|null $starter Function (int $now) that starts a backup run when one is due; null for starter::maybe_start().
      */
-    public function __construct(?client $client = null, ?callable $clock = null, ?sec_trust $trust = null) {
+    public function __construct(
+        ?client $client = null,
+        ?callable $clock = null,
+        ?sec_trust $trust = null,
+        ?callable $starter = null
+    ) {
         $this->client = $client;
         $this->trust = $trust;
         $this->clock = $clock ?? static fn(): int => time();
+        $this->starter = $starter ?? [starter::class, 'maybe_start'];
     }
 
     /**
@@ -89,7 +100,12 @@ final class poller {
             state::record_poll($now, null, $e->errorcode, self::text($e->a));
             return 'failed';
         }
-        return $this->apply_instructions($result->instructions, $client, $state, $pair, $now, $result) ? 'ok' : 'failed';
+        if (!$this->apply_instructions($result->instructions, $client, $state, $pair, $now, $result)) {
+            return 'failed';
+        }
+        // The answer and the instructions are saved, so a run that is due now starts with the newest settings.
+        ($this->starter)($now);
+        return 'ok';
     }
 
     /**

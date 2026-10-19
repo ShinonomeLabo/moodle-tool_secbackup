@@ -43,6 +43,8 @@ final class run_record_test extends \advanced_testcase {
         $row = $DB->get_record('tool_secbackup_runs', ['id' => $run->id()], '*', MUST_EXIST);
         $this->assertSame('full', $row->kind);
         $this->assertEquals(1000, $row->timecreated);
+        $this->assertSame(1000, $run->started_at());
+        $this->assertSame(1000, run_record::active()->started_at());
         $this->assertEquals(1000, $row->timemodified);
         $this->assertNull($row->timefinished);
         $this->assertNull($row->nextattempt);

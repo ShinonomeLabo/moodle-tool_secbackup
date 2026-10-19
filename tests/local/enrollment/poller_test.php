@@ -380,4 +380,68 @@ final class poller_test extends \advanced_testcase {
         $this->assertSame(5, aws_ranges::stored_seq());
         $this->assertSame('', state::load()->last_poll_error());
     }
+
+    /**
+     * A poller that notes when the starter is called.
+     *
+     * @param int $now This server's clock.
+     * @param int[] $calls The times the starter was called with.
+     * @return poller
+     */
+    private function poller_with_starter(int $now, array &$calls): poller {
+        return new poller(
+            network_fakes::client($this->service->handler(), $now),
+            static fn(): int => $now,
+            network_fakes::trust(),
+            static function (int $at) use (&$calls): ?string {
+                $calls[] = $at;
+                return null;
+            }
+        );
+    }
+
+    public function test_the_starter_is_called_after_a_poll_that_succeeded(): void {
+        $this->register();
+        $calls = [];
+        $this->assertSame('ok', $this->poller_with_starter(self::NOW, $calls)->run());
+        $this->assertSame([self::NOW], $calls);
+        // The answer was saved before the starter was called.
+        $this->assertSame(self::NOW, state::load()->last_poll());
+    }
+
+    public function test_the_starter_is_not_called_when_the_poll_failed(): void {
+        $this->register();
+        $calls = [];
+        $this->service->state['mode'] = 'unavailable';
+        $this->assertSame('failed', $this->poller_with_starter(self::NOW, $calls)->run());
+        $this->assertSame([], $calls);
+    }
+
+    public function test_the_starter_is_not_called_for_a_site_that_is_not_registered(): void {
+        $calls = [];
+        $this->assertSame('notregistered', $this->poller_with_starter(self::NOW, $calls)->run());
+        $this->assertSame([], $calls);
+    }
+
+    public function test_the_starter_is_not_called_when_an_instruction_could_not_be_applied(): void {
+        $this->register();
+        $calls = [];
+        $this->service->state['mode'] = 'site_removed';
+        $this->assertSame('failed', $this->poller_with_starter(self::NOW, $calls)->run());
+        $this->assertSame([], $calls);
+    }
+
+    public function test_an_error_of_the_starter_is_not_hidden(): void {
+        $this->register();
+        $poller = new poller(
+            network_fakes::client($this->service->handler(), self::NOW),
+            static fn(): int => self::NOW,
+            network_fakes::trust(),
+            static function (int $at): string {
+                throw new \RuntimeException('starter');
+            }
+        );
+        $this->expectException(\RuntimeException::class);
+        $poller->run();
+    }
 }
