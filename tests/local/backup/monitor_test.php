@@ -131,16 +131,20 @@ final class monitor_test extends \advanced_testcase {
      * @param callable|null $clock Clock.
      * @param callable|null $disk Free space function.
      * @param \file_system|null $filesystem File system.
+     * @param bool $deletebig Whether the stored files of 1 MiB or more are deleted first.
      * @return monitor
      */
     private function monitor(
         system_files $files,
         ?callable $clock = null,
         ?callable $disk = null,
-        ?\file_system $filesystem = null
+        ?\file_system $filesystem = null,
+        bool $deletebig = true
     ): monitor {
         global $DB;
-        $DB->execute('DELETE FROM {files} WHERE filesize >= ?', [self::MIB]);
+        if ($deletebig) {
+            $DB->execute('DELETE FROM {files} WHERE filesize >= ?', [self::MIB]);
+        }
         return new monitor($files, self::limits(), $clock, $disk ?? self::disk(50 * self::GIB, 100 * self::GIB), $filesystem);
     }
 
@@ -175,7 +179,8 @@ final class monitor_test extends \advanced_testcase {
         $keys = array_keys($sample);
         sort($keys);
         $this->assertSame(
-            ['db_ms', 'disk_free_bytes', 'disk_total_bytes', 'load_per_core', 'memory_available_bytes', 'nfs_mbps'],
+            ['db_ms', 'disk_free_bytes', 'disk_total_bytes', 'load_per_core', 'memory_available_bytes', 'nfs_mbps',
+                'not_applicable'],
             $keys
         );
     }
@@ -330,6 +335,7 @@ final class monitor_test extends \advanced_testcase {
         $this->store_file(self::MIB - 1);
         $this->assertNull($monitor->measure_nfs());
         $this->store_file(self::MIB);
+        $monitor = $this->monitor(self::healthy_files(), self::clock(1.0), null, null, false);
         $this->assertEqualsWithDelta(1.0, $monitor->measure_nfs(), 1e-9);
     }
 
@@ -482,5 +488,107 @@ final class monitor_test extends \advanced_testcase {
         $sample = self::sample();
         unset($sample[$key]);
         $this->assertSame(30, monitor::pause_seconds($sample));
+    }
+
+    public function test_a_site_without_a_big_file_does_not_wait_for_a_speed_that_does_not_exist(): void {
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.01));
+        $sample = $monitor->sample();
+        $this->assertNull($sample['nfs_mbps']);
+        $this->assertSame(['nfs_mbps'], $sample['not_applicable']);
+        $this->assertSame(0, monitor::pause_seconds($sample));
+    }
+
+    public function test_an_external_store_does_not_make_the_run_wait(): void {
+        $external = new class extends \file_system_filedir {
+        };
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.01), null, $external);
+        $this->store_file(2 * self::MIB);
+        $sample = $monitor->sample();
+        $this->assertNull($sample['nfs_mbps']);
+        $this->assertSame(['nfs_mbps'], $sample['not_applicable']);
+        $this->assertSame(0, monitor::pause_seconds($sample));
+    }
+
+    public function test_a_local_store_with_a_big_file_has_nothing_that_does_not_apply(): void {
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $this->store_file(2 * self::MIB);
+        $sample = $this->without_warnings(static fn(): array => $monitor->sample());
+        $this->assertSame([], $sample['not_applicable']);
+        $this->assertEqualsWithDelta(4.0, $sample['nfs_mbps'], 1e-9);
+        $this->assertSame(0, monitor::pause_seconds($sample));
+    }
+
+    public function test_an_unreadable_big_file_still_makes_the_run_wait(): void {
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $file = $this->store_file(2 * self::MIB);
+        unlink(get_file_storage()->get_file_system()->get_local_path_from_storedfile($file));
+        $sample = $this->without_warnings(static fn(): array => $monitor->sample());
+        $this->assertNull($sample['nfs_mbps']);
+        $this->assertSame([], $sample['not_applicable']);
+        $this->assertSame(30, monitor::pause_seconds($sample));
+    }
+
+    public function test_an_unreadable_load_still_gives_the_pause_when_the_speed_does_not_apply(): void {
+        $monitor = $this->monitor(self::files(null, "MemAvailable: 1000000 kB\n", "0-3\n"), self::clock(0.01));
+        $sample = $monitor->sample();
+        $this->assertSame(['nfs_mbps'], $sample['not_applicable']);
+        $this->assertSame(30, monitor::pause_seconds($sample));
+    }
+
+    public function test_pause_seconds_ignores_only_the_keys_that_do_not_apply(): void {
+        $this->assertSame(0, monitor::pause_seconds(self::sample(['nfs_mbps' => null, 'not_applicable' => ['nfs_mbps']])));
+        $this->assertSame(30, monitor::pause_seconds(self::sample(['db_ms' => null, 'not_applicable' => ['nfs_mbps']])));
+        $this->assertSame(30, monitor::pause_seconds(self::sample(['nfs_mbps' => null, 'not_applicable' => []])));
+        $this->assertSame(30, monitor::pause_seconds(self::sample(['nfs_mbps' => null, 'not_applicable' => ['db_ms']])));
+    }
+
+    public function test_the_file_to_read_is_chosen_once_per_monitor(): void {
+        global $DB;
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $file = $this->store_file(2 * self::MIB);
+        $this->assertEqualsWithDelta(4.0, $monitor->measure_nfs(), 1e-9);
+        // The query for a big file does not run again: the file that was chosen is read although it no longer matches.
+        $DB->set_field('files', 'filesize', 0, ['id' => $file->get_id()]);
+        $this->assertEqualsWithDelta(4.0, $monitor->measure_nfs(), 1e-9);
+    }
+
+    public function test_a_site_without_a_big_file_asks_the_database_once(): void {
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $this->assertNull($monitor->measure_nfs());
+        $this->store_file(2 * self::MIB);
+        // Not looked for again: the answer of the first query stays for the life of the monitor.
+        $this->assertNull($monitor->measure_nfs());
+        $this->assertSame(['nfs_mbps'], $monitor->sample()['not_applicable']);
+    }
+
+    public function test_the_file_that_was_chosen_and_then_removed_is_looked_for_again(): void {
+        global $DB;
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $first = $this->store_file(2 * self::MIB);
+        $this->assertEqualsWithDelta(4.0, $monitor->measure_nfs(), 1e-9);
+        $DB->delete_records('files', ['id' => $first->get_id()]);
+        // The chosen file is gone: one unknown value, then the choice is made again.
+        $second = $this->store_file(3 * self::MIB);
+        $this->assertNull($monitor->measure_nfs());
+        $this->assertEqualsWithDelta(6.0, $monitor->measure_nfs(), 1e-9);
+        $this->assertNotSame($first->get_id(), $second->get_id());
+    }
+
+    public function test_the_time_to_open_the_file_counts(): void {
+        $monitor = null;
+        $file = null;
+        $calls = 0;
+        // The first reading of the clock removes the content: a clock that starts before the file is opened loses it.
+        $clock = function () use (&$file, &$calls): float {
+            $calls++;
+            if ($calls === 1) {
+                unlink(get_file_storage()->get_file_system()->get_local_path_from_storedfile($file));
+            }
+            return (float) $calls;
+        };
+        $monitor = $this->monitor(self::healthy_files(), $clock);
+        $file = $this->store_file(2 * self::MIB);
+        $this->assertNull($this->without_warnings(static fn(): ?float => $monitor->measure_nfs()));
+        $this->assertGreaterThanOrEqual(1, $calls);
     }
 }

@@ -61,6 +61,9 @@ final class monitor {
     /** @var \file_system|null File system of Moodle; the one of the site when null. */
     private ?\file_system $filesystem;
 
+    /** @var int|null ID of the file that the speed is measured with; 0 when there is none; null before the first choice. */
+    private ?int $fileid = null;
+
     /**
      * Constructor.
      *
@@ -99,18 +102,23 @@ final class monitor {
      * disk_total_bytes is the total size of the disk of the temporary folder: verdict() needs it for the floor of the free
      * space.
      *
+     * not_applicable lists the keys that cannot apply to this site, so that a null there is not "unreadable": nfs_mbps when the
+     * file system is not the local one (an object store, for example) or when no file of 1 MiB or more is stored.
+     *
      * @return array{load_per_core: ?float, memory_available_bytes: ?int, db_ms: ?float, disk_free_bytes: ?int,
-     *     disk_total_bytes: ?int, nfs_mbps: ?float}
+     *     disk_total_bytes: ?int, nfs_mbps: ?float, not_applicable: string[]}
      */
     public function sample(): array {
         [$free, $total] = ($this->diskspace)($this->limits->tempdir);
+        [$nfs, $nfsapplies] = $this->probe_nfs();
         return [
             'load_per_core' => $this->load_per_core(),
             'memory_available_bytes' => $this->memory_available_bytes(),
             'db_ms' => $this->measure_db(),
             'disk_free_bytes' => $free,
             'disk_total_bytes' => $total,
-            'nfs_mbps' => $this->measure_nfs(),
+            'nfs_mbps' => $nfs,
+            'not_applicable' => $nfsapplies ? [] : ['nfs_mbps'],
         ];
     }
 
@@ -147,12 +155,16 @@ final class monitor {
     /**
      * How long a run waits between its steps: 30 seconds when a value cannot be read (the server is then spared), else 0.
      *
+     * A key in not_applicable is not a value that cannot be read: it is left out. The function only answers; how often the
+     * pause is taken is up to the caller.
+     *
      * @param array $sample Result of sample().
      * @return int Seconds.
      */
     public static function pause_seconds(array $sample): int {
+        $ignored = $sample['not_applicable'] ?? [];
         foreach (['load_per_core', 'memory_available_bytes', 'db_ms', 'disk_free_bytes', 'nfs_mbps'] as $key) {
-            if (!isset($sample[$key])) {
+            if (!isset($sample[$key]) && !in_array($key, $ignored, true)) {
                 return self::UNKNOWN_PAUSE;
             }
         }
@@ -180,25 +192,46 @@ final class monitor {
      * @return float|null MiB per second; null when there is no such file, it cannot be read or the file system is not local.
      */
     public function measure_nfs(): ?float {
+        return $this->probe_nfs()[0];
+    }
+
+    /**
+     * Measures the speed of the file storage and says whether it can be measured on this site at all.
+     *
+     * The file is chosen by one query that is not indexed, so it is done once for the life of the monitor, also when there is
+     * no such file. A chosen file that has been removed since is forgotten and a new one is chosen the next time.
+     *
+     * @return array{0: ?float, 1: bool} The speed in MiB per second, and false when the speed does not apply to this site
+     *     (the file system is not the local one, or no file of 1 MiB or more is stored).
+     */
+    private function probe_nfs(): array {
         global $DB;
         $filesystem = $this->filesystem ?? get_file_storage()->get_file_system();
         if (get_class($filesystem) !== \file_system_filedir::class) {
-            return null;
+            return [null, false];
         }
-        $rows = $DB->get_records_sql(
-            'SELECT id FROM {files} WHERE filesize >= ? ORDER BY id',
-            [self::NFS_MIN_FILE_BYTES],
-            0,
-            1
-        );
-        $file = $rows ? get_file_storage()->get_file_by_id((int) key($rows)) : false;
+        if ($this->fileid === null) {
+            $rows = $DB->get_records_sql(
+                'SELECT id FROM {files} WHERE filesize >= ? ORDER BY id',
+                [self::NFS_MIN_FILE_BYTES],
+                0,
+                1
+            );
+            $this->fileid = $rows ? (int) key($rows) : 0;
+        }
+        if ($this->fileid === 0) {
+            return [null, false];
+        }
+        $file = get_file_storage()->get_file_by_id($this->fileid);
         if (!$file) {
-            return null;
+            $this->fileid = null;
+            return [null, true];
         }
         set_error_handler(static fn(int $errno, string $errstr): bool => true);
         try {
-            $handle = $filesystem->get_content_file_handle($file);
+            // The clock starts before the file is opened: the time to open it, on a network disk, is part of the speed.
             $start = ($this->clock)();
+            $handle = $filesystem->get_content_file_handle($file);
             $content = $handle ? stream_get_contents($handle, self::NFS_READ_BYTES) : '';
             $seconds = ($this->clock)() - $start;
             if ($handle) {
@@ -207,7 +240,8 @@ final class monitor {
         } finally {
             restore_error_handler();
         }
-        return $content === '' || $content === false ? null : strlen($content) / self::MIB / max($seconds, 1.0E-6);
+        $speed = $content === '' || $content === false ? null : strlen($content) / self::MIB / max($seconds, 1.0E-6);
+        return [$speed, true];
     }
 
     /**

@@ -24,6 +24,9 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+use tool_secbackup\local\backup\limit_setting;
+use tool_secbackup\local\backup\limits;
+
 if ($hassiteconfig) {
     $ADMIN->add('tools', new admin_category('tool_secbackup', new lang_string('pluginname', 'tool_secbackup')));
     $ADMIN->add('tool_secbackup', new admin_externalpage(
@@ -49,31 +52,13 @@ if ($hassiteconfig) {
         new lang_string('page_settings', 'tool_secbackup'),
         'tool/secbackup:manage'
     );
-    // Number settings are checked by their parameter type; limits::current() checks them again when it reads them.
-    foreach (
-        [
-            ['loadpercore', '2', PARAM_FLOAT],
-            ['minmemorymb', '256', PARAM_INT],
-            ['maxdbms', '500', PARAM_INT],
-            ['minnfsmbps', '5', PARAM_FLOAT],
-            ['tempbudgetmb', '0', PARAM_INT],
-            ['bandwidthmbps', '0', PARAM_INT],
-        ] as [$name, $default, $type]
-    ) {
-        $limits->add(new admin_setting_configtext(
-            'tool_secbackup/' . $name,
-            new lang_string('setting_' . $name, 'tool_secbackup'),
-            new lang_string('setting_' . $name . '_desc', 'tool_secbackup'),
-            $default,
-            $type
-        ));
-    }
-    $limits->add(new admin_setting_configtext(
-        'tool_secbackup/tempdir',
-        new lang_string('setting_tempdir', 'tool_secbackup'),
-        new lang_string('setting_tempdir_desc', 'tool_secbackup'),
-        '',
-        PARAM_RAW_TRIMMED
-    ));
+    // Each setting accepts only what limits::current() will use, so a saved value is never replaced by a default.
+    $limits->add(new limit_setting('loadpercore', (string) limits::DEFAULT_LOADPERCORE, 0.1, false));
+    $limits->add(new limit_setting('minmemorymb', (string) limits::DEFAULT_MINMEMORYMB, 0.0, true));
+    $limits->add(new limit_setting('maxdbms', (string) limits::DEFAULT_MAXDBMS, 1.0, true));
+    $limits->add(new limit_setting('minnfsmbps', (string) limits::DEFAULT_MINNFSMBPS, 0.0, false));
+    $limits->add(new limit_setting('tempbudgetmb', (string) limits::DEFAULT_TEMPBUDGETMB, 0.0, true));
+    $limits->add(new limit_setting('bandwidthmbps', (string) limits::DEFAULT_BANDWIDTHMBPS, 0.0, true));
+    $limits->add(new limit_setting('tempdir', '', null, false));
     $ADMIN->add('tool_secbackup', $limits);
 }

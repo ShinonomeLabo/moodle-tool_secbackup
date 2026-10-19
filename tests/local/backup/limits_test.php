@@ -174,4 +174,31 @@ final class limits_test extends \advanced_testcase {
         set_config('tempdir', '/var/tmp/a..b/c', 'tool_secbackup');
         $this->assertSame('/var/tmp/a..b/c', limits::current()->tempdir);
     }
+
+    public function test_the_defaults_are_the_constants_of_the_class(): void {
+        $this->assertSame(limits::DEFAULT_LOADPERCORE, limits::current()->loadpercore);
+        $this->assertSame(limits::DEFAULT_MINMEMORYMB, limits::current()->minmemorymb);
+        $this->assertSame(limits::DEFAULT_MAXDBMS, limits::current()->maxdbms);
+        $this->assertSame(limits::DEFAULT_MINNFSMBPS, limits::current()->minnfsmbps);
+        $this->assertSame(limits::DEFAULT_TEMPBUDGETMB, limits::current()->tempbudgetmb);
+        $this->assertSame(limits::DEFAULT_BANDWIDTHMBPS, limits::current()->bandwidthmbps);
+    }
+
+    public function test_the_checks_of_the_settings_page_are_public(): void {
+        $this->assertTrue(limits::valid_number('12', 1.0, true));
+        $this->assertFalse(limits::valid_number('0', 1.0, true));
+        $this->assertTrue(limits::valid_number('0.5', 0.1, false));
+        $this->assertFalse(limits::valid_number('1.0', 0.0, true));
+        $this->assertTrue(limits::usable_directory('/var/tmp/x'));
+        $this->assertFalse(limits::usable_directory('x'));
+    }
+
+    public function test_inside_dirroot(): void {
+        global $CFG;
+        $this->assertTrue(limits::inside_dirroot($CFG->dirroot));
+        $this->assertTrue(limits::inside_dirroot($CFG->dirroot . '/'));
+        $this->assertTrue(limits::inside_dirroot($CFG->dirroot . '/public/x'));
+        $this->assertFalse(limits::inside_dirroot($CFG->dirroot . '-x'));
+        $this->assertFalse(limits::inside_dirroot('/var/tmp'));
+    }
 }

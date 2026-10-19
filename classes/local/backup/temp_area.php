@@ -65,7 +65,8 @@ final class temp_area {
      * The free and the total space of the disk that holds a folder.
      *
      * The folder may not exist yet: the nearest folder above it that does is measured. A relative name is not measured, because
-     * it would be measured against the folder the process happens to be in.
+     * it would be measured against the folder the process happens to be in. Nothing is reported as a PHP warning, and a PHP
+     * that has disabled the functions (disable_functions) gives null.
      *
      * @param string $folder Absolute folder.
      * @return array{0: ?int, 1: ?int} Free and total bytes; null for what cannot be read.
@@ -74,13 +75,14 @@ final class temp_area {
         if (preg_match('~^(/|[A-Za-z]:[\\\\/])~', $folder) !== 1) {
             return [null, null];
         }
-        while (!is_dir($folder) && dirname($folder) !== $folder) {
-            $folder = dirname($folder);
-        }
         set_error_handler(static fn(int $errno, string $errstr): bool => true);
         try {
-            $free = disk_free_space($folder);
-            $total = disk_total_space($folder);
+            while (!is_dir($folder) && dirname($folder) !== $folder) {
+                $folder = dirname($folder);
+            }
+            // PHP 8 throws an Error for a function that disable_functions has turned off; function_exists() says it is not there.
+            $free = function_exists('disk_free_space') ? disk_free_space($folder) : false;
+            $total = function_exists('disk_total_space') ? disk_total_space($folder) : false;
         } finally {
             restore_error_handler();
         }
@@ -89,6 +91,10 @@ final class temp_area {
 
     /**
      * Makes the folder of a run.
+     *
+     * The folder is resolved once with realpath() and must be the folder of the run inside the resolved temporary folder, so
+     * that a link in the way is refused. PHP cannot close the race completely: between this check and a later use, a person who
+     * can write to the temporary folder could still swap a folder for a link.
      *
      * @param int $runid ID of the run.
      * @return string The folder.
@@ -100,7 +106,7 @@ final class temp_area {
         set_error_handler(static fn(int $errno, string $errstr): bool => true);
         try {
             $usable = !is_link($path) && (is_dir($path) || mkdir($path, (int) $CFG->directorypermissions, true) || is_dir($path))
-                && is_writable($path);
+                && is_writable($path) && $this->resolved($runid) !== null;
         } finally {
             restore_error_handler();
         }
@@ -112,6 +118,9 @@ final class temp_area {
 
     /**
      * The budget of the temporary files of a run.
+     *
+     * Zero never means "unlimited": it means that there is no room, or that the free space is not known. A caller that gets 0
+     * must not write a temporary file.
      *
      * @return int Bytes: the setting when it is above 0, otherwise the smaller of 10% of the free space and 2,048 MB.
      */
@@ -130,14 +139,11 @@ final class temp_area {
      * @return int Bytes.
      */
     public function used_bytes(int $runid): int {
-        $path = $this->path($runid);
-        if (is_link($path) || !is_dir($path)) {
-            return 0;
-        }
         $bytes = 0;
         set_error_handler(static fn(int $errno, string $errstr): bool => true);
         try {
-            foreach ($this->files_below($path, \RecursiveIteratorIterator::LEAVES_ONLY) as $item) {
+            $real = $this->resolved($runid);
+            foreach ($real === null ? [] : $this->files_below($real, \RecursiveIteratorIterator::LEAVES_ONLY) as $item) {
                 $bytes += $item->isLink() || !$item->isFile() ? 0 : max(0, (int) filesize($item->getPathname()));
             }
         } finally {
@@ -149,29 +155,41 @@ final class temp_area {
     /**
      * Removes the folder of a run with everything in it. Nothing happens when it is missing.
      *
-     * A symbolic link is removed as a link: what it points to is never entered or changed.
+     * A symbolic link is removed as a link: what it points to is never entered or changed. The folder is resolved once and
+     * everything is removed through the resolved path; before each removal the parent of the item is checked to still be
+     * inside it. PHP cannot close the race completely: a person who can write to the temporary folder could still swap a folder
+     * for a link between that check and the removal.
      *
      * @param int $runid ID of the run.
+     * @return bool True when the folder of the run is gone; false when something is left.
      */
-    public function clear(int $runid): void {
+    public function clear(int $runid): bool {
         $path = $this->path($runid);
         set_error_handler(static fn(int $errno, string $errstr): bool => true);
         try {
             if (is_link($path)) {
                 unlink($path);
-            } else if (is_dir($path)) {
-                foreach ($this->files_below($path, \RecursiveIteratorIterator::CHILD_FIRST) as $item) {
-                    if ($item->isDir() && !$item->isLink()) {
-                        rmdir($item->getPathname());
-                    } else {
-                        unlink($item->getPathname());
-                    }
+            } else if (($real = $this->resolved($runid)) !== null) {
+                foreach ($this->files_below($real, \RecursiveIteratorIterator::CHILD_FIRST) as $item) {
+                    // An item whose parent is no longer inside the folder (swapped for a link) is left alone.
+                    $this->is_inside($item->getPathname(), $real) && $this->remove($item);
                 }
-                rmdir($path);
+                rmdir($real);
             }
+            return !file_exists($path) && !is_link($path);
         } finally {
             restore_error_handler();
         }
+    }
+
+    /**
+     * Removes a file, a link or an empty folder.
+     *
+     * @param \SplFileInfo $item The item.
+     * @return bool Whether it was removed.
+     */
+    private function remove(\SplFileInfo $item): bool {
+        return $item->isDir() && !$item->isLink() ? rmdir($item->getPathname()) : unlink($item->getPathname());
     }
 
     /**
@@ -185,16 +203,46 @@ final class temp_area {
     }
 
     /**
-     * Everything below a folder, without following symbolic links.
+     * The resolved folder of a run, when it is a real folder (not a link) inside the resolved temporary folder.
+     *
+     * @param int $runid ID of the run.
+     * @return string|null The resolved path, or null.
+     */
+    private function resolved(int $runid): ?string {
+        $path = $this->path($runid);
+        $base = realpath($this->limits->tempdir);
+        $real = is_link($path) || !is_dir($path) ? false : realpath($path);
+        return $base !== false && $real !== false && $real === rtrim($base, '/') . '/run-' . $runid ? $real : null;
+    }
+
+    /**
+     * Whether the parent folder of an item is still inside the resolved folder of the run.
+     *
+     * @param string $item The item.
+     * @param string $real The resolved folder of the run.
+     * @return bool
+     */
+    private function is_inside(string $item, string $real): bool {
+        $parent = realpath(dirname($item));
+        return $parent !== false && ($parent === $real || str_starts_with($parent, $real . '/'));
+    }
+
+    /**
+     * Everything below a folder, without following symbolic links and without stopping at a folder that cannot be read.
      *
      * @param string $path The folder.
      * @param int $mode A mode of RecursiveIteratorIterator.
-     * @return \RecursiveIteratorIterator
+     * @return \Traversable
      */
-    private function files_below(string $path, int $mode): \RecursiveIteratorIterator {
-        return new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
-            $mode
-        );
+    private function files_below(string $path, int $mode): \Traversable {
+        try {
+            return new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+                $mode,
+                \RecursiveIteratorIterator::CATCH_GET_CHILD
+            );
+        } catch (\UnexpectedValueException $e) {
+            return new \EmptyIterator();
+        }
     }
 }

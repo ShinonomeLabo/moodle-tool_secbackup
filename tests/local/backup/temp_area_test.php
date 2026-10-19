@@ -175,9 +175,7 @@ final class temp_area_test extends \advanced_testcase {
         file_put_contents($path . '/a', 'a');
         file_put_contents($path . '/sub/deeper/b', 'b');
         file_put_contents($other . '/keep', 'k');
-        $this->without_warnings(static function () use ($area): void {
-            $area->clear(10);
-        });
+        $this->assertTrue($this->without_warnings(static fn(): bool => $area->clear(10)));
         $this->assertDirectoryDoesNotExist($path);
         $this->assertFileExists($other . '/keep');
         $this->assertFileExists($base);
@@ -185,9 +183,7 @@ final class temp_area_test extends \advanced_testcase {
 
     public function test_clear_does_nothing_when_the_folder_is_missing(): void {
         $area = new temp_area(self::limits(make_request_directory() . '/missing'));
-        $this->without_warnings(static function () use ($area): void {
-            $area->clear(99);
-        });
+        $this->assertTrue($this->without_warnings(static fn(): bool => $area->clear(99)));
         $this->assertSame(0, $area->used_bytes(99));
     }
 
@@ -202,9 +198,7 @@ final class temp_area_test extends \advanced_testcase {
         symlink($outside, $path . '/link-to-folder');
         symlink($outside . '/file', $path . '/link-to-file');
         symlink($base . '/missing-target', $path . '/dangling');
-        $this->without_warnings(static function () use ($area): void {
-            $area->clear(12);
-        });
+        $this->assertTrue($this->without_warnings(static fn(): bool => $area->clear(12)));
         $this->assertDirectoryDoesNotExist($path);
         $this->assertFileExists($outside . '/inner/precious');
         $this->assertFileExists($outside . '/file');
@@ -216,9 +210,7 @@ final class temp_area_test extends \advanced_testcase {
         file_put_contents($outside . '/precious', 'p');
         symlink($outside, $base . '/run-13');
         $area = new temp_area(self::limits($base));
-        $this->without_warnings(static function () use ($area): void {
-            $area->clear(13);
-        });
+        $this->assertTrue($this->without_warnings(static fn(): bool => $area->clear(13)));
         $this->assertFalse(is_link($base . '/run-13'));
         $this->assertFileExists($outside . '/precious');
     }
@@ -283,5 +275,52 @@ final class temp_area_test extends \advanced_testcase {
     public function test_the_disk_figures_are_unknown_for_a_folder_that_cannot_be_measured(): void {
         // Only an absolute folder is measured: a relative name would be measured against whatever folder the process is in.
         $this->assertSame([null, null], $this->without_warnings(static fn(): array => temp_area::disk_space('no-such-folder')));
+    }
+
+    public function test_clear_says_false_when_the_run_folder_is_not_a_folder_and_stays(): void {
+        $base = make_request_directory();
+        file_put_contents($base . '/run-15', 'x');
+        $area = new temp_area(self::limits($base));
+        $this->assertFalse($this->without_warnings(static fn(): bool => $area->clear(15)));
+        $this->assertFileExists($base . '/run-15');
+    }
+
+    public function test_clear_says_false_when_the_temporary_folder_does_not_resolve(): void {
+        $area = new temp_area(self::limits(make_request_directory() . '/missing'));
+        // Nothing exists: nothing is there to remove, and the folder is gone.
+        $this->assertTrue($area->clear(1));
+    }
+
+    public function test_the_folder_of_a_run_in_a_temporary_folder_that_is_a_link_is_resolved_once(): void {
+        $base = make_request_directory();
+        $real = make_request_directory();
+        symlink($real, $base . '/via');
+        $area = new temp_area(self::limits($base . '/via'));
+        $path = $area->for_run(16);
+        file_put_contents($path . '/a', 'abc');
+        $this->assertSame(3, $area->used_bytes(16));
+        $this->assertTrue($area->clear(16));
+        $this->assertDirectoryDoesNotExist($real . '/run-16');
+    }
+
+    public function test_an_unreadable_folder_gives_nothing_instead_of_an_exception(): void {
+        $area = new temp_area(self::limits(make_request_directory()));
+        $method = new \ReflectionMethod($area, 'files_below');
+        $items = $method->invoke($area, make_request_directory() . '/missing', \RecursiveIteratorIterator::LEAVES_ONLY);
+        $this->assertSame([], iterator_to_array($items));
+    }
+
+    public function test_a_path_outside_the_run_folder_is_not_touched(): void {
+        $base = make_request_directory();
+        $outside = make_request_directory();
+        $area = new temp_area(self::limits($base));
+        mkdir($base . '/run-1/x', 0777, true);
+        mkdir($base . '/run-10');
+        $method = new \ReflectionMethod($area, 'is_inside');
+        $this->assertTrue($method->invoke($area, $base . '/run-1/f', $base . '/run-1'));
+        $this->assertTrue($method->invoke($area, $base . '/run-1/x/f', $base . '/run-1'));
+        $this->assertFalse($method->invoke($area, $outside . '/f', $base . '/run-1'));
+        $this->assertFalse($method->invoke($area, $base . '/run-10/f', $base . '/run-1'));
+        $this->assertFalse($method->invoke($area, $base . '/missing/f', $base . '/run-1'));
     }
 }
