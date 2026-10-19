@@ -16,14 +16,14 @@
 
 namespace tool_secbackup;
 
-#[\PHPUnit\Framework\Attributes\CoversNothing]
+#[\PHPUnit\Framework\Attributes\CoversFunction('xmldb_tool_secbackup_upgrade')]
 /**
  * Tests for the upgrade steps.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
- * @coversNothing
+ * @covers     ::xmldb_tool_secbackup_upgrade
  */
 final class upgrade_test extends \advanced_testcase {
     public function test_upgrading_from_the_first_version_creates_the_runs_table(): void {

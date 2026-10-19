@@ -198,6 +198,15 @@ final class settings_test extends \advanced_testcase {
         $this->assertTrue(settings::current()->is_received());
     }
 
+    public function test_a_stored_body_that_breaks_the_rules_is_treated_as_not_received(): void {
+        set_config('backupsettings', json_encode(['window_start' => 'x']), 'tool_secbackup');
+        set_config('backupsettingsseq', '3', 'tool_secbackup');
+        set_config('backupsettingssite', fake_service::SITE_ID, 'tool_secbackup');
+        $settings = settings::current();
+        $this->assertFalse($settings->is_received());
+        $this->assertSame(0, $settings->seq());
+    }
+
     public function test_five_runs_divide_the_day_and_are_accepted(): void {
         $this->assertTrue(settings::apply(self::instruction(1, self::body(['runs_per_day' => 5, 'window_end' => '04:00']))));
         $this->assertSame(5, settings::current()->runs_per_day());
