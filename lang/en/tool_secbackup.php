@@ -72,6 +72,8 @@ $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/diagnose.php
 $string['clock_skew_warning'] = 'The clock of this server differs from the clock of the service by about {$a} minutes. When it differs by more than 5 minutes, the service refuses the requests of this site. Set the time of this server (for example with NTP).';
 $string['connect_again_explain'] = 'Register again when the platform issued a new registration code, or when the public key of this site was created again on the platform.';
 $string['connect_again_heading'] = 'Register again';
+$string['core_manifest_invalid'] = 'The list of the official Moodle files from the backup service could not be used. The backup sends all the Moodle program files instead, which takes longer and uses more storage.';
+$string['core_manifest_mismatch'] = 'The list of the official Moodle files from the backup service is for another version of Moodle than the one on this site. The backup sends all the Moodle program files instead, which takes longer and uses more storage.';
 $string['crypto_chunk_corrupt'] = 'A backup chunk is damaged, was changed or does not belong to this site, so it could not be decrypted.';
 $string['crypto_chunk_sourceshort'] = 'The data for a backup chunk ended before its expected length. It may have changed while it was read.';
 $string['crypto_chunk_truncated'] = 'A backup chunk ends before its last part, so it is incomplete.';

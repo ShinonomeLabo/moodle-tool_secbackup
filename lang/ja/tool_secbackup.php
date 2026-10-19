@@ -72,6 +72,8 @@ $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/diagnose.php
 $string['clock_skew_warning'] = 'このサーバの時刻が、サービスの時刻と約 {$a} 分ずれています。5 分を超えてずれると、サービスがこのサイトの要求を受け付けなくなります。NTP などでこのサーバの時刻を合わせてください。';
 $string['connect_again_explain'] = 'プラットフォームで登録コードを発行し直したときや、このサイトの公開鍵を作り直したときは、ここで登録し直してください。';
 $string['connect_again_heading'] = '登録し直す';
+$string['core_manifest_invalid'] = 'バックアップのサービスから受け取った Moodle の公式ファイルの一覧を使えませんでした。代わりに Moodle のプログラムのファイルをすべて送るため、時間と保存容量が多くかかります。';
+$string['core_manifest_mismatch'] = 'バックアップのサービスから受け取った Moodle の公式ファイルの一覧は、このサイトの Moodle とは別の版のものです。代わりに Moodle のプログラムのファイルをすべて送るため、時間と保存容量が多くかかります。';
 $string['crypto_chunk_corrupt'] = 'バックアップの塊が壊れているか、書き換えられているか、このサイトのものでないため、復号できませんでした。';
 $string['crypto_chunk_sourceshort'] = 'バックアップの塊に入れるデータが、想定の長さより前で終わりました。読んでいる間に変わった可能性があります。';
 $string['crypto_chunk_truncated'] = 'バックアップの塊が最後の区切りより前で終わっているため、途中で切れています。';
