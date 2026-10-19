@@ -893,7 +893,10 @@ final class client_runs_test extends \advanced_testcase {
         ));
         $this->assertSame([403, 'contract_inactive'], [$e->httpstatus, $e->servercode]);
         // A run does not start either; the run that is open is not touched.
-        $this->expect_api_error('api_contract_inactive', fn() => $client->start_run(self::endpoint(), $pair, fake_service::SITE_ID));
+        $this->expect_api_error(
+            'api_contract_inactive',
+            fn() => $client->start_run(self::endpoint(), $pair, fake_service::SITE_ID)
+        );
         $client->fail(self::endpoint(), $pair, fake_service::SITE_ID, $runid, 'contract_inactive');
         $this->assertSame('contract_inactive', $service->state['runs'][$runid]['failure_code']);
     }

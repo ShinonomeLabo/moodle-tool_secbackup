@@ -246,6 +246,7 @@ $string['setting_tempbudgetmb'] = '一時ファイルの予算 (MB)';
 $string['setting_tempbudgetmb_desc'] = 'バックアップが一時フォルダに置いておく量の上限です。0 は、空き容量の 10% と 2,048 MB の小さいほうです。';
 $string['setting_tempdir'] = '一時フォルダ';
 $string['setting_tempdir_desc'] = '絶対パスで指定します。空のときは、Moodle の一時フォルダの中の tool_secbackup を使います。';
+$string['signature_invalid'] = 'バックアップのサービスが渡した保存済みのデータの一覧を信頼できなかったため、バックアップを中止しました。このサイトを別のサーバに移した場合は、もう一度登録してください。';
 $string['signingkey_corrupt'] = '保存した署名用の鍵を読めません。登録を解除してから、もう一度登録してください。';
 $string['signingkey_missing'] = 'このサイトの署名用の鍵が見つかりません。登録し直してください。';
 $string['signingkey_savefailed'] = '署名用の鍵を暗号化できなかったため、保存しませんでした。データのフォルダ (moodledata) にある暗号鍵のファイルを確かめてから、もう一度試してください。';

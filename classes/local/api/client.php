@@ -737,7 +737,8 @@ final class client {
     }
 
     /**
-     * Checks that the headers of an upload URL are exactly the five that it binds (and, for an object, the sixth If-None-Match: *), and that the two that carry the request
+     * Checks that the headers of an upload URL are exactly the five that it binds (and, for an object, the sixth
+     * If-None-Match: *), and that the two that carry the request
      * are what was asked for.
      *
      * @param mixed $headers The headers of the answer.

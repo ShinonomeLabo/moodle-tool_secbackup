@@ -246,6 +246,7 @@ $string['setting_tempbudgetmb'] = 'Budget of the temporary files (MB)';
 $string['setting_tempbudgetmb_desc'] = 'The most that a backup keeps in the temporary folder. 0 means the smaller of 10% of the free space and 2,048 MB.';
 $string['setting_tempdir'] = 'Temporary folder';
 $string['setting_tempdir_desc'] = 'An absolute path. When empty, the folder tool_secbackup in the temporary folder of Moodle is used.';
+$string['signature_invalid'] = 'The list of stored chunks that the backup service gave could not be trusted, so the backup was stopped. Register this site again if it was moved to another server.';
 $string['signingkey_corrupt'] = 'The stored signing key cannot be read. Remove the registration and register the site again.';
 $string['signingkey_missing'] = 'The signing key of this site is missing. Register the site again.';
 $string['signingkey_savefailed'] = 'The signing key could not be encrypted, so it was not saved. Check the encryption key file in the data directory and try again.';

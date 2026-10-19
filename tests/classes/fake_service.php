@@ -662,7 +662,8 @@ final class fake_service {
      */
     private function fail(string $id, array $data): array {
         $codes = ['server_busy', 'disk_low', 'db_slow', 'nfs_slow', 'selinux_denied', 'capacity_refused', 'network_check_failed',
-            'signature_invalid', 'tamper_detected', 'version_too_old', 'upload_failed', 'window_ended', 'restarted', 'contract_inactive'];
+            'signature_invalid', 'tamper_detected', 'version_too_old', 'upload_failed', 'window_ended', 'restarted',
+            'contract_inactive'];
         if (array_keys($data) !== ['code'] || !in_array($data['code'], $codes, true)) {
             return [422, [], self::error('invalid_request')];
         }
