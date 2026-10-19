@@ -546,7 +546,7 @@ final class uploader_test extends \advanced_testcase {
         $second->drain($run, true);
         $this->assertSame(0, $second->pending());
         $this->assertCount(3, $this->service->state['objects']);
-        $this->assertFileDoesNotExist($folder . '/uploads.json');
+        $this->assertSame([], $this->saved($folder)['items']);
     }
 
     public function test_a_queue_whose_file_is_gone_is_dropped_on_resume(): void {
@@ -728,76 +728,6 @@ final class uploader_test extends \advanced_testcase {
         $this->assertSame(self::NOW + 900, $uploader->waiting_until());
     }
 
-    public function test_the_urls_asked_for_are_no_more_than_can_be_sent_before_they_expire(): void {
-        // 1 Mbps is 125,000 bytes a second; the URLs live 150 seconds: 30 seconds are left after the 120 of margin, which is
-        // 3.75 MB, so three chunks of 1 MB go in a request.
-        $this->service->state['urllife'] = 150;
-        [$uploader, $run, $folder] = $this->start(100000000, 100, null, 1);
-        for ($i = 0; $i < 3; $i++) {
-            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
-        }
-        // The first request does not know the life of the URLs yet: it takes the 900 seconds of the contract.
-        $uploader->drain($run, true);
-        $this->assertSame(1, $this->posts('/upload-urls'));
-        for ($i = 3; $i < 15; $i++) {
-            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
-        }
-        $uploader->drain($run, true);
-        $this->assertSame(1 + 4, $this->posts('/upload-urls'));
-        $this->assertSame(15000000, $this->service->state['runs'][$run->run_uuid()]['reserved'], 'Nothing was asked for twice.');
-        $this->assertCount(15, $this->service->state['objects']);
-    }
-
-    public function test_the_speed_of_the_earlier_sends_sets_the_size_of_the_next_request(): void {
-        // A chunk of 1 MB takes 100 seconds: 10,000 bytes a second, and 780 seconds of a URL's life hold 7 chunks.
-        $this->intercept = function (RequestInterface $request): ?Response {
-            if ($request->getMethod() === 'PUT') {
-                $this->time += 100;
-                $this->service->state['now'] = $this->time;
-            }
-            return null;
-        };
-        [$uploader, $run, $folder] = $this->start(100000000);
-        for ($i = 0; $i < 2; $i++) {
-            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
-        }
-        $uploader->drain($run, true);
-        $this->assertSame(1, $this->posts('/upload-urls'));
-        for ($i = 2; $i < 17; $i++) {
-            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
-        }
-        $uploader->drain($run, true);
-        $this->assertSame(1 + 3, $this->posts('/upload-urls'), '15 chunks go in requests of 7, 7 and 1.');
-        $this->assertSame(17000000, $this->service->state['runs'][$run->run_uuid()]['reserved']);
-    }
-
-    public function test_the_batch_never_has_less_than_one_chunk(): void {
-        $this->service->state['urllife'] = 100;
-        [$uploader, $run, $folder] = $this->start(100000000, 100, null, 1);
-        $uploader->queue(self::chunk($folder, 0, 1000), 'object');
-        $uploader->drain($run, true);
-        for ($i = 1; $i < 4; $i++) {
-            $uploader->queue(self::chunk($folder, $i, 1000), 'object');
-        }
-        // The life is under the margin: there is no time to speak of, and a chunk is asked for at a time.
-        $uploader->drain($run, true);
-        $this->assertSame(1 + 3, $this->posts('/upload-urls'));
-        $this->assertSame(4, count($this->service->state['objects']));
-    }
-
-    public function test_queued_files_stay_inside_the_budget_whatever_their_sizes(): void {
-        [$uploader, $run, $folder] = $this->start(100000000, 1);
-        $budget = 1048576;
-        $temp = new temp_area(new limits(2.0, 256, 500, 5.0, $this->tempdir, 1, 0));
-        foreach ([400000, 100000, 600000, 200000, 700000, 50000, 900000, 300000] as $n => $size) {
-            $uploader->queue(self::chunk($folder, $n, $size), 'object');
-            $uploader->drain($run, false);
-            $this->assertLessThanOrEqual($budget, $temp->used_bytes($run->id()), 'After the chunk number ' . $n);
-        }
-        $uploader->drain($run, true);
-        $this->assertCount(8, $this->service->state['objects']);
-    }
-
     public function test_a_second_object_with_a_queued_name_is_dropped_with_its_file(): void {
         [$uploader, , $folder] = $this->start();
         $first = self::chunk($folder, 1);
@@ -839,7 +769,7 @@ final class uploader_test extends \advanced_testcase {
         $uploader->drain($run, false);
         $this->assertSame([], $uploader->leftovers());
         $this->assertSame([$chunk->path], $removed);
-        $this->assertFileDoesNotExist($folder . '/uploads.json');
+        $this->assertSame([], $this->saved($folder)['leftovers']);
     }
 
     public function test_a_busy_service_while_the_size_is_checked_again_is_waited_for(): void {
@@ -900,5 +830,223 @@ final class uploader_test extends \advanced_testcase {
         }
         // The closure is the call of this test (failure()), whose class is in the namespace of the plugin too.
         $this->assertSame([], trace_strings::objects_in_plugin_frames($e, [run_record::class, \Closure::class]));
+    }
+    /**
+     * What the uploader saved in the folder of the run.
+     *
+     * @param string $folder The folder.
+     * @return array
+     */
+    private function saved(string $folder): array {
+        return json_decode(file_get_contents($folder . '/uploads.json'), true);
+    }
+
+    /**
+     * A chunk of a size that is not written: a file with a hole, which reads as zeros.
+     *
+     * @param string $folder Folder.
+     * @param int $n Number of the chunk.
+     * @param int $size Bytes.
+     * @return chunk_info
+     */
+    private static function sparse_chunk(string $folder, int $n, int $size): chunk_info {
+        $path = $folder . '/s' . $n;
+        $handle = fopen($path, 'wb');
+        fseek($handle, $size - 1);
+        fwrite($handle, "\0");
+        fclose($handle);
+        return new chunk_info($path, hash('sha256', 'sparse' . $n), $size, base64_encode(hash('sha256', 'x', true)), []);
+    }
+
+    /**
+     * The bytes of every request for upload URLs that the service got.
+     *
+     * @return int[]
+     */
+    private function requested_bytes(): array {
+        $bytes = [];
+        foreach ($this->seen as $entry) {
+            [$line, $body] = explode("\n", $entry, 2);
+            if (str_starts_with($line, 'POST ') && str_ends_with($line, '/upload-urls')) {
+                $bytes[] = array_sum(array_column(json_decode($body, true)['items'], 'size'));
+            }
+        }
+        return $bytes;
+    }
+
+    public function test_the_urls_asked_for_are_no_more_than_can_be_sent_before_they_expire(): void {
+        // 1 Mbps is 125,000 bytes a second. The URLs live 150 seconds; with the 120 of margin and the 300 for a clock that is
+        // off, 60 seconds are counted: 7.5 MB, so seven chunks of 1 MB go in a request.
+        $this->service->state['urllife'] = 150;
+        [$uploader, $run, $folder] = $this->start(100000000, 100, null, 1);
+        for ($i = 0; $i < 3; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        // The first request does not know the life of the URLs yet: it takes the 900 seconds of the contract.
+        $uploader->drain($run, true);
+        $this->assertSame([3000000], $this->requested_bytes());
+        for ($i = 3; $i < 18; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame([3000000, 7000000, 7000000, 1000000], $this->requested_bytes());
+        $this->assertSame(18000000, $this->service->state['runs'][$run->run_uuid()]['reserved'], 'Nothing was asked for twice.');
+        $this->assertCount(18, $this->service->state['objects']);
+    }
+
+    public function test_the_speed_of_the_earlier_sends_sets_the_size_of_the_next_request(): void {
+        // A chunk of 1 MB takes 100 seconds: 10,000 bytes a second. The URLs live 900 seconds, less 420 for the margins: 480
+        // seconds hold 4.8 MB, so four chunks.
+        $this->intercept = function (RequestInterface $request): ?Response {
+            if ($request->getMethod() === 'PUT') {
+                $this->time += 100;
+                $this->service->state['now'] = $this->time;
+            }
+            return null;
+        };
+        [$uploader, $run, $folder] = $this->start(100000000);
+        $this->assertNull($uploader->measured_rate());
+        for ($i = 0; $i < 2; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame(10000, $uploader->measured_rate());
+        for ($i = 2; $i < 17; $i++) {
+            $uploader->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame([2000000, 4000000, 4000000, 4000000, 3000000], $this->requested_bytes());
+        $this->assertSame(17000000, $this->service->state['runs'][$run->run_uuid()]['reserved']);
+    }
+
+    public function test_what_was_measured_and_learned_is_kept_for_the_next_step(): void {
+        $this->service->state['urllife'] = 600;
+        $this->intercept = function (RequestInterface $request): ?Response {
+            if ($request->getMethod() === 'PUT') {
+                $this->time += 100;
+                $this->service->state['now'] = $this->time;
+            }
+            return null;
+        };
+        [$uploader, $run, $folder, $client, $endpoint] = $this->start(100000000);
+        $uploader->queue(self::chunk($folder, 0, 1000000), 'object');
+        $uploader->drain($run, true);
+        $saved = $this->saved($folder);
+        $this->assertSame([], $saved['items']);
+        $this->assertSame([1000000, 100, 600], [$saved['sentbytes'], $saved['senttime'], $saved['life']]);
+        $this->assertStringNotContainsString('://', json_encode($saved));
+        // The uploader of the next step starts from them: 10,000 bytes a second for 600 - 420 = 180 seconds, 1.8 MB.
+        $limits = new limits(2.0, 256, 500, 5.0, $this->tempdir, 100, 0);
+        $settings = developer_settings::from_value(['allowprivatehosts' => true, 'skipnetworkchecks' => true]);
+        $second = new uploader(
+            $client,
+            new object_transport($settings, network_fakes::passing_s3_guard(), $this->network()),
+            new temp_area($limits),
+            $limits,
+            fn(): array => [$endpoint, $this->pair, fake_service::SITE_ID],
+            fn(): int => $this->time
+        );
+        $second->resume($run);
+        $this->assertSame(10000, $second->measured_rate());
+        for ($i = 1; $i < 6; $i++) {
+            $second->queue(self::chunk($folder, $i, 1000000), 'object');
+        }
+        $second->drain($run, true);
+        $this->assertSame(array_fill(0, 6, 1000000), $this->requested_bytes());
+    }
+
+    public function test_while_no_speed_is_known_a_request_is_a_probe_of_64_mib(): void {
+        [$uploader, $run, $folder] = $this->start(10000000000);
+        // The service is busy, so that nothing is sent: only the size of the first request is looked at.
+        $this->intercept = fn(RequestInterface $r): ?Response => str_ends_with($r->getUri()->getPath(), '/upload-urls')
+            ? new Response(503) : null;
+        for ($i = 0; $i < 3; $i++) {
+            $uploader->queue(self::sparse_chunk($folder, $i, 30 * 1048576), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame([60 * 1048576], $this->requested_bytes());
+    }
+
+    public function test_a_chunk_larger_than_the_probe_goes_alone(): void {
+        [$uploader, $run, $folder] = $this->start(10000000000);
+        $this->intercept = fn(RequestInterface $r): ?Response => str_ends_with($r->getUri()->getPath(), '/upload-urls')
+            ? new Response(503) : null;
+        $uploader->queue(self::sparse_chunk($folder, 0, 70 * 1048576), 'object');
+        $uploader->queue(self::sparse_chunk($folder, 1, 1048576), 'object');
+        $uploader->drain($run, true);
+        $this->assertSame([70 * 1048576], $this->requested_bytes());
+    }
+
+    public function test_a_send_that_the_storage_answered_with_412_is_not_a_measure_of_the_speed(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $chunks = [self::chunk($folder, 1), self::chunk($folder, 2)];
+        foreach ($chunks as $chunk) {
+            $this->service->state['objects']['sites/' . fake_service::SITE_ID . '/objects/' . $chunk->name] = base64_encode('x');
+            $uploader->queue($chunk, 'object');
+        }
+        $this->time = self::NOW;
+        $uploader->drain($run, true);
+        $this->assertSame(0, $uploader->pending());
+        $this->assertNull($uploader->measured_rate());
+        $this->assertFalse(is_file($folder . '/uploads.json'));
+    }
+
+    public function test_the_batch_never_has_less_than_one_chunk(): void {
+        // 1 Mbps for 60 seconds is 7.5 MB, and a chunk is 10 MB: a chunk is asked for at a time.
+        $this->service->state['urllife'] = 150;
+        $this->intercept = function (RequestInterface $request): ?Response {
+            if ($request->getMethod() === 'PUT') {
+                $request->getBody()->getContents();
+                return new Response(200);
+            }
+            return null;
+        };
+        [$uploader, $run, $folder] = $this->start(10000000000, 100, null, 1);
+        // A small chunk first, so that the life of the URLs is known.
+        $uploader->queue(self::chunk($folder, 9, 1000), 'object');
+        $uploader->drain($run, true);
+        for ($i = 0; $i < 3; $i++) {
+            $uploader->queue(self::sparse_chunk($folder, $i, 10000000), 'object');
+        }
+        $uploader->drain($run, true);
+        $this->assertSame([1000, 10000000, 10000000, 10000000], $this->requested_bytes());
+        $this->assertSame(0, $uploader->pending());
+    }
+
+    public function test_queued_files_stay_inside_the_budget_whatever_their_sizes(): void {
+        // Five chunks of 100 KB wait (500 KB of 1 MB; the rule of half of the budget would hold them), and then comes a
+        // chunk of 600 KB: what waits is sent first, so that the folder never holds more than the budget.
+        [$uploader, $run, $folder] = $this->start(100000000, 1);
+        $uploader->resume($run);
+        $temp = new temp_area(new limits(2.0, 256, 500, 5.0, $this->tempdir, 1, 0));
+        $budget = 1048576;
+        foreach ([100000, 100000, 100000, 100000, 100000, 600000, 100000, 700000, 50000, 900000] as $n => $size) {
+            $uploader->queue(self::chunk($folder, $n, $size), 'object');
+            $this->assertLessThanOrEqual($budget, $temp->used_bytes($run->id()), 'After the chunk number ' . $n);
+            $uploader->drain($run, false);
+        }
+        $uploader->drain($run, true);
+        $this->assertCount(10, $this->service->state['objects']);
+    }
+
+    public function test_the_manifest_that_is_built_again_at_the_same_path_is_the_one_that_is_sent(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $uploader->queue(self::chunk($folder, 1, 300), 'manifest');
+        // Built again, with other content, at the same path.
+        $again = self::chunk($folder, 1, 500);
+        $this->assertSame(self::chunk($folder, 1, 500)->path, $again->path);
+        $uploader->queue($again, 'manifest');
+        $this->assertSame(1, $uploader->pending());
+        $this->assertSame(500, $uploader->pending_bytes());
+        $uploader->drain($run, true);
+        $this->assertSame(0, $uploader->pending());
+        $key = 'sites/' . fake_service::SITE_ID . '/manifests/' . $run->run_uuid();
+        $this->assertSame(500, strlen(base64_decode($this->service->state['objects'][$key])));
+        // The same file for an object is the same chunk, and is not queued twice.
+        $chunk = self::chunk($folder, 2);
+        $uploader->queue($chunk, 'object');
+        $uploader->queue($chunk, 'object');
+        $this->assertSame(1, $uploader->pending());
+        $this->assertFileExists($chunk->path);
     }
 }

@@ -68,11 +68,17 @@ final class uploader {
     /** @var int Seconds of the life of an upload URL that are kept as margin when a request is sized. */
     private const LIFE_MARGIN = 120;
 
+    /** @var int Seconds that the clock of this server may differ from the service's (the life is measured with the local clock). */
+    private const CLOCK_ALLOWANCE = 300;
+
+    /** @var int Fewest seconds of the life of the URLs that a request is sized for. */
+    private const MIN_WINDOW = 60;
+
     /** @var int Seconds that an upload URL lives, until the service has said otherwise (the contract's 15 minutes). */
     private const CONTRACT_LIFE = 900;
 
-    /** @var int Bytes a second that are assumed before any send has been measured (64 MiB). */
-    private const FIRST_RATE = 67108864;
+    /** @var int Bytes that a request asks for while no speed is known (64 MiB): the first request is a probe. */
+    private const PROBE_BYTES = 67108864;
 
     /** @var client The client. */
     private client $client;
@@ -115,6 +121,9 @@ final class uploader {
 
     /** @var string[] Files that were sent and could not be removed. */
     private array $leftovers = [];
+
+    /** @var run_record|null The run, once drain() or resume() has been given it. */
+    private ?run_record $run = null;
 
     /** @var upload_target[] Where the chunks of the batch in hand go. Kept here, so that no call of the plugin has them as
      *      an argument: a trace shows the arguments, and the URLs are secrets. */
@@ -221,6 +230,10 @@ final class uploader {
         }
         $folder = dirname($chunk->path);
         $this->load($folder);
+        if ($this->run !== null && $this->queue !== [] && $this->pending_bytes() + $chunk->size > $this->temp->budget_bytes()) {
+            // What waits is sent first, so that the files of the queue never take more room than the budget.
+            $this->drain($this->run, true);
+        }
         $item = [
             'kind' => $kind,
             'name' => $kind === 'object' ? $chunk->name : null,
@@ -233,15 +246,18 @@ final class uploader {
             && $q['name'] === $item['name']));
         if ($same === []) {
             $this->queue[] = $item;
-        } else if ($this->queue[$same[0]]['path'] === $item['path']) {
-            // The same file again.
-            return;
         } else if ($kind === 'object') {
-            // A chunk that waits has this name: the content is the same, and this file is not needed.
-            $this->discard($item['path']);
+            // A chunk that waits has this name, so the content is the same. A file of another path is not needed.
+            if ($this->queue[$same[0]]['path'] !== $item['path']) {
+                $this->discard($item['path']);
+            }
+            return;
         } else {
-            // The manifest and the index are named by the run: the later one replaces the earlier.
-            $this->discard($this->queue[$same[0]]['path']);
+            // The manifest and the index are named by the run, and are built again at the same path: the later one replaces
+            // the earlier, with its size and its digest. The file stays, unless the earlier one was another file.
+            if ($this->queue[$same[0]]['path'] !== $item['path']) {
+                $this->discard($this->queue[$same[0]]['path']);
+            }
             $this->queue[$same[0]] = $item;
         }
         $this->largest = max($this->largest, $item['size']);
@@ -257,6 +273,7 @@ final class uploader {
      * @throws plugin_exception With temp_write_failed when the folder cannot be used.
      */
     public function resume(run_record $run): void {
+        $this->run = $run;
         $this->loaded = false;
         $this->queue = [];
         $this->retryat = null;
@@ -323,6 +340,7 @@ final class uploader {
      *         or upload_failed. Other errors of the service and of the connection are thrown as they are.
      */
     public function drain(run_record $run, bool $force): void {
+        $this->run = $run;
         $this->load($this->temp->for_run($run->id()));
         $this->remove_leftovers();
         $now = ($this->clock)();
@@ -365,11 +383,15 @@ final class uploader {
     /**
      * The chunks of the next request for URLs: at most 256, and no more bytes than can be sent before the URLs expire.
      *
+     * While no speed is known the request is a probe of at most 64 MiB. A request has one chunk at least.
+     *
      * @return array[]
      */
     private function next_batch(): array {
-        $window = max(0, $this->life - self::LIFE_MARGIN);
-        $cap = max($this->queue[0]['size'], $this->rate() * $window);
+        $rate = $this->rate();
+        // The life is measured with the clock of this server, which may differ from the service's by 5 minutes.
+        $window = max(self::MIN_WINDOW, $this->life - self::LIFE_MARGIN - self::CLOCK_ALLOWANCE);
+        $cap = max($this->queue[0]['size'], $rate === null ? self::PROBE_BYTES : $rate * $window);
         $batch = [];
         $bytes = 0;
         foreach ($this->queue as $item) {
@@ -383,15 +405,21 @@ final class uploader {
     }
 
     /**
-     * The speed to plan with, in bytes a second: the limit when there is one, otherwise what the earlier sends showed.
+     * The speed to plan with: the limit when there is one, otherwise what the earlier sends showed.
      *
-     * @return int
+     * @return int|null Bytes a second; null when it is not known.
      */
-    private function rate(): int {
-        if ($this->bandwidth() > 0) {
-            return $this->bandwidth();
-        }
-        return $this->senttime > 0 ? max(1, intdiv($this->sentbytes, $this->senttime)) : self::FIRST_RATE;
+    private function rate(): ?int {
+        return $this->bandwidth() > 0 ? $this->bandwidth() : $this->measured_rate();
+    }
+
+    /**
+     * The speed that the sends of this run have shown.
+     *
+     * @return int|null Bytes a second; null before a send took any time.
+     */
+    public function measured_rate(): ?int {
+        return $this->sentbytes > 0 && $this->senttime > 0 ? max(1, intdiv($this->sentbytes, $this->senttime)) : null;
     }
 
     /**
@@ -495,7 +523,7 @@ final class uploader {
             $item = $this->queue[0];
             $began = ($this->clock)();
             try {
-                $this->objects->put_file(
+                $sent = $this->objects->put_file(
                     $this->targets[$i]->url(),
                     $this->targets[$i]->headers(),
                     $item['path'],
@@ -511,8 +539,11 @@ final class uploader {
                 }
                 return $this->failed($run, $code);
             }
-            $this->sentbytes += $item['size'];
-            $this->senttime += max(0, ($this->clock)() - $began);
+            if ($sent) {
+                // A send that was answered with 412 can come before the body is sent: it says nothing of the speed.
+                $this->sentbytes += $item['size'];
+                $this->senttime += max(0, ($this->clock)() - $began);
+            }
             array_shift($this->queue);
             $this->discard($item['path']);
             if ($item['kind'] === 'object') {
@@ -604,6 +635,13 @@ final class uploader {
             }
         }
         $this->queue = $kept;
+        if ($this->sentbytes === 0 && is_int($data['sentbytes'] ?? null) && is_int($data['senttime'] ?? null)) {
+            $this->sentbytes = max(0, $data['sentbytes']);
+            $this->senttime = max(0, $data['senttime']);
+        }
+        if ($this->life === self::CONTRACT_LIFE && is_int($data['life'] ?? null) && $data['life'] > 0) {
+            $this->life = $data['life'];
+        }
         $this->largest = max([$this->largest, ...array_column($kept, 'size')]);
         $this->retryat = is_int($data['retryat'] ?? null) ? $data['retryat'] : null;
         foreach (is_array($data['leftovers'] ?? null) ? $data['leftovers'] : [] as $left) {
@@ -639,12 +677,16 @@ final class uploader {
      */
     private function save(): void {
         $path = $this->folder . '/' . self::QUEUE_FILE;
-        if ($this->queue === [] && $this->leftovers === []) {
+        $learned = $this->sentbytes > 0 || $this->life !== self::CONTRACT_LIFE;
+        if ($this->queue === [] && $this->leftovers === [] && !$learned) {
             error_silencer::run(static fn() => is_file($path) && unlink($path), $warning);
             return;
         }
         $json = json_encode(
-            ['v' => 1, 'retryat' => $this->retryat, 'items' => $this->queue, 'leftovers' => $this->leftovers],
+            [
+                'v' => 1, 'retryat' => $this->retryat, 'items' => $this->queue, 'leftovers' => $this->leftovers,
+                'sentbytes' => $this->sentbytes, 'senttime' => $this->senttime, 'life' => $this->life,
+            ],
             JSON_UNESCAPED_SLASHES
         );
         $part = $path . '.part';

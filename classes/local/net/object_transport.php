@@ -97,6 +97,8 @@ final class object_transport {
      *        is required. With If-None-Match the storage answers 412 for an object that is stored already, which is a success.
      * @param string $path File to send.
      * @param int $bandwidthbytespersecond Upper limit of the sending speed; 0 for none.
+     * @return bool True when this PUT stored the object; false when the storage said that it was stored already (412), which
+     *         can come before the body is sent, so that the time of the call says nothing of the speed.
      * @throws \coding_exception When a header is not one of the six (the five and If-None-Match), is given twice, or is not
      *         a plain value, when Content-Length is missing or not a number, or when the limit is negative: those are mistakes
      *         of the caller.
@@ -109,7 +111,7 @@ final class object_transport {
         array $headers,
         string $path,
         int $bandwidthbytespersecond
-    ): void {
+    ): bool {
         if ($bandwidthbytespersecond < 0) {
             throw new \coding_exception('The limit of the speed is not negative.');
         }
@@ -131,13 +133,14 @@ final class object_transport {
             $response = $this->request('PUT', $url, $options, $curl, $declared, $bandwidthbytespersecond, transport::MAX_RESPONSE);
             if ($response->getStatusCode() === 412 && self::is_conditional($headers)) {
                 // Stored already: the version that is kept is the one that was sent first.
-                return;
+                return false;
             }
             self::check_status($response->getStatusCode());
             // The position of the stream is the number of bytes that the client took from it.
             if ($body->tell() !== $declared) {
                 throw new transport_exception('object_incomplete', 'sent');
             }
+            return true;
         } finally {
             $body->close();
         }

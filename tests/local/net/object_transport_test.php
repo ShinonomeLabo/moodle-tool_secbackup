@@ -1016,7 +1016,7 @@ final class object_transport_test extends \advanced_testcase {
     public function test_a_header_that_makes_the_put_conditional_is_sent_as_it_was_given(): void {
         $mock = new MockHandler([self::reading()]);
         $headers = self::headers('data') + ['If-None-Match' => '*'];
-        self::transport($mock)->put_file(self::url(), $headers, $this->file('data'), 0);
+        $this->assertTrue(self::transport($mock)->put_file(self::url(), $headers, $this->file('data'), 0));
         $this->assertSame(['*'], $mock->getLastRequest()->getHeader('If-None-Match'));
         $this->assertSame(['STANDARD'], $mock->getLastRequest()->getHeader('x-amz-storage-class'));
     }
@@ -1024,15 +1024,16 @@ final class object_transport_test extends \advanced_testcase {
     public function test_a_412_to_a_conditional_put_means_that_the_object_is_stored_already(): void {
         $mock = new MockHandler([self::reading(412, [], '<Error><Code>PreconditionFailed</Code></Error>')]);
         $headers = self::headers('data') + ['If-None-Match' => '*'];
-        self::transport($mock)->put_file(self::url(), $headers, $this->file('data'), 0);
+        $stored = self::transport($mock)->put_file(self::url(), $headers, $this->file('data'), 0);
+        $this->assertFalse($stored, 'Not stored by this PUT.');
         $this->assertCount(0, $mock);
     }
 
     public function test_a_412_that_does_not_read_the_body_is_stored_too(): void {
         $skipping = static fn(RequestInterface $request): Response => new Response(412);
         $headers = self::headers('data') + ['if-none-match' => '*'];
-        self::transport(new MockHandler([$skipping]))->put_file(self::url(), $headers, $this->file('data'), 0);
-        $this->addToAssertionCount(1);
+        $transport = self::transport(new MockHandler([$skipping]));
+        $this->assertFalse($transport->put_file(self::url(), $headers, $this->file('data'), 0));
     }
 
     public function test_a_412_to_a_put_that_was_not_conditional_is_a_rejection(): void {

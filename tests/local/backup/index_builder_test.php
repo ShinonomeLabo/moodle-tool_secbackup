@@ -91,12 +91,11 @@ final class index_builder_test extends \basic_testcase {
         $a = hash('sha256', 'a');
         $b = hash('sha256', 'b');
         [$low, $high] = strcmp($a, $b) < 0 ? [$a, $b] : [$b, $a];
-        $sizes = [$b => 123456789012, $a => 10];
-        $built = index_builder::build($sizes, self::SITE, self::RUN);
+        $built = index_builder::build([$high => 123456789012, $low => 10], self::SITE, self::RUN);
         $expected = json_encode(['v' => 1, 'site_id' => self::SITE, 'run_id' => self::RUN, 'count' => 2], JSON_UNESCAPED_SLASHES)
-            . "\n" . $low . ' ' . $sizes[$low] . "\n" . $high . ' ' . $sizes[$high] . "\n";
+            . "\n$low 10\n$high 123456789012\n";
         $this->assertSame($expected, gzdecode($built['gzip']));
-        $this->assertSame($sizes, self::strict_read($built['gzip']));
+        $this->assertSame([$low => 10, $high => 123456789012], self::strict_read($built['gzip']));
     }
 
     public function test_the_index_is_the_header_and_a_line_for_each_chunk_in_the_order_of_the_names(): void {

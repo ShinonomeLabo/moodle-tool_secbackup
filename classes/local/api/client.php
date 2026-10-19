@@ -23,6 +23,7 @@ use tool_secbackup\local\endpoint\endpoint_exception;
 use tool_secbackup\local\net\object_url;
 use tool_secbackup\local\net\response;
 use tool_secbackup\local\net\transport;
+use tool_secbackup\local\net\transport_exception;
 use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\local\trust\sec_trust;
 
@@ -365,8 +366,23 @@ final class client {
         }
         $now = ($this->clock)();
         $targets = [];
-        foreach (array_values($items) as $i => $item) {
-            $targets[] = $this->upload_target($data['items'][$i], $item, $now);
+        try {
+            foreach (array_values($items) as $i => $item) {
+                $targets[] = $this->upload_target($data['items'][$i], $item, $now);
+            }
+        } catch (api_exception $e) {
+            // Made again here: the trace of the one from upload_target() holds the answer with the signed URLs.
+            throw new api_exception(
+                $e->errorcode,
+                $e->servercode,
+                $e->httpstatus,
+                $e->retryafter,
+                $e->servertime,
+                $e->a,
+                $e->debuginfo
+            );
+        } catch (transport_exception $e) {
+            throw new transport_exception($e->errorcode, $e->debuginfo);
         }
         return $targets;
     }

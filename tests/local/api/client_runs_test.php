@@ -1547,4 +1547,65 @@ final class client_runs_test extends \advanced_testcase {
         $this->assertNull($e->getPrevious());
         $this->assertStringNotContainsString(base64_encode($pair->export_secret()), $e->getMessage());
     }
+
+    /**
+     * Answers for the upload URLs that are refused, by what is wrong with them.
+     *
+     * @return array
+     */
+    public static function refused_answer_provider(): array {
+        return [
+            'an object with five headers' => ['five'],
+            'an url that has expired' => ['expired'],
+            'an url that is not the storage' => ['foreign'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refused_answer_provider')]
+    /**
+     * When an answer for the upload URLs is refused, the signed URL is in no part of the exception, nor of its trace.
+     *
+     * The case is a name, so that no frame of the test holds the answer.
+     *
+     * @dataProvider refused_answer_provider
+     * @param string $case What is wrong with the answer.
+     */
+    public function test_the_signed_url_is_not_in_the_trace_of_a_refused_answer(string $case): void {
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $answer = self::good_targets();
+            $signed = 'X-Amz-Signature=sekretvalue1';
+            $answer['items'][0]['url'] = 'https://app.example.test/_s3/o?' . $signed;
+            $answer['items'][1]['url'] = 'https://app.example.test/_s3/i?' . $signed;
+            if ($case === 'five') {
+                unset($answer['items'][0]['headers']['If-None-Match']);
+            } else if ($case === 'expired') {
+                $answer['items'][0]['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', self::NOW - 1);
+            } else {
+                // Not https: the developer settings of the test let any host through, but not a plain connection.
+                $answer['items'][0]['url'] = 'http://app.example.test/_s3/o?' . $signed;
+            }
+            $client = self::answering([new Response(200, [], json_encode($answer))]);
+            unset($answer);
+            try {
+                $client->upload_urls(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN, [
+                    ['kind' => 'object', 'name' => self::NAME_A, 'size' => 10, 'sha256' => self::SHA_A],
+                    ['kind' => 'index', 'name' => null, 'size' => 5, 'sha256' => self::SHA_A],
+                ]);
+                $this->fail('No exception');
+            } catch (\tool_secbackup\local\plugin_exception $e) {
+                foreach (\tool_secbackup\tests\trace_strings::of($e) as $string) {
+                    $this->assertStringNotContainsString('sekretvalue1', $string);
+                    $this->assertStringNotContainsString('/_s3/', $string);
+                }
+                $this->assertStringNotContainsString('sekretvalue1', (string) $e->debuginfo);
+                $this->assertSame([], array_diff(
+                    \tool_secbackup\tests\trace_strings::objects_in_plugin_frames($e),
+                    [signing_keypair::class, \SensitiveParameterValue::class, \Closure::class, endpoint::class]
+                ));
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+    }
 }

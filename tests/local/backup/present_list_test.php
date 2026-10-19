@@ -263,12 +263,17 @@ final class present_list_test extends \advanced_testcase {
         }
         fwrite($out, deflate_add($context, $piece, ZLIB_FINISH));
         fclose($out);
-        if (function_exists('memory_reset_peak_usage')) {
+        // The peak can be reset from PHP 8.2 on. Before it, the peak holds what earlier tests used, so the bound is left out
+        // there and the assertions below (the sizes are found in the file) are what the test says.
+        $resettable = function_exists('memory_reset_peak_usage');
+        if ($resettable) {
             memory_reset_peak_usage();
         }
         $before = memory_get_usage();
         $list = $this->load($path);
-        $this->assertLessThan(4 * 1048576, memory_get_peak_usage() - $before);
+        if ($resettable) {
+            $this->assertLessThan(4 * 1048576, memory_get_peak_usage() - $before);
+        }
         $this->assertSame($count, $list->count());
         $this->assertSame(1, $list->size_of(sprintf('%064x', 0)));
         $this->assertSame(123457, $list->size_of(sprintf('%064x', 123456)));

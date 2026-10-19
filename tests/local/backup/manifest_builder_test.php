@@ -210,14 +210,18 @@ final class manifest_builder_test extends \advanced_testcase {
             $builder->append($line + ['n' => $i]);
         }
         $this->assertSame(3000, $builder->commit());
-        if (function_exists('memory_reset_peak_usage')) {
+        // The peak can be reset from PHP 8.2 on; before it the peak holds what earlier tests used, and the bound is left out.
+        $resettable = function_exists('memory_reset_peak_usage');
+        if ($resettable) {
             memory_reset_peak_usage();
         }
         $before = memory_get_usage();
         $key = str_repeat('k', 32);
         $chunk = $builder->build(['v' => 1], $key, self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
         // The list is 2.8 MB of text: it is read and compressed in pieces.
-        $this->assertLessThan(2000000, memory_get_peak_usage() - $before);
+        if ($resettable) {
+            $this->assertLessThan(2000000, memory_get_peak_usage() - $before);
+        }
         $this->assertGreaterThan(0, $chunk->size);
         $reader = new chunk_reader(
             $chunk->path,
@@ -268,6 +272,42 @@ final class manifest_builder_test extends \advanced_testcase {
                 $this->assertStringNotContainsString($key, $string);
             }
             $this->assertSame([], trace_strings::objects_in_plugin_frames($e));
+        }
+    }
+
+    /**
+     * What chunk_name refuses, by name (the test builds the key itself: a frame of the test would hold it otherwise).
+     *
+     * @return array
+     */
+    public static function refused_by_the_name_provider(): array {
+        return ['a key of 31 bytes' => ['key'], 'a run that is not a UUID' => ['run']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refused_by_the_name_provider')]
+    /**
+     * A key or a run that the naming refuses does not put the key into the trace of the exception.
+     *
+     * @dataProvider refused_by_the_name_provider
+     * @param string $case What is wrong.
+     */
+    public function test_the_key_is_not_in_the_trace_when_the_name_is_refused(string $case): void {
+        [$builder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $key = $case === 'key' ? 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk' : 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk';
+        try {
+            $builder->build(
+                ['v' => 1],
+                $key,
+                $case === 'run' ? 'not-a-uuid' : self::RUN,
+                sodium_crypto_box_publickey(self::pair()),
+                self::SITE
+            );
+            $this->fail('No exception');
+        } catch (\coding_exception $e) {
+            foreach (trace_strings::of($e) as $string) {
+                $this->assertStringNotContainsString('kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk', $string);
+            }
         }
     }
 }

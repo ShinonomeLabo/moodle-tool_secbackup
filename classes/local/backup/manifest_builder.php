@@ -155,7 +155,13 @@ final class manifest_builder {
         // exception shows the parameters (and hides them only from PHP 8.2 on).
         $key = $dedupkey;
         unset($dedupkey);
-        $name = chunk_name::manifest($key, $runuuid);
+        try {
+            $name = chunk_name::manifest($key, $runuuid);
+        } catch (\coding_exception $e) {
+            // Made again from the hint: the trace of the exception from chunk_name holds the key as an argument on PHP before
+            // 8.2, and its message is not made into a hint again with its prefix.
+            throw new \coding_exception($e->a);
+        }
         unset($key);
         $headerline = self::encode($header) . "\n";
         $this->commit();
