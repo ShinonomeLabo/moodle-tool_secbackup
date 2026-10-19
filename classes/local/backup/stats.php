@@ -86,9 +86,14 @@ final class stats {
      *
      * @param array $stats The statistics.
      * @return string JSON.
+     * @throws \coding_exception When the statistics cannot be encoded (it cannot happen with values from collect()).
      */
     public static function encode(array $stats): string {
-        return (string) json_encode($stats, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        $json = json_encode($stats, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            throw new \coding_exception('The statistics cannot be encoded as JSON.');
+        }
+        return $json;
     }
 
     /**
@@ -152,7 +157,7 @@ final class stats {
             }
         }
         $names = array_keys($valid);
-        usort($names, static fn($a, $b) => [$valid[$b], (string) $a] <=> [$valid[$a], (string) $b]);
+        usort($names, static fn($a, $b) => $valid[$b] <=> $valid[$a] ?: strcmp((string) $a, (string) $b));
         $kept = [];
         foreach (array_slice($names, 0, self::MAX_TABLES) as $name) {
             $kept[$name] = $valid[$name];

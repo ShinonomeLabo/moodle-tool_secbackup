@@ -101,14 +101,14 @@ final class site_config_test extends \advanced_testcase {
         $handle = fopen('php://memory', 'r');
         $CFG->config_php_settings = [
             'sessionurl' => 'redis://:pw@host:6379', 'cacheurl' => 'https://user:pw@example.test/path',
-            'plainurl' => 'https://example.test/a@b', 'object' => new \stdClass(), 'handle' => $handle,
+            'plainurl' => 'https://example.test/path', 'object' => new \stdClass(), 'handle' => $handle,
             'nested' => ['u' => 'redis://:pw@host', 'ok' => 'redis://host', 'o' => new \stdClass()],
         ];
         $forced = site_config::snapshot()['forced']['config'];
         fclose($handle);
         $this->assertSame(['nested', 'plainurl'], array_keys($forced));
         $this->assertSame(['ok' => 'redis://host'], $forced['nested']);
-        $this->assertSame('https://example.test/a@b', $forced['plainurl']);
+        $this->assertSame('https://example.test/path', $forced['plainurl']);
     }
 
     public function test_the_snapshot_is_the_same_whatever_the_order_of_the_settings(): void {
@@ -126,5 +126,35 @@ final class site_config_test extends \advanced_testcase {
         global $CFG;
         unset($CFG->config_php_settings, $CFG->forced_plugin_settings);
         $this->assertSame(['config' => [], 'plugins' => []], site_config::snapshot()['forced']);
+    }
+
+    public function test_userinfo_without_a_password_and_a_password_with_a_slash_are_left_out(): void {
+        global $CFG;
+        $CFG->config_php_settings = [
+            'a' => 'redis://secrettoken@host:6379', 'b' => 'redis://user:pa/ss@host', 'c' => 'redis://host:6379/0',
+            'd' => 'https://example.test/a@b', 'e' => 'name@example.test',
+        ];
+        $this->assertSame(['c', 'e'], array_keys(site_config::snapshot()['forced']['config']));
+    }
+
+    public function test_a_list_stays_a_list_when_entries_are_left_out(): void {
+        global $CFG;
+        $CFG->config_php_settings = [
+            'hosts' => ['a', 'redis://:u:p@h', 'b', new \stdClass()],
+            'nested' => [['x' => 1], ['dbpass' => 'p'], ['y' => 2]],
+            'map' => [3 => 'c', 1 => 'redis://:u:p@h', 2 => 'd'],
+        ];
+        $forced = site_config::snapshot()['forced']['config'];
+        $this->assertSame(['a', 'b'], $forced['hosts']);
+        $this->assertSame('{"hosts":["a","b"],"map":{"2":"d","3":"c"},"nested":[{"x":1},[],{"y":2}]}', json_encode($forced));
+    }
+
+    public function test_names_that_only_contain_auth_are_kept_and_a_secret_name_drops_an_array_whole(): void {
+        global $CFG;
+        $CFG->config_php_settings = [
+            'authtype' => 'ldap', 'authenticate' => true, 'authmethod' => 'x', 'session_redis_auth' => 'p',
+            'smtppass' => ['a' => 1, 'b' => ['c' => 2]], 'apikeys' => [1, 2],
+        ];
+        $this->assertSame(['authenticate', 'authmethod', 'authtype'], array_keys(site_config::snapshot()['forced']['config']));
     }
 }

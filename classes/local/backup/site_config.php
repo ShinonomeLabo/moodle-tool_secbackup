@@ -35,8 +35,8 @@ final class site_config {
     /** @var string[] Names that are left out whatever the pattern says. */
     private const NEVER = ['dbpass', 'dbuser', 'dbhost', 'passwordsaltmain', 'smtpuser', 'proxyuser'];
 
-    /** @var string A URL that holds a user and a password. */
-    private const URL_CREDENTIALS = '~[a-z][a-z0-9+.-]*://[^/\s@]*:[^/\s@]*@~i';
+    /** @var string A URL with an "@" after its scheme: user information, even without a colon or with a "/" in it. */
+    private const URL_CREDENTIALS = '~[a-z][a-z0-9+.-]*://.*@~is';
 
     /**
      * Gets the snapshot.
@@ -75,6 +75,9 @@ final class site_config {
             }
             if (is_array($value)) {
                 $kept[$name] = self::clean($value);
+                if (array_is_list($value)) {
+                    $kept[$name] = array_values($kept[$name]);
+                }
             } else if (is_string($value) && preg_match(self::URL_CREDENTIALS, $value) === 1) {
                 continue;
             } else if (is_scalar($value) || $value === null) {

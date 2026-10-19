@@ -295,4 +295,22 @@ final class stats_test extends \advanced_testcase {
         $withmore['tables'] = (object) $more;
         $this->assertGreaterThan(60000, strlen(stats::encode($withmore)));
     }
+
+    public function test_table_ties_are_ordered_by_byte_comparison_of_the_names(): void {
+        $tables = ['9' => 1, '10' => 1];
+        for ($i = 0; $i < 1999; $i++) {
+            $tables[sprintf('f_%04d', $i)] = 5;
+        }
+        $kept = (array) $this->collect($tables)['tables'];
+        $this->assertCount(2000, $kept);
+        $this->assertArrayHasKey('10', $kept);
+        $this->assertArrayNotHasKey('9', $kept);
+    }
+
+    public function test_encode_throws_when_the_statistics_cannot_be_encoded(): void {
+        $stats = $this->collect();
+        $stats['bad'] = NAN;
+        $this->expectException(\coding_exception::class);
+        stats::encode($stats);
+    }
 }
