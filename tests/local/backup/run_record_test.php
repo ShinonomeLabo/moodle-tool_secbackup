@@ -396,4 +396,63 @@ final class run_record_test extends \advanced_testcase {
         $this->assertSame($run->id(), run_record::find_by_uuid('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e11')->id());
         $this->assertNull(run_record::find_by_uuid('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e12'));
     }
+
+    public function test_a_run_is_read_again_from_the_table(): void {
+        global $DB;
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        $other = run_record::active();
+        $other->commit('files', ['cursor' => ['offset' => 9]], 4, 1001);
+        $other->pause(1002, 2000);
+        $run->reload();
+        $this->assertSame('files', $run->stage());
+        $this->assertSame('paused', $run->status());
+        $this->assertSame(4, $run->entries_committed());
+        $this->assertSame(['cursor' => ['offset' => 9]], $run->progress());
+        $DB->delete_records('tool_secbackup_runs', ['id' => $run->id()]);
+        $this->expectException(\dml_missing_record_exception::class);
+        $run->reload();
+    }
+
+    public function test_a_stale_record_never_changes_a_run_that_ended(): void {
+        $this->resetAfterTest();
+        $stale = run_record::create('cli', 1000);
+        $fresh = run_record::active();
+        $fresh->finish(1100);
+        $this->assertFalse($stale->is_live());
+        $this->assertFalse($stale->abort('disk_low', 1200));
+        $this->assertFalse($stale->pause(1200, 1300));
+        $this->assertFalse($stale->refuse('contract_inactive', 1200));
+        $this->assertFalse($stale->finish(1200));
+        $this->assertFalse($stale->activate(1200));
+        $stored = run_record::recent(1)[0];
+        $this->assertSame('completed', $stored->status());
+        $this->assertNull($stored->abort_code());
+        $this->assertSame('completed', $stale->status(), 'The stale copy learns the stored status.');
+    }
+
+    public function test_a_live_run_changes_from_the_states_that_allow_it(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        $this->assertTrue($run->is_live());
+        $this->assertFalse($run->activate(1001), 'An active run is not activated.');
+        $this->assertTrue($run->pause(1002, 1100));
+        $this->assertTrue($run->pause(1003, 1200));
+        $this->assertTrue($run->activate(1004));
+        $this->assertTrue($run->abort('disk_low', 1005));
+        $this->assertFalse($run->is_live());
+    }
+
+    public function test_values_are_kept_without_moving_the_commit(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        $run->commit('files', ['run' => ['a' => 1, 'b' => 2], 'cursor' => ['offset' => 9]], 4, 1001);
+        $run->keep(['b' => 3, 'c' => true]);
+        $stored = run_record::active();
+        $this->assertSame(['run' => ['b' => 3, 'c' => true, 'a' => 1], 'cursor' => ['offset' => 9]], $stored->progress());
+        $this->assertSame('files', $stored->stage());
+        $this->assertSame(4, $stored->entries_committed());
+        $this->expectException(\coding_exception::class);
+        $run->keep(['address' => 'https://example.com/']);
+    }
 }

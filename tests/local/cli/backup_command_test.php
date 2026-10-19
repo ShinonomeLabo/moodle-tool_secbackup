@@ -139,10 +139,10 @@ final class backup_command_test extends \advanced_testcase {
         ), end($lines));
     }
 
-    public function test_a_backup_that_the_service_refuses_exits_with_2(): void {
+    public function test_a_backup_that_the_service_refuses_exits_with_1(): void {
         $this->fixture->service->state['contractinactive'] = true;
         [$code, $lines] = $this->run_command(true);
-        $this->assertSame(2, $code);
+        $this->assertSame(1, $code);
         $this->assertSame(get_string(
             'cli_backup_refused',
             'tool_secbackup',
@@ -161,14 +161,21 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertSame([], run_record::recent(1));
     }
 
-    public function test_a_step_that_fails_unexpectedly_exits_with_1_and_names_the_class_only(): void {
+    public function test_a_step_that_fails_unexpectedly_is_tried_again_until_the_run_expires(): void {
         $broken = static function (): core_diff {
             throw new \RuntimeException('secret detail');
         };
+        $started = $this->fixture->time;
         [$code, $lines] = $this->run_command(true, false, ['corediff' => $broken]);
         $this->assertSame(1, $code);
-        $this->assertSame(get_string('cli_backup_failed', 'tool_secbackup', 'RuntimeException'), end($lines));
-        $this->assertSame('active', run_record::active()->status());
+        $this->assertContains(get_string('cli_backup_failed', 'tool_secbackup', 'RuntimeException'), $lines);
+        $expired = get_string('cli_backup_aborted', 'tool_secbackup', get_string('expired', 'tool_secbackup'));
+        $this->assertSame($expired, end($lines));
+        $this->assertGreaterThanOrEqual($started + 86400 + 600, $this->fixture->time);
+        $this->assertSame(300, $this->slept[0]);
+        foreach ($lines as $line) {
+            $this->assertStringNotContainsString('secret detail', $line);
+        }
     }
 
     public function test_a_backup_whose_files_are_on_another_server_is_not_run_here(): void {
@@ -180,19 +187,25 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertSame([], $this->fixture->requests);
     }
 
-    public function test_while_another_process_steps_the_backup_the_command_does_nothing(): void {
+    public function test_while_another_process_holds_the_lock_the_command_waits_for_it(): void {
         global $CFG;
         run_record::create('manual', $this->fixture->time);
         $CFG->lock_factory = '\core\lock\file_lock_factory';
         $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', 0);
-        try {
-            [$code, $lines] = $this->run_command(false);
-        } finally {
+        [$runner] = $this->two_runners();
+        $waited = [];
+        $command = new backup_command($runner, $this->fixture->clock(), function (int $seconds) use ($lock, &$waited): void {
+            $waited[] = $seconds;
+            $this->fixture->advance($seconds);
             $lock->release();
-        }
-        $this->assertSame(2, $code);
-        $this->assertSame(get_string('cli_backup_locked', 'tool_secbackup'), end($lines));
-        $this->assertSame([], $this->fixture->requests);
+        }, static fn(): ?string => null, 0);
+        $lines = [];
+        $code = $command->run(false, false, static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        $this->assertSame(0, $code);
+        $this->assertSame(backup_command::LOCK_RETRY, $waited[0]);
+        $this->assertContains(get_string('cli_backup_lockwait', 'tool_secbackup'), $lines);
     }
 
     public function test_the_output_holds_no_address_and_no_key(): void {
@@ -223,5 +236,126 @@ final class backup_command_test extends \advanced_testcase {
             get_string('trademark', 'tool_secbackup'),
             get_string('cli_backup_help', 'tool_secbackup'),
         ], $lines);
+    }
+
+    /**
+     * The runners of the command and of the adhoc task: the same server (and so the same temporary folder), two instances.
+     *
+     * @param array $seams Seams that replace those of a small site.
+     * @return runner[] [the runner of the command, the runner of the task]
+     */
+    private function two_runners(array $seams = []): array {
+        $seams = $this->fixture->small_seams($seams);
+        return [
+            new runner($this->fixture->client(), $this->fixture->objects(), $this->fixture->clock(), ['windows' => false] + $seams),
+            new runner($this->fixture->client(), $this->fixture->objects(), $this->fixture->clock(), $seams),
+        ];
+    }
+
+    public function test_a_task_step_that_completes_the_run_between_two_steps_ends_the_command_with_0(): void {
+        $this->fixture->service->state['holdverify'] = true;
+        [$runner, $taskrunner] = $this->two_runners();
+        $ran = false;
+        $requests = 0;
+        $sleep = function (int $seconds) use ($taskrunner, &$ran, &$requests): void {
+            $this->fixture->advance($seconds);
+            if (!$ran) {
+                $ran = true;
+                // While the command waits for the receipt, the task asks for it and completes the run.
+                $this->fixture->service->verify_run(run_record::recent(1)[0]->run_uuid());
+                (new \tool_secbackup\task\run_backup())->step_with(
+                    fn(run_record $run, int $budget): string => $taskrunner->step($run, $budget),
+                    $this->fixture->clock(),
+                    static fn(string $line) => null
+                );
+                $requests = count($this->fixture->requests);
+            }
+        };
+        $command = new backup_command($runner, $this->fixture->clock(), $sleep, static fn(): ?string => null);
+        $lines = [];
+        $code = $command->run(true, false, static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        $this->assertTrue($ran);
+        $this->assertSame(0, $code, implode("\n", $lines));
+        $this->assertSame('completed', run_record::recent(1)[0]->status());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+        $this->assertCount($requests, $this->fixture->requests, 'The command did not step its old copy of the run.');
+    }
+
+    public function test_the_command_waits_for_a_task_step_and_goes_on_from_what_it_committed(): void {
+        global $CFG;
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
+        foreach (['one', 'two', 'three', 'four'] as $name) {
+            get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
+                'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
+                'filename' => $name . '.txt'], str_repeat($name, 100));
+        }
+        $packed = [];
+        $source = function (\moodle_database $db) use (&$packed): \tool_secbackup\local\backup\files\file_source {
+            return new class ($db, $packed) extends \tool_secbackup\local\backup\files\file_source {
+                /** @var array Contents packed so far, shared with the test. */
+                private array $packed;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param \moodle_database $db Connection.
+                 * @param array $packed Contents packed so far, by reference.
+                 */
+                public function __construct(\moodle_database $db, array &$packed) {
+                    parent::__construct($db);
+                    $this->packed = &$packed;
+                }
+
+                /**
+                 * Counts the contents.
+                 *
+                 * @param string $contenthash Content hash.
+                 * @param int $size Size.
+                 * @param \tool_secbackup\local\backup\files\packer $packer Packer.
+                 * @return array|null
+                 */
+                public function pack(string $contenthash, int $size, \tool_secbackup\local\backup\files\packer $packer): ?array {
+                    $this->packed[] = $contenthash;
+                    return parent::pack($contenthash, $size, $packer);
+                }
+            };
+        };
+        $tick = 0.0;
+        // Every look at the timer is past the budget of a step of the command (3,600 seconds).
+        $fast = function () use (&$tick): float {
+            $tick += 4000.0;
+            return $tick;
+        };
+        [$runner, $taskrunner] = $this->two_runners(['timer' => $fast, 'filesource' => $source]);
+        $held = null;
+        $phase = 0;
+        $sleep = function (int $seconds) use (&$held, &$phase, $taskrunner): void {
+            $this->fixture->advance($seconds);
+            if ($phase === 1) {
+                $phase = 2;
+                $held->release();
+                (new \tool_secbackup\task\run_backup())->step_with(
+                    fn(run_record $run, int $budget): string => $taskrunner->step($run, $budget),
+                    $this->fixture->clock(),
+                    static fn(string $line) => null
+                );
+            }
+        };
+        $command = new backup_command($runner, $this->fixture->clock(), $sleep, static fn(): ?string => null, 0);
+        $lines = [];
+        $code = $command->run(true, false, function (string $line) use (&$lines, &$held, &$phase): void {
+            $lines[] = $line;
+            if ($phase === 0 && $line === get_string('cli_backup_stage', 'tool_secbackup', 'files')) {
+                // Between two steps of the command, another process takes the lock.
+                $phase = 1;
+                $held = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', 0);
+            }
+        });
+        $this->assertSame(2, $phase, implode("\n", $lines));
+        $this->assertSame(0, $code, implode("\n", $lines));
+        $this->assertSame(count($packed), count(array_unique($packed)), 'No content was packed again.');
+        $this->assertContains(get_string('cli_backup_lockwait', 'tool_secbackup'), $lines);
     }
 }

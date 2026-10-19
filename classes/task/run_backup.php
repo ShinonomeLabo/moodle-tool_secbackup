@@ -22,9 +22,9 @@ use tool_secbackup\local\backup\runner;
 /**
  * Moves the backup run forward for ten minutes, and queues itself again while the run has more to do.
  *
- * The starter queues it when it starts a run, and again at a status request when a run has none. Only one step runs at a
- * time: a step of the command line or of another server holds the same lock, and then this task does nothing (that step
- * queues the next one, or the next status request does).
+ * The starter queues it when it starts a run, and again at a status request when a run has none; a run has one chain of
+ * these tasks (see queue()). Only one step runs at a time: a step of the command line or of another server holds the same
+ * lock, and then this task does nothing (the next status request queues it again).
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -86,6 +86,28 @@ class run_backup extends \core\task\adhoc_task {
     }
 
     /**
+     * Queues the task, unless one is queued already that has not started and has attempts left: the run has one chain of
+     * tasks, whoever asks (the starter, the task itself, a status request).
+     *
+     * Moodle's own check for an existing task is not used: depending on the version it counts the task that is running
+     * (which is removed when it ends, so the chain would end with it), and it never counts a task without attempts left.
+     *
+     * @param int|null $at When it runs; null for at once.
+     */
+    public static function queue(?int $at = null): void {
+        foreach (\core\task\manager::get_adhoc_tasks(self::class, false, true) as $waiting) {
+            if ($waiting->get_attempts_available() > 0) {
+                return;
+            }
+        }
+        $task = new self();
+        if ($at !== null) {
+            $task->set_next_run_time($at);
+        }
+        \core\task\manager::queue_adhoc_task($task);
+    }
+
+    /**
      * Queues the task again: when the run waits, for the time it waits for; a paused run that does not say when, in five
      * minutes; otherwise at once.
      *
@@ -94,14 +116,11 @@ class run_backup extends \core\task\adhoc_task {
      * @param int $now The current time.
      */
     private static function queue_next(run_record $run, string $result, int $now): void {
-        $task = new self();
         $next = $run->next_attempt();
         if ($next !== null && $next > $now) {
-            $task->set_next_run_time($next);
-        } else if ($result === 'paused') {
-            $task->set_next_run_time($now + self::PAUSED_RETRY);
+            self::queue($next);
+        } else {
+            self::queue($result === 'paused' ? $now + self::PAUSED_RETRY : null);
         }
-        // The task that runs now is still in the queue, so the check for an existing one would find it.
-        \core\task\manager::queue_adhoc_task($task);
     }
 }

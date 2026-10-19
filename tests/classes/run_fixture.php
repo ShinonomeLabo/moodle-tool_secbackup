@@ -64,6 +64,9 @@ final class run_fixture {
     /** @var callable|null Answers a request instead of the service: function (RequestInterface): ?Response. */
     public $intercept = null;
 
+    /** @var int[] The speed limit (bytes a second, 0 for none) of every PUT to the storage, in order. */
+    public array $putspeeds = [];
+
     /**
      * Registers the site and stores the settings of the service (02:00 to 05:00 in Tokyo, once a day).
      *
@@ -135,6 +138,9 @@ final class run_fixture {
         $inner = $this->service->handler();
         return function (RequestInterface $request, array $options) use ($inner) {
             $this->requests[] = $request->getMethod() . ' ' . $request->getUri()->getPath();
+            if ($request->getMethod() === 'PUT') {
+                $this->putspeeds[] = (int) ($options['curl'][CURLOPT_MAX_SEND_SPEED_LARGE] ?? 0);
+            }
             $answer = $this->intercept === null ? null : ($this->intercept)($request);
             return $answer === null ? $inner($request, $options) : Create::promiseFor($answer);
         };

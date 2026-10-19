@@ -32,10 +32,17 @@ use tool_secbackup\local\crypto\chunk_writer;
  * a later step goes on from is the last file after which nothing waits: a step that ends while small files wait for a pack
  * that there is no room for leaves them to the next step.
  *
+ * A big file is handed out one piece at a time, so that the temporary folder holds one of its pieces beside what waits within
+ * the budget: a first read checks the file against its content hash and takes the SHA-256 of every piece (packer::big_digests()),
+ * then each piece is made after needs_drain(), checked against that read, queued, committed with the point to go on from (the
+ * file in progress and its next piece are in the cursor), and watched. A piece that is not the one of the first read stops the
+ * run (tamper_detected); a file that is gone when a piece is read is withdrawn (its entries are cut back) and listed in
+ * missing_files, and the pieces made before stay in the index.
+ *
  * A chunk that the present list holds (same name, same size) is not sent and stays in the index; a big file whose pieces are
  * all in the present list is not even read: its entries are made from the list (a piece is the one item of its chunk, at
- * offset 86 and to the end of the chunk). A content that is neither in the file directory nor in the trash goes to
- * missing_files.
+ * offset 86 and to the end of the chunk), and so is every single piece that the list holds. A content that is neither in the
+ * file directory nor in the trash goes to missing_files.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -60,6 +67,12 @@ final class files_stage {
     /** @var int The offset in the journal after the last file after which nothing waits. */
     private int $safe;
 
+    /** @var array|null The big file in progress: hash, size, digests, piece (the next one) and entries (before the file). */
+    private ?array $big;
+
+    /** @var string Why the work of the step stopped: more or window. */
+    private string $stop = 'more';
+
     /**
      * Constructor.
      *
@@ -77,6 +90,7 @@ final class files_stage {
             $context->folder
         );
         $this->safe = (int) ($context->cursor()['offset'] ?? 0);
+        $this->big = $context->cursor()['big'] ?? null;
     }
 
     /**
@@ -111,7 +125,7 @@ final class files_stage {
             }
             $first = false;
             if (!$this->add($hash, (int) $size, $last, $next)) {
-                $outcome = 'more';
+                $outcome = $this->stop;
                 break;
             }
             $last = $next;
@@ -123,8 +137,15 @@ final class files_stage {
             $this->context->next_stage('dataroot');
             return 'next';
         }
-        $this->context->commit(['offset' => $this->safe]);
+        $this->commit();
         return $outcome === 'next' ? 'more' : $outcome;
+    }
+
+    /**
+     * Commits the point to go on from, with the big file in progress.
+     */
+    private function commit(): void {
+        $this->context->commit(['offset' => $this->safe, 'big' => $this->big]);
     }
 
     /**
@@ -137,16 +158,13 @@ final class files_stage {
      * @return bool False when there was no room for it: it is left to the next step.
      */
     private function add(string $hash, int $size, int $before, int $after): bool {
-        $big = $size >= packer::FILE_LIMIT;
-        // The pack that waits goes first, alone, so that a budget of zero holds one chunk at a time.
-        $flushed = !$big || !$this->pending || $this->flush($before);
-        $bytes = $big ? $size : packer::PACK_AT + packer::FILE_LIMIT;
-        if (!$flushed || !$this->context->make_room(run_context::chunk_bound($bytes))) {
-            return false;
+        $this->stop = 'more';
+        if ($size >= packer::FILE_LIMIT) {
+            $flushed = !$this->pending || $this->flush($before);
+            return $flushed && $this->add_big($hash, $size, $before, $after);
         }
-        if ($big && $this->from_present($hash, $size)) {
-            $this->safe = $after;
-            return true;
+        if (!$this->context->make_room(run_context::chunk_bound(packer::PACK_AT + packer::FILE_LIMIT))) {
+            return false;
         }
         $chunks = $this->source->pack($hash, $size, $this->packer);
         if ($chunks === null) {
@@ -160,6 +178,80 @@ final class files_stage {
             $this->safe = $after;
         }
         return true;
+    }
+
+    /**
+     * Adds a big file, or goes on with it, one piece at a time.
+     *
+     * @param string $hash Content hash.
+     * @param int $size Size in the files table.
+     * @param int $before The offset in the journal before this content.
+     * @param int $after The offset in the journal after this content.
+     * @return bool False when the step stops in the middle of the file (no room, no time, or the end of the window).
+     */
+    private function add_big(string $hash, int $size, int $before, int $after): bool {
+        $this->safe = $before;
+        if ($this->big === null || $this->big['hash'] !== $hash) {
+            // A file whose pieces are all stored asks for no room.
+            $digests = $this->from_present($hash, $size) ? [] : $this->source->big_digests($hash, $size, $this->packer);
+            if ($digests === null) {
+                $this->context->journal('missing_files')->append($hash);
+            }
+            if ($digests === null || $digests === []) {
+                $this->safe = $after;
+                return true;
+            }
+            $this->big = ['hash' => $hash, 'size' => $size, 'digests' => $digests, 'piece' => 0,
+                'entries' => $this->context->entries->commit()];
+        }
+        $present = $this->context->present();
+        $start = $this->big['piece'];
+        for ($piece = $start; $piece < count($this->big['digests']); $piece++) {
+            if ($piece > $start && !$this->can_go_on()) {
+                return false;
+            }
+            $name = chunk_name::file($this->context->dedup_key(), $hash, $piece);
+            $stored = $present->size_of($name);
+            if ($stored !== null && $stored > chunk_writer::HEADER) {
+                $this->context->known($name, $stored);
+                $pieces = count($this->big['digests']);
+                $this->context->add_entries([self::stored_entry($hash, $size, $name, $stored, $piece, $pieces)]);
+                $chunk = null;
+            } else {
+                if (!$this->context->make_room(run_context::chunk_bound(packer::PIECE))) {
+                    return false;
+                }
+                $chunk = $this->source->big_piece($hash, $size, $piece, $this->big['digests'][$piece], $this->packer);
+                if ($chunk === null) {
+                    // The file is gone since its first read: what was written of it is withdrawn.
+                    $this->context->entries->truncate_to($this->big['entries']);
+                    $this->context->journal('missing_files')->append($hash);
+                    break;
+                }
+                $this->context->object($chunk);
+                $this->drain_entries();
+            }
+            $this->big['piece'] = $piece + 1;
+            if ($piece + 1 < count($this->big['digests'])) {
+                $this->commit();
+            }
+            if ($chunk !== null) {
+                $this->context->watch();
+            }
+        }
+        $this->big = null;
+        $this->safe = $after;
+        return true;
+    }
+
+    /**
+     * Whether the step may make another piece: it has time, and the window has not ended.
+     *
+     * @return bool
+     */
+    private function can_go_on(): bool {
+        $this->stop = $this->context->window_passed() ? 'window' : 'more';
+        return $this->stop === 'more' && !$this->context->out_of_time();
     }
 
     /**
@@ -200,19 +292,34 @@ final class files_stage {
         $piece = 0;
         foreach ($sizes as $name => $stored) {
             $this->context->known($name, $stored);
-            $entries[] = [
-                't' => 'file',
-                'contenthash' => $hash,
-                'size' => $size,
-                'chunk' => $name,
-                'offset' => chunk_writer::HEADER,
-                'length' => $stored - chunk_writer::HEADER,
-                'piece' => $piece++,
-                'pieces' => $pieces,
-            ];
+            $entries[] = self::stored_entry($hash, $size, $name, $stored, $piece++, $pieces);
         }
         $this->context->add_entries($entries);
         return true;
+    }
+
+    /**
+     * The entry of a piece that the present list holds: the one item of its chunk, from offset 86 to the end of the chunk.
+     *
+     * @param string $hash Content hash.
+     * @param int $size Size of the file.
+     * @param string $name Name of the chunk.
+     * @param int $stored Size of the chunk in the storage.
+     * @param int $piece Number of the piece.
+     * @param int $pieces Number of pieces.
+     * @return array
+     */
+    private static function stored_entry(string $hash, int $size, string $name, int $stored, int $piece, int $pieces): array {
+        return [
+            't' => 'file',
+            'contenthash' => $hash,
+            'size' => $size,
+            'chunk' => $name,
+            'offset' => chunk_writer::HEADER,
+            'length' => $stored - chunk_writer::HEADER,
+            'piece' => $piece,
+            'pieces' => $pieces,
+        ];
     }
 
     /**
@@ -227,11 +334,18 @@ final class files_stage {
             $this->context->object($chunk);
         }
         $this->pending = false;
-        $entries = $this->packer->entries();
-        $this->context->add_entries(array_slice($entries, $this->drained));
-        $this->drained = count($entries);
+        $this->drain_entries();
         if ($chunks !== []) {
             $this->context->watch();
         }
+    }
+
+    /**
+     * Writes the entries that the packer has made since the last time. Nothing waits in the packer then.
+     */
+    private function drain_entries(): void {
+        $entries = $this->packer->entries();
+        $this->context->add_entries(array_slice($entries, $this->drained));
+        $this->drained = count($entries);
     }
 }

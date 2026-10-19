@@ -59,12 +59,13 @@ final class remade_exception {
      * The new exception.
      *
      * @param array $parts What parts() gave.
+     * @param string $what What failed, for the message of a coding_exception.
      * @return \Throwable The same class, error code, value and debug information for a plugin_exception or a key_exception,
      *     with no exception chained; a coding_exception that names the class for any other.
      */
-    public static function build(array $parts): \Throwable {
+    public static function build(array $parts, string $what = 'The chunk could not be written'): \Throwable {
         if (!isset($parts['errorcode'])) {
-            return new \coding_exception('The chunk could not be written: ' . $parts['class']);
+            return new \coding_exception($what . ': ' . $parts['class']);
         }
         $class = $parts['class'];
         return new $class($parts['errorcode'], $parts['a'], $parts['debuginfo']);

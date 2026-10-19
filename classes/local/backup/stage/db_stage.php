@@ -18,17 +18,17 @@ namespace tool_secbackup\local\backup\stage;
 
 use tool_secbackup\local\backup\db\block_writer;
 use tool_secbackup\local\backup\db\connection_factory;
-use tool_secbackup\local\backup\db\size_estimate;
 use tool_secbackup\local\backup\run_context;
 use tool_secbackup\local\crypto\chunk_info;
 
 /**
  * The stage "db": the whole database in one step, inside one snapshot (section 6.5 of the design of the plugin).
  *
- * When the expected size of the export fits in the budget of the temporary area beside what waits, every block stays in the
- * folder of the run until the snapshot ends, so that the transaction is open only while the database is read. Otherwise a
- * block is sent as soon as the next one needs the room, and the transaction stays open while the data is sent; the watch
- * looks at the response of the database after every block.
+ * When the expected size of the export fits in the budget of the temporary area beside what waits, the blocks stay in the
+ * folder of the run until the snapshot ends, so that the transaction is open only while the database is read. Otherwise, and
+ * as soon as the blocks that are held would pass the budget (the estimate was too small), a block is sent as soon as the next
+ * one needs the room, and the transaction stays open while the data is sent; the watch looks at the response of the database
+ * after every block.
  *
  * The snapshot also gives the list of the contents of the file store (the journal "files"): the files of a backup are those
  * of the files table of the snapshot (section 6.6).
@@ -49,15 +49,15 @@ final class db_stage {
      * Runs the stage.
      *
      * @param run_context $context The step.
-     * @param array $seams The seams of the runner: tables, opendb and filesource.
+     * @param array $seams The seams of the runner: tables, estimate, opendb and filesource.
      * @return string next, or more when the stage was given up for this step.
      */
     public static function run(run_context $context, array $seams): string {
         global $DB;
         $tables = ($seams['tables'])($context->settings->include_logs());
-        // Measured with the connection of Moodle, before the snapshot: a query that fails inside a snapshot of PostgreSQL
-        // breaks it.
-        $estimate = size_estimate::bytes($DB, $tables['export']);
+        // Measured with the connection of Moodle (size_estimate by default), before the snapshot: a query that fails inside a
+        // snapshot of PostgreSQL breaks it.
+        $estimate = ($seams['estimate'])($tables['export']);
         $budget = $context->temp->budget_bytes();
         $hold = $budget > 0 && $estimate > 0 && $estimate + $context->uploader->pending_bytes() <= $budget;
         $db = ($seams['opendb'])();
@@ -73,14 +73,17 @@ final class db_stage {
             $context->siteid,
             $context->folder
         );
-        $held = [];
         $rows = [];
+        $bound = run_context::chunk_bound(block_writer::MAX_BYTES);
         foreach ($tables['export'] as $table) {
             $name = $table->getName();
             $rows[$name] = 0;
             $after = 0;
             while (true) {
-                if (!$hold && !$context->make_room(run_context::chunk_bound(block_writer::MAX_BYTES))) {
+                // Every block is queued as it is made (the queue only records), so the budget sees the blocks that are held:
+                // an estimate that was too small ends the holding, and the blocks are sent while the database is read.
+                $hold = $hold && !$context->uploader->needs_drain($bound);
+                if (!$hold && !$context->make_room($bound)) {
                     return 'more';
                 }
                 $block = $writer->next_block($table, $after);
@@ -91,21 +94,14 @@ final class db_stage {
                 $context->known($chunk->name, $chunk->size);
                 $context->add_entries([self::entry($name, $block, $chunk)]);
                 $rows[$name] += $block['rows'];
-                if ($hold) {
-                    $held[] = $chunk;
-                } else {
-                    $context->object($chunk, false);
-                }
+                $context->object($chunk, false);
                 $context->watch();
                 $after = $block['to'];
             }
         }
         $context->end_export();
-        foreach ($held as $chunk) {
-            // Sent by requests of 256 (and whenever the budget asks), so that the queue never holds more.
-            $context->object($chunk, false);
-            $context->uploader->drain($context->run, false);
-        }
+        // What is held is sent by requests of 256, and whenever the budget asks.
+        $context->uploader->drain($context->run, false);
         $context->set('db', [
             'family' => $DB->get_dbfamily(),
             'tables' => array_keys($rows),

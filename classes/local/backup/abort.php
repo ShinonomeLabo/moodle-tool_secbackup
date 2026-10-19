@@ -46,7 +46,8 @@ final class abort {
      * In order: the transaction of the export is closed, the temporary files of the run are removed, the backup service is told
      * the reason (a failure to tell it does not keep the run going: the service fails a run that is not completed within 24
      * hours), the stop is recorded, and the third stop in a row is told to the site administrators. A reason that the service
-     * gave itself (SERVICE_CODES) is not told back.
+     * gave itself (SERVICE_CODES) is not told back. A run that the table says has ended already (the caller's copy is stale)
+     * is left as it is: only the export connection of the caller is closed.
      *
      * @param run_record $run The run.
      * @param string $code The reason: one of client::FAIL_CODES, or a reason that the service gave.
@@ -74,6 +75,10 @@ final class abort {
                 // The connection ends with the process anyway: the stop goes on, and the error is not kept.
                 unset($e);
             }
+        }
+        if (!$run->is_live()) {
+            // A stale copy: another process ended the run, which keeps its record, its files and its state at the service.
+            return;
         }
         $cleared = ($temp ?? temp_area::create())->clear($run->id());
         if ($run->run_uuid() !== null && in_array($code, client::FAIL_CODES, true)) {

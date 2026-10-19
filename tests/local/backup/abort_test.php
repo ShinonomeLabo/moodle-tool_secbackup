@@ -111,6 +111,23 @@ final class abort_test extends \advanced_testcase {
         $this->assertSame(['cleared' => true, 'leftovers' => 0], $stored->progress()['abort']);
     }
 
+    public function test_a_stale_copy_of_a_run_that_ended_is_not_stopped_or_told(): void {
+        $stale = $this->started_run();
+        $folder = $this->tempdir . '/run-' . $stale->id();
+        run_record::active()->finish(self::NOW + 10);
+        $closed = false;
+        $this->abort($stale, 'disk_low', function () use (&$closed): void {
+            $closed = true;
+        });
+        $this->assertTrue($closed, 'The export connection of the caller is closed all the same.');
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+        $stored = run_record::recent(1)[0];
+        $this->assertSame('completed', $stored->status());
+        $this->assertNull($stored->abort_code());
+        $this->assertFileExists($folder . '/chunk', 'The files of a run that another process owns are left alone.');
+        $this->assertSame(0, run_record::consecutive_aborts());
+    }
+
     public function test_the_export_connection_is_closed_first_even_when_closing_fails(): void {
         $run = $this->started_run();
         $order = [];

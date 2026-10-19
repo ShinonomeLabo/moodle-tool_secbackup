@@ -334,4 +334,68 @@ final class file_source_test extends \advanced_testcase {
         $this->assertSame('content deleted after the snapshot', stream_get_contents($opened['handle']));
         fclose($opened['handle']);
     }
+
+    public function test_a_big_file_is_read_for_its_digests_and_handed_out_one_piece_at_a_time(): void {
+        $dir = make_request_directory();
+        $content = random_bytes(packer::PIECE + 1048576);
+        $file = $this->make($content);
+        $hash = $file->get_contenthash();
+        $size = strlen($content);
+        $packer = $this->packer($dir);
+        $digests = $this->source()->big_digests($hash, $size, $packer);
+        $expected = [hash('sha256', substr($content, 0, packer::PIECE)), hash('sha256', substr($content, packer::PIECE))];
+        $this->assertSame($expected, $digests);
+        $this->assertSame([], array_values(array_diff(scandir($dir), ['.', '..'])));
+        $second = $this->source()->big_piece($hash, $size, 1, $digests[1], $packer);
+        $this->assertSame([basename($second->path)], array_values(array_diff(scandir($dir), ['.', '..'])));
+        $entry = $packer->entries()[0];
+        $this->assertSame(1, $entry['piece']);
+        $pair = sodium_crypto_box_seed_keypair(str_repeat("\x07", 32));
+        $reader = new chunk_reader(
+            $second->path,
+            sodium_crypto_box_secretkey($pair),
+            sodium_crypto_box_publickey($pair),
+            self::SITE,
+            $second->name
+        );
+        $this->assertSame(substr($content, packer::PIECE), $reader->read_item($entry['offset']));
+    }
+
+    public function test_a_big_file_that_is_nowhere_gives_null_at_either_read(): void {
+        $file = $this->make(random_bytes(packer::FILE_LIMIT));
+        $hash = $file->get_contenthash();
+        unlink(self::filedir_path($hash));
+        $packer = $this->packer(make_request_directory());
+        $this->assertNull($this->source()->big_digests($hash, packer::FILE_LIMIT, $packer));
+        $this->assertNull($this->source()->big_piece($hash, packer::FILE_LIMIT, 0, hash('sha256', ''), $packer));
+    }
+
+    public function test_a_read_of_a_big_file_that_fails_is_tried_again(): void {
+        global $DB;
+        $content = random_bytes(packer::FILE_LIMIT + 10);
+        $hash = $this->make($content)->get_contenthash();
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
+        $packer = $this->packer(make_request_directory());
+        failing_stream::fail(1, 1000);
+        $digests = $source->big_digests($hash, strlen($content), $packer);
+        $this->assertSame([hash('sha256', $content)], $digests);
+        failing_stream::fail(2, 1000);
+        $piece = $source->big_piece($hash, strlen($content), 0, $digests[0], $packer);
+        $this->assertFileExists($piece->path);
+        $this->assertSame([1, 1, 5], $this->slept);
+    }
+
+    public function test_a_piece_is_found_in_a_stream_that_cannot_seek(): void {
+        global $DB;
+        $content = random_bytes(packer::PIECE + 100);
+        $hash = $this->make($content)->get_contenthash();
+        // The failing stream wrapper of the tests cannot seek, as the stream of an object store may not.
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
+        failing_stream::fail(1, packer::PIECE + 1000);
+        $packer = $this->packer(make_request_directory());
+        $piece = $source->big_piece($hash, strlen($content), 1, hash('sha256', substr($content, packer::PIECE)), $packer);
+        $this->assertSame(1, $packer->entries()[0]['piece']);
+        $this->assertSame([], $this->slept);
+        $this->assertFileExists($piece->path);
+    }
 }

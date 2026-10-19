@@ -155,16 +155,19 @@ final class series_writer {
      * @param string $root Name of the root of the file: "dataroot", "secret", a component or "core".
      * @param string $base The folder of the root.
      * @param string $path The path of the file under the folder, with "/".
+     * @param bool $smallonly Whether the caller listed the file as smaller than FILE_LIMIT and hands out big files with
+     *     big_digests() and big_piece(): a file that has grown to FILE_LIMIT bytes or more is then unreadable (it changes while
+     *     it is read), so that no file writes all its pieces at once.
      * @return chunk_info[] The chunks that became complete, in the order of their numbers.
      * @throws \tool_secbackup\local\plugin_exception With temp_write_failed when a chunk cannot be written.
      * @throws \tool_secbackup\local\crypto\key_exception With publickey_invalid when the public key of the site cannot encrypt.
      * @throws \coding_exception For any other error of the writer of chunks; it names the class of that error only.
      */
-    public function add(string $root, string $base, string $path): array {
+    public function add(string $root, string $base, string $path, bool $smallonly = false): array {
         $this->completed = [];
         $mark = count($this->entries);
         try {
-            $this->add_file($root, $base, $path);
+            $this->add_file($root, $base, $path, $smallonly);
         } catch (\Throwable $e) {
             // The caller never gets these chunks: take them back with their entries.
             $this->discard($this->completed);
@@ -227,15 +230,11 @@ final class series_writer {
      * @param string $root Name of the root.
      * @param string $base Folder of the root.
      * @param string $path Path of the file.
+     * @param bool $smallonly Whether a big file is unreadable.
      */
-    private function add_file(string $root, string $base, string $path): void {
-        $full = $base . '/' . $path;
-        // A path that is now a link, a pipe, a socket or a folder is not opened: opening a pipe would wait for ever.
-        $lstat = error_silencer::run(static fn() => lstat($full), $warning);
-        $handle = $lstat !== false && ($lstat['mode'] & 0170000) === 0100000
-            ? error_silencer::run(static fn() => fopen($full, 'rb'), $warning) : false;
-        $stat = $handle === false ? false : fstat($handle);
-        if ($handle === false || $stat === false || ($stat['mode'] & 0170000) !== 0100000) {
+    private function add_file(string $root, string $base, string $path, bool $smallonly): void {
+        [$handle, $stat] = self::open_regular($base . '/' . $path);
+        if ($handle === false || ($smallonly && $stat['size'] >= self::FILE_LIMIT)) {
             $this->note_unreadable($root, $path);
         } else if ($stat['size'] < self::FILE_LIMIT) {
             $this->add_small($root, $path, $handle);
@@ -245,6 +244,132 @@ final class series_writer {
         if ($handle !== false) {
             fclose($handle);
         }
+    }
+
+    /**
+     * Opens a regular file: a path that is a link, a pipe, a socket or a folder is not opened (opening a pipe would wait for
+     * ever).
+     *
+     * @param string $full The path.
+     * @return array [the handle or false, the result of fstat()]
+     */
+    private static function open_regular(string $full): array {
+        $lstat = error_silencer::run(static fn() => lstat($full), $warning);
+        $handle = $lstat !== false && ($lstat['mode'] & 0170000) === 0100000
+            ? error_silencer::run(static fn() => fopen($full, 'rb'), $warning) : false;
+        $stat = $handle === false ? false : fstat($handle);
+        if ($handle !== false && ($stat === false || ($stat['mode'] & 0170000) !== 0100000)) {
+            fclose($handle);
+            $handle = false;
+        }
+        return [$handle, $stat];
+    }
+
+    /**
+     * Reads a big file once, without writing anything, for its size, its SHA-256 and the SHA-256 of each of its pieces.
+     *
+     * With big_piece(), a big file is handed out one piece at a time, so that the temporary folder never holds more than one
+     * of its pieces: a piece is handed out only when it is the same as in this read.
+     *
+     * @param string $root Name of the root.
+     * @param string $base Folder of the root.
+     * @param string $path Path of the file.
+     * @return array|null ['size', 'sha256', 'pieces' => SHA-256 of each piece], all in hexadecimal; null when the file cannot
+     *     be opened or read, or changes its length while it is read: it is then in unreadable().
+     */
+    public function big_digests(string $root, string $base, string $path): ?array {
+        [$handle, $stat] = self::open_regular($base . '/' . $path);
+        // One flag for every way that the file cannot be read: it cannot be opened, a read fails or ends early, or there is
+        // more than the length that the open handle reported.
+        $ok = $handle !== false;
+        $size = $ok ? (int) $stat['size'] : 0;
+        $this->digest = hash_init('sha256');
+        $pieces = [];
+        for ($offset = 0; $ok && ($offset < $size || $offset === 0); $offset += self::PIECE) {
+            $piece = hash_init('sha256');
+            for ($left = min(self::PIECE, $size - $offset); $ok && $left > 0; $left -= strlen((string) $part)) {
+                $part = error_silencer::run(static fn() => fread($handle, min(self::READ, $left)), $warning);
+                $ok = is_string($part) && $part !== '' && $warning === '';
+                hash_update($this->digest, (string) $part);
+                hash_update($piece, (string) $part);
+            }
+            $pieces[] = hash_final($piece);
+        }
+        $digests = $ok && self::at_end($handle) ? ['size' => $size, 'sha256' => hash_final($this->digest), 'pieces' => $pieces]
+            : null;
+        $this->digest = null;
+        if ($handle !== false) {
+            fclose($handle);
+        }
+        if ($digests === null) {
+            $this->note_unreadable($root, $path);
+        }
+        return $digests;
+    }
+
+    /**
+     * Writes one piece of a big file in a chunk of its own with the next number, and hands it out when its content is the one
+     * that big_digests() read.
+     *
+     * The entry of the piece is in entries() when it is handed out. A piece that is not handed out (the file is gone, has
+     * another length or other content) leaves no file, and its number is not used again; the caller withdraws the file.
+     *
+     * @param string $root Name of the root.
+     * @param string $base Folder of the root.
+     * @param string $path Path of the file.
+     * @param array $digests What big_digests() gave.
+     * @param int $piece Number of the piece, from 0.
+     * @return chunk_info|null The chunk, or null when the file has changed.
+     * @throws \coding_exception When a chunk is open (the caller flushes first) or the file has no such piece.
+     * @throws \tool_secbackup\local\plugin_exception With temp_write_failed when the chunk cannot be written.
+     */
+    public function big_piece(string $root, string $base, string $path, array $digests, int $piece): ?chunk_info {
+        $count = count($digests['pieces']);
+        if ($this->writer !== null || $piece < 0 || $piece >= $count) {
+            throw new \coding_exception('A piece is written alone, and it is one that the file has.');
+        }
+        [$handle, $stat] = self::open_regular($base . '/' . $path);
+        if ($handle === false || (int) $stat['size'] !== $digests['size']) {
+            if ($handle !== false) {
+                fclose($handle);
+            }
+            return null;
+        }
+        $this->digest = hash_init('sha256');
+        try {
+            $info = self::seek($handle, $piece * self::PIECE)
+                ? $this->write_piece($handle, min(self::PIECE, $digests['size'] - $piece * self::PIECE)) : null;
+            $same = $info !== null && hash_equals($digests['pieces'][$piece], hash_final($this->digest));
+        } finally {
+            $this->digest = null;
+            fclose($handle);
+        }
+        if (!$same) {
+            $this->discard($info === null ? [] : [$info]);
+            return null;
+        }
+        $this->entries[] = $this->entry(
+            $root,
+            $path,
+            $digests['size'],
+            $digests['sha256'],
+            $info->name,
+            $info->items[0],
+            $piece,
+            $count
+        );
+        return $info;
+    }
+
+    /**
+     * Moves a file to an offset.
+     *
+     * @param resource $handle The file.
+     * @param int $offset The offset.
+     * @return bool Whether it could.
+     */
+    private static function seek($handle, int $offset): bool {
+        return error_silencer::run(static fn() => fseek($handle, $offset), $warning) === 0;
     }
 
     /**

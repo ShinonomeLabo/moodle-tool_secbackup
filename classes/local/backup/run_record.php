@@ -38,6 +38,9 @@ final class run_record {
     /** @var string The table. */
     private const TABLE = 'tool_secbackup_runs';
 
+    /** @var string[] The statuses of a run that goes on. */
+    private const LIVE = ['active', 'paused'];
+
     /** @var \stdClass The row of the table. */
     private \stdClass $row;
 
@@ -95,7 +98,7 @@ final class run_record {
      * @return self|null
      */
     public static function active(): ?self {
-        return self::first('status IN (?, ?)', ['active', 'paused']);
+        return self::first('status IN (?, ?)', self::LIVE);
     }
 
     /**
@@ -296,6 +299,54 @@ final class run_record {
     }
 
     /**
+     * Reads the run again from the table, for a step that begins: another process (the task, the command line, another
+     * server) may have moved it on since this copy was read.
+     *
+     * @throws \dml_missing_record_exception When the run is not in the table any more.
+     */
+    public function reload(): void {
+        global $DB;
+        $this->row = $DB->get_record(self::TABLE, ['id' => $this->row->id], '*', MUST_EXIST);
+    }
+
+    /**
+     * Whether the run goes on (active or paused), as the table says now.
+     *
+     * @return bool
+     */
+    public function is_live(): bool {
+        return in_array($this->stored_status(), self::LIVE, true);
+    }
+
+    /**
+     * The status in the table, which this copy learns.
+     *
+     * @return string
+     */
+    private function stored_status(): string {
+        global $DB;
+        $this->row->status = (string) $DB->get_field(self::TABLE, 'status', ['id' => $this->row->id]);
+        return $this->row->status;
+    }
+
+    /**
+     * Writes fields that change the status, only when the status in the table is one of some.
+     *
+     * A copy of the run that is stale (another process ended the run) must never change it again.
+     *
+     * @param array $fields Field names and their new values.
+     * @param string[] $from The statuses from which the change is made.
+     * @return bool Whether it was made.
+     */
+    private function change(array $fields, array $from): bool {
+        if (!in_array($this->stored_status(), $from, true)) {
+            return false;
+        }
+        $this->save($fields);
+        return true;
+    }
+
+    /**
      * Moves the run to a stage and stores its progress.
      *
      * @param string $stage One of STAGES.
@@ -382,6 +433,19 @@ final class run_record {
     }
 
     /**
+     * Stores values of the run (under "run" in its progress) at once, without moving the point that the last commit holds:
+     * the journals, the cursor and the chunks to send stay as they were committed.
+     *
+     * @param array $values Names and values, without a URL.
+     */
+    public function keep(array $values): void {
+        self::refuse_urls($values);
+        $progress = $this->progress();
+        $progress['run'] = $values + (is_array($progress['run'] ?? null) ? $progress['run'] : []);
+        $this->save(['progress' => json_encode($progress, JSON_THROW_ON_ERROR)]);
+    }
+
+    /**
      * Stores how many backup windows ended while the run was not done.
      *
      * @param int $misses The number.
@@ -394,9 +458,10 @@ final class run_record {
      * Makes a paused run active again.
      *
      * @param int $now The current time.
+     * @return bool Whether the run was paused, and so became active.
      */
-    public function activate(int $now): void {
-        $this->save(['status' => 'active', 'nextattempt' => null, 'timemodified' => $now]);
+    public function activate(int $now): bool {
+        return $this->change(['status' => 'active', 'nextattempt' => null, 'timemodified' => $now], ['paused']);
     }
 
     /**
@@ -407,15 +472,16 @@ final class run_record {
      *
      * @param string $code The reason: the error code of the service.
      * @param int $now The current time.
+     * @return bool Whether the run was live, and so was refused.
      */
-    public function refuse(string $code, int $now): void {
-        $this->save([
+    public function refuse(string $code, int $now): bool {
+        return $this->change([
             'status' => 'refused',
             'abortcode' => $code,
             'nextattempt' => null,
             'timefinished' => $now,
             'timemodified' => $now,
-        ]);
+        ], self::LIVE);
     }
 
     /**
@@ -423,18 +489,23 @@ final class run_record {
      *
      * @param int $now The current time.
      * @param int $nextattempt When the run is tried again.
+     * @return bool Whether the run was live, and so was paused.
      */
-    public function pause(int $now, int $nextattempt): void {
-        $this->save(['status' => 'paused', 'nextattempt' => $nextattempt, 'timemodified' => $now]);
+    public function pause(int $now, int $nextattempt): bool {
+        return $this->change(['status' => 'paused', 'nextattempt' => $nextattempt, 'timemodified' => $now], self::LIVE);
     }
 
     /**
      * Marks the run as completed.
      *
      * @param int $now The current time.
+     * @return bool Whether the run was live, and so was completed.
      */
-    public function finish(int $now): void {
-        $this->save(['status' => 'completed', 'nextattempt' => null, 'timefinished' => $now, 'timemodified' => $now]);
+    public function finish(int $now): bool {
+        return $this->change(
+            ['status' => 'completed', 'nextattempt' => null, 'timefinished' => $now, 'timemodified' => $now],
+            self::LIVE
+        );
     }
 
     /**
@@ -444,8 +515,9 @@ final class run_record {
      * @param int $now The current time.
      * @param array|null $note What the stop left, stored under "abort" in the progress (which keeps the rest); null for
      *     nothing.
+     * @return bool Whether the run was live, and so was aborted.
      */
-    public function abort(string $code, int $now, ?array $note = null): void {
+    public function abort(string $code, int $now, ?array $note = null): bool {
         $fields = [
             'status' => 'aborted',
             'abortcode' => $code,
@@ -458,7 +530,7 @@ final class run_record {
             self::refuse_urls($progress);
             $fields['progress'] = json_encode($progress, JSON_THROW_ON_ERROR);
         }
-        $this->save($fields);
+        return $this->change($fields, self::LIVE);
     }
 
     /**

@@ -141,7 +141,7 @@ final class starter {
     private static function start_locked(string $trigger, int $now, ?callable $verdict): string {
         if (run_record::active() !== null) {
             // A run that lost its task (the queue was cleared, or the task failed for good) gets one again.
-            self::queue_step(true);
+            \tool_secbackup\task\run_backup::queue();
             return 'running';
         }
         if (autobackup_watch::busy()) {
@@ -152,17 +152,8 @@ final class starter {
             return 'busy';
         }
         run_record::create($trigger, $now);
-        self::queue_step(false);
+        \tool_secbackup\task\run_backup::queue();
         return 'started';
-    }
-
-    /**
-     * Queues the task that steps the active run.
-     *
-     * @param bool $unlessqueued Whether a task that is queued already (waiting for its time) is enough.
-     */
-    private static function queue_step(bool $unlessqueued): void {
-        \core\task\manager::queue_adhoc_task(new \tool_secbackup\task\run_backup(), $unlessqueued);
     }
 
     /**

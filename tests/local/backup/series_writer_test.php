@@ -797,4 +797,90 @@ final class series_writer_test extends \advanced_testcase {
         $this->expectException(\coding_exception::class);
         new series_writer(self::key(), 'code', self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE, $this->dir, -1);
     }
+
+    public function test_a_big_file_is_read_once_for_its_digests_without_writing(): void {
+        $sha256 = $this->put_big('big.bin', 2 * series_writer::PIECE + 10);
+        $content = file_get_contents($this->base . '/big.bin');
+        $writer = $this->writer();
+        $this->assertSame([
+            'size' => 2 * series_writer::PIECE + 10,
+            'sha256' => $sha256,
+            'pieces' => [
+                hash('sha256', substr($content, 0, series_writer::PIECE)),
+                hash('sha256', substr($content, series_writer::PIECE, series_writer::PIECE)),
+                hash('sha256', substr($content, 2 * series_writer::PIECE)),
+            ],
+        ], $writer->big_digests('dataroot', $this->base, 'big.bin'));
+        $this->assertSame([], $this->files());
+        $this->assertSame(0, $writer->next_number());
+    }
+
+    public function test_a_big_file_that_cannot_be_read_for_its_digests_is_unreadable(): void {
+        $writer = $this->writer();
+        $this->assertNull($writer->big_digests('dataroot', $this->base, 'missing.bin'));
+        mkdir($this->base . '/folder');
+        $this->assertNull($writer->big_digests('dataroot', $this->base, 'folder'));
+        $this->assertSame(['dataroot:missing.bin', 'dataroot:folder'], $writer->unreadable());
+    }
+
+    public function test_the_pieces_of_a_big_file_are_written_one_at_a_time_with_numbers_and_checked(): void {
+        $sha256 = $this->put_big('big.bin', 2 * series_writer::PIECE + 10);
+        $content = file_get_contents($this->base . '/big.bin');
+        $writer = $this->writer();
+        $digests = $writer->big_digests('code', $this->base, 'big.bin');
+        foreach ([0, 1, 2] as $piece) {
+            $info = $writer->big_piece('code', $this->base, 'big.bin', $digests, $piece);
+            $this->assertSame(chunk_name::series(self::key(), 'dataroot', self::RUN, $piece), $info->name);
+            $this->assertSame([$info->name], $this->files());
+            $entry = $writer->entries()[$piece];
+            $this->assertSame(['t' => 'dataroot', 'root' => 'code', 'path' => 'big.bin', 'size' => 2 * series_writer::PIECE + 10,
+                'sha256' => $sha256, 'chunk' => $info->name, 'offset' => $info->items[0]['offset'],
+                'length' => $info->items[0]['length'], 'piece' => $piece, 'pieces' => 3], $entry);
+            $this->assertSame(
+                substr($content, $piece * series_writer::PIECE, series_writer::PIECE),
+                self::reader($info)->read_item($entry['offset'])
+            );
+            unlink($info->path);
+        }
+        $this->assertSame(3, $writer->next_number());
+    }
+
+    public function test_a_piece_of_a_file_that_changed_is_not_handed_out_and_its_number_is_not_used_again(): void {
+        $this->put_big('big.bin', series_writer::PIECE + 10);
+        $writer = $this->writer();
+        $digests = $writer->big_digests('dataroot', $this->base, 'big.bin');
+        $handle = fopen($this->base . '/big.bin', 'r+b');
+        fseek($handle, series_writer::PIECE + 2);
+        fwrite($handle, 'xy');
+        fclose($handle);
+        $this->assertNull($writer->big_piece('dataroot', $this->base, 'big.bin', $digests, 1));
+        $this->assertSame([], $this->files());
+        $this->assertSame([], $writer->entries());
+        $this->assertSame(1, $writer->next_number());
+        // A file of another size, or that is gone, is changed too.
+        file_put_contents($this->base . '/big.bin', 'short');
+        $this->assertNull($writer->big_piece('dataroot', $this->base, 'big.bin', $digests, 0));
+        unlink($this->base . '/big.bin');
+        $this->assertNull($writer->big_piece('dataroot', $this->base, 'big.bin', $digests, 0));
+        $this->assertSame([], $writer->unreadable(), 'The caller lists the file, with what it withdraws.');
+    }
+
+    public function test_a_piece_is_written_only_when_no_chunk_is_open(): void {
+        $this->put_big('big.bin', series_writer::FILE_LIMIT + 10);
+        $this->put('small.txt', 'small');
+        $writer = $this->writer();
+        $digests = $writer->big_digests('dataroot', $this->base, 'big.bin');
+        $writer->add('dataroot', $this->base, 'small.txt');
+        $this->expectException(\coding_exception::class);
+        $writer->big_piece('dataroot', $this->base, 'big.bin', $digests, 0);
+    }
+
+    public function test_a_file_listed_small_that_has_grown_is_unreadable_when_only_small_ones_are_taken(): void {
+        $this->put_big('grown.bin', series_writer::FILE_LIMIT + 10);
+        $writer = $this->writer();
+        $this->assertSame([], $writer->add('dataroot', $this->base, 'grown.bin', true));
+        $this->assertSame([], $this->files());
+        $this->assertSame(['dataroot:grown.bin'], $writer->unreadable());
+        $this->assertSame([], $writer->flush());
+    }
 }

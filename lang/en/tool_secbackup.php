@@ -66,23 +66,23 @@ $string['check_selinux'] = 'SELinux';
 $string['cli_backup_aborted'] = 'The backup was stopped: {$a}';
 $string['cli_backup_continued'] = 'The backup that is running goes on.';
 $string['cli_backup_done'] = 'The backup is complete: the backup service verified it and its receipt was checked.';
-$string['cli_backup_failed'] = 'A step of the backup failed ({$a}). The scheduled task tries it again.';
+$string['cli_backup_failed'] = 'A step of the backup failed ({$a}). It is tried again in 5 minutes.';
 $string['cli_backup_heading'] = 'Backup of Shinonome LMS Backup';
-$string['cli_backup_help'] = 'Runs the backup of this site to the backup service until it is complete.
+$string['cli_backup_help'] = 'Runs the backup of this site to the backup service until it ends.
 
-A backup that is running goes on. Without a running backup, nothing is done unless --now is given.
+A backup that is running goes on. Without a running backup, nothing is done unless --now is given. A step that fails is tried again after 5 minutes; a backup that has no receipt 24 hours after it started is stopped.
 
 Options:
 --now        Start a backup at once when none is running, in or out of the backup window.
 --quiet      Print only the outcome.
 -h, --help   Print this help.
 
-Exit codes: 0 the backup is complete, 1 it was stopped or did not finish, 2 no backup was run.
+Exit codes: 0 the backup is complete, 1 the backup was stopped or the backup service did not start it, 2 no backup was run.
 
 Run it as the user that runs cron, for example:
 $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/backup.php --now
 (Moodle 5.1 and later: public/admin/tool/secbackup/cli/backup.php)';
-$string['cli_backup_locked'] = 'Another process is running a step of the backup. Try again later.';
+$string['cli_backup_lockwait'] = 'Another process is running a step of the backup. The command goes on after it.';
 $string['cli_backup_none'] = 'No backup is running. Give --now to start one.';
 $string['cli_backup_notstarted'] = 'The backup was not started: {$a}';
 $string['cli_backup_otherserver'] = 'The temporary files of the running backup are on the server {$a}. Run this command on that server.';

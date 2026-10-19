@@ -66,23 +66,23 @@ $string['check_selinux'] = 'SELinux';
 $string['cli_backup_aborted'] = 'バックアップを中止しました: {$a}';
 $string['cli_backup_continued'] = '動いているバックアップを続けます。';
 $string['cli_backup_done'] = 'バックアップが完了しました。バックアップのサービスが確かめ、受領証も確かめました。';
-$string['cli_backup_failed'] = 'バックアップの段の 1 つが失敗しました ({$a})。定期タスクがもう一度試します。';
+$string['cli_backup_failed'] = 'バックアップの段の 1 つが失敗しました ({$a})。5 分後にもう一度試します。';
 $string['cli_backup_heading'] = 'あんしんLMSバックアップのバックアップ';
-$string['cli_backup_help'] = 'このサイトのバックアップを、バックアップのサービスへ、完了するまで進めます。
+$string['cli_backup_help'] = 'このサイトのバックアップを、バックアップのサービスへ、終わるまで進めます。
 
-動いているバックアップがあれば続けます。無ければ、--now を付けたときだけ始めます。
+動いているバックアップがあれば続けます。無ければ、--now を付けたときだけ始めます。失敗した段は 5 分後にもう一度試します。始めてから 24 時間たっても受領証の無いバックアップは中止します。
 
 オプション:
 --now        バックアップが動いていなければ、時間帯の内でも外でも、すぐに始める。
 --quiet      結果だけを出す。
 -h, --help   この説明を出す。
 
-終了の値: 0 はバックアップが完了した、1 は中止したか終わらなかった、2 はバックアップを進めなかった。
+終了の値: 0 はバックアップが完了した、1 はバックアップを中止したか、バックアップのサービスが始めなかった、2 はバックアップを進めなかった。
 
 cron を動かす利用者で実行してください。例:
 $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/backup.php --now
 (Moodle 5.1 以降: public/admin/tool/secbackup/cli/backup.php)';
-$string['cli_backup_locked'] = 'ほかの処理がバックアップの段を進めています。しばらくしてから、もう一度お試しください。';
+$string['cli_backup_lockwait'] = 'ほかの処理がバックアップの段を進めています。それが終わってから続けます。';
 $string['cli_backup_none'] = '動いているバックアップはありません。始めるには --now を付けてください。';
 $string['cli_backup_notstarted'] = 'バックアップを始めませんでした: {$a}';
 $string['cli_backup_otherserver'] = '動いているバックアップの一時ファイルは、サーバ {$a} にあります。そのサーバでこのコマンドを実行してください。';

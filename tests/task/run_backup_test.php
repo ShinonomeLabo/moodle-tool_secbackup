@@ -55,6 +55,14 @@ final class run_backup_test extends \advanced_testcase {
         return array_values($DB->get_records('task_adhoc', ['classname' => '\\' . run_backup::class], 'id'));
     }
 
+    /**
+     * Marks the queued tasks as started, as cron does with the task that it runs.
+     */
+    private static function start_queued(): void {
+        global $DB;
+        $DB->set_field('task_adhoc', 'timestarted', time(), ['classname' => '\\' . run_backup::class]);
+    }
+
     public function test_name(): void {
         $this->assertSame(get_string('task_run_backup', 'tool_secbackup'), (new run_backup())->get_name());
     }
@@ -98,6 +106,8 @@ final class run_backup_test extends \advanced_testcase {
         $this->assertSame('paused', (new run_backup())->step_with($step, $this->fixture->clock(), $this->writer()));
         $this->assertSame($this->fixture->time + 300, (int) self::queued()[0]->nextruntime);
         $run->pause($this->fixture->time, $this->fixture->time + 7200);
+        // The task that was queued runs now.
+        self::start_queued();
         (new run_backup())->step_with($step, $this->fixture->clock(), $this->writer());
         $this->assertSame($this->fixture->time + 7200, (int) self::queued()[1]->nextruntime);
     }
@@ -105,11 +115,11 @@ final class run_backup_test extends \advanced_testcase {
     public function test_a_run_that_ended_is_not_queued_again(): void {
         foreach (['done', 'aborted'] as $outcome) {
             run_record::create('manual', $this->fixture->time);
-                $this->assertSame($outcome, (new run_backup())->step_with(
-                    fn(run_record $r, int $budget): string => $this->answer($budget, $outcome),
-                    $this->fixture->clock(),
-                    $this->writer()
-                ));
+            $this->assertSame($outcome, (new run_backup())->step_with(
+                fn(run_record $r, int $budget): string => $this->answer($budget, $outcome),
+                $this->fixture->clock(),
+                $this->writer()
+            ));
             run_record::active()?->abort('server_busy', $this->fixture->time);
         }
         $this->assertSame([], self::queued());
@@ -123,11 +133,11 @@ final class run_backup_test extends \advanced_testcase {
         $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', 0);
         $this->assertNotFalse($lock);
         try {
-                $this->assertNull((new run_backup())->step_with(
-                    fn(run_record $r, int $budget): string => $this->answer($budget, 'continue'),
-                    $this->fixture->clock(),
-                    $this->writer()
-                ));
+            $this->assertNull((new run_backup())->step_with(
+                fn(run_record $r, int $budget): string => $this->answer($budget, 'continue'),
+                $this->fixture->clock(),
+                $this->writer()
+            ));
             $this->assertSame([], $this->budgets);
             $this->assertSame([], self::queued());
         } finally {
@@ -186,5 +196,37 @@ final class run_backup_test extends \advanced_testcase {
     private function answer(int $budget, string $result): string {
         $this->budgets[] = $budget;
         return $result;
+    }
+
+    public function test_a_task_that_waits_already_is_the_only_one(): void {
+        run_record::create('manual', $this->fixture->time);
+        run_backup::queue();
+        $this->assertCount(1, self::queued());
+        run_backup::queue($this->fixture->time + 900);
+        $this->assertCount(1, self::queued());
+        $this->assertSame('continue', (new run_backup())->step_with(
+            fn(run_record $r, int $budget): string => $this->answer($budget, 'continue'),
+            $this->fixture->clock(),
+            $this->writer()
+        ));
+        $this->assertCount(1, self::queued(), 'A step of the command line does not queue a second chain.');
+        self::start_queued();
+        (new run_backup())->step_with(
+            fn(run_record $r, int $budget): string => $this->answer($budget, 'continue'),
+            $this->fixture->clock(),
+            $this->writer()
+        );
+        $queued = self::queued();
+        $this->assertCount(2, $queued, 'The task that runs queues the next one.');
+        $this->assertNull($queued[1]->timestarted);
+    }
+
+    public function test_a_task_that_has_no_attempts_left_does_not_keep_the_run_from_its_next(): void {
+        global $DB;
+        run_record::create('manual', $this->fixture->time);
+        run_backup::queue();
+        $DB->set_field('task_adhoc', 'attemptsavailable', 0, ['classname' => '\\' . run_backup::class]);
+        run_backup::queue();
+        $this->assertCount(2, self::queued());
     }
 }

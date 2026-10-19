@@ -35,6 +35,9 @@ class file_source {
     /** @var int[] Seconds to wait before each new try of a file that cannot be read. */
     private const WAITS = [1, 5, 15];
 
+    /** @var int Bytes read at a time to reach a piece in a stream that cannot seek. */
+    private const SKIP_READ = 1048576;
+
     /** @var \moodle_database The connection that the list of files is read from. */
     private \moodle_database $db;
 
@@ -123,6 +126,54 @@ class file_source {
      * @throws plugin_exception With nfs_slow, tamper_detected or temp_write_failed.
      */
     public function pack(string $contenthash, int $size, packer $packer): ?array {
+        return $this->with_content($contenthash, static fn($handle): array => $packer->add($contenthash, $handle, $size));
+    }
+
+    /**
+     * Reads a big file once for the digests of its pieces (packer::big_digests()), reading it again from its start when the
+     * read fails, as pack() does.
+     *
+     * @param string $contenthash Content hash.
+     * @param int $size Size in the files table, packer::FILE_LIMIT or more.
+     * @param packer $packer The packer.
+     * @return string[]|null The SHA-256 of each piece, or null when the content is neither in the file directory nor in the
+     *     trash.
+     * @throws plugin_exception With nfs_slow or tamper_detected.
+     */
+    public function big_digests(string $contenthash, int $size, packer $packer): ?array {
+        return $this->with_content($contenthash, static fn($handle): array => $packer->big_digests($contenthash, $handle, $size));
+    }
+
+    /**
+     * Writes one piece of a big file (packer::big_piece()), from the content opened again at the first byte of the piece.
+     *
+     * @param string $contenthash Content hash.
+     * @param int $size Size in the files table.
+     * @param int $piece Number of the piece, from 0.
+     * @param string $digest Its SHA-256 from big_digests().
+     * @param packer $packer The packer.
+     * @return chunk_info|null The piece, or null when the content is neither in the file directory nor in the trash any more.
+     * @throws plugin_exception With nfs_slow, tamper_detected or temp_write_failed.
+     */
+    public function big_piece(string $contenthash, int $size, int $piece, string $digest, packer $packer): ?chunk_info {
+        return $this->with_content($contenthash, static function ($handle) use ($contenthash, $size, $piece, $digest, $packer) {
+            self::skip($handle, $piece * packer::PIECE);
+            return $packer->big_piece($contenthash, $handle, $size, $piece, $digest);
+        });
+    }
+
+    /**
+     * Opens a content and works on it, opening it again after a failed read.
+     *
+     * After a failed read the content is tried again after 1, 5 and 15 seconds; when the fourth try fails too, the error is
+     * nfs_slow. A content that is not the one that its hash names (tamper_detected) is not tried again.
+     *
+     * @param string $contenthash Content hash.
+     * @param callable $work Function (resource $handle) that reads the content.
+     * @return mixed What $work gives, or null when the content is neither in the file directory nor in the trash.
+     * @throws plugin_exception With nfs_slow, and what $work throws.
+     */
+    private function with_content(string $contenthash, callable $work): mixed {
         for ($attempt = 0;; $attempt++) {
             $handle = null;
             try {
@@ -131,7 +182,7 @@ class file_source {
                     return null;
                 }
                 $handle = $opened['handle'];
-                return $packer->add($contenthash, $handle, $size);
+                return $work($handle);
             } catch (plugin_exception $e) {
                 if ($e->errorcode !== 'nfs_slow' || !isset(self::WAITS[$attempt])) {
                     throw $e;
@@ -142,6 +193,28 @@ class file_source {
                 }
             }
             ($this->sleep)(self::WAITS[$attempt]);
+        }
+    }
+
+    /**
+     * Moves a stream to an offset: by seeking, or by reading up to it in a stream that cannot seek.
+     *
+     * @param resource $handle The stream, at its start.
+     * @param int $offset The offset.
+     * @throws plugin_exception With nfs_slow when a read fails, and with tamper_detected when the stream ends before it.
+     */
+    private static function skip($handle, int $offset): void {
+        if (error_silencer::run(static fn() => fseek($handle, $offset), $warning) === 0) {
+            return;
+        }
+        for ($left = $offset; $left > 0; $left -= strlen($part)) {
+            $part = error_silencer::run(static fn() => fread($handle, min(self::SKIP_READ, $left)), $warning);
+            if ($part === false || $warning !== '') {
+                throw new plugin_exception('nfs_slow', null, $warning === '' ? null : $warning);
+            }
+            if ($part === '') {
+                throw new plugin_exception('tamper_detected');
+            }
         }
     }
 

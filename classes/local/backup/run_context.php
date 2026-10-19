@@ -112,7 +112,7 @@ final class run_context {
     /** @var journal[] The journals by name. */
     private array $journals = [];
 
-    /** @var array The seams: clock, timer, sample, sleep, diskspace, pause (a holder of the time of the last pause), windows. */
+    /** @var array The seams: clock, timer, sample, sleep, diskspace, windows. */
     private array $env;
 
     /** @var float When the budget of the step ends, by the timer. */
@@ -148,7 +148,7 @@ final class run_context {
      * @param temp_area $temp The temporary area.
      * @param limits $limits The limits.
      * @param callable $link Gives [endpoint, signing_keypair, site ID].
-     * @param array $env clock, timer, sample, sleep, diskspace (or null), pause (an object with a property "at"), windows.
+     * @param array $env clock, timer, sample, sleep, diskspace (or null), windows.
      * @param float $deadline When the budget of the step ends, by the timer.
      * @throws plugin_exception With temp_write_failed when the folder or its files cannot be used.
      */
@@ -414,7 +414,8 @@ final class run_context {
 
     /**
      * Looks at the server after a chunk was made: stops the run when a limit is passed, and waits when a value cannot be
-     * read (at most once in five minutes).
+     * read (at most once in five minutes of the run: the time of the last wait is kept with the run at once, so that the next
+     * step, which may be another process, knows it).
      *
      * @throws plugin_exception With the reason (server_busy, disk_low, db_slow or nfs_slow) when a limit is passed.
      */
@@ -425,9 +426,10 @@ final class run_context {
             throw new plugin_exception($reason);
         }
         $seconds = monitor::pause_seconds($sample);
-        $last = $this->env['pause']->at;
-        if ($seconds > 0 && ($last === null || $this->now() - $last >= self::PAUSE_EVERY)) {
-            $this->env['pause']->at = $this->now();
+        $last = $this->get('pauseat');
+        if ($seconds > 0 && ($last === null || $this->now() - (int) $last >= self::PAUSE_EVERY)) {
+            $this->set('pauseat', $this->now());
+            $this->run->keep(['pauseat' => $this->now()]);
             ($this->env['sleep'])($seconds);
         }
     }
@@ -518,7 +520,9 @@ final class run_context {
     }
 
     /**
-     * Ends the transaction of the export and closes its connection, if they are open.
+     * Ends the transaction of the export and closes its connection, if they are open. It never throws: the export only
+     * reads, so a transaction that cannot be ended loses nothing, and its connection ends with the process anyway. An error
+     * here would carry this context (and the keys it holds) in the arguments of its trace, so it is not kept.
      */
     public function end_export(): void {
         if ($this->exportdb === null) {
@@ -530,8 +534,13 @@ final class run_context {
         $this->snapshot = null;
         try {
             $snapshot->end($db);
-        } finally {
+        } catch (\Throwable $e) {
+            unset($e);
+        }
+        try {
             $db->dispose();
+        } catch (\Throwable $e) {
+            unset($e);
         }
     }
 
@@ -555,14 +564,21 @@ final class run_context {
 
     /**
      * Closes the files of the step. The export connection is closed too.
+     *
+     * It never throws, for the reason that end_export() gives: what the step committed is in the table and in the files
+     * already, and a file that cannot be closed is closed with the process.
      */
     public function close(): void {
-        try {
-            $this->end_export();
-        } finally {
-            $this->present?->close();
-            foreach ($this->journals as $journal) {
-                $journal->close();
+        $this->end_export();
+        $closers = [fn() => $this->present?->close()];
+        foreach ($this->journals as $journal) {
+            $closers[] = static fn() => $journal->close();
+        }
+        foreach ($closers as $close) {
+            try {
+                $close();
+            } catch (\Throwable $e) {
+                unset($e);
             }
         }
     }

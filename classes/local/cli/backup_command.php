@@ -37,11 +37,20 @@ final class backup_command {
     /** @var int The backup is complete. */
     public const EXIT_DONE = 0;
 
-    /** @var int The backup was stopped, or did not finish. */
+    /** @var int The backup was stopped, or the service did not start it. */
     public const EXIT_STOPPED = 1;
 
     /** @var int No backup was run. */
     public const EXIT_NOT_RUN = 2;
+
+    /** @var int Seconds to wait for the lock of the steps, which the task holds for up to ten minutes. */
+    public const LOCK_WAIT = 60;
+
+    /** @var int Seconds to wait before the lock is asked for again. */
+    public const LOCK_RETRY = 30;
+
+    /** @var int Seconds that one ask for the lock waits. */
+    private int $lockwait;
 
     /** @var runner|null Runner; null for the one of this site, made when it is needed. */
     private ?runner $runner;
@@ -62,14 +71,17 @@ final class backup_command {
      * @param callable|null $clock Gives the current UNIX time; null for time().
      * @param callable|null $sleep Waits some seconds; null for sleep().
      * @param callable|null $verdict The watch of the starter, as for starter::start_cli(); null for the one of this server.
+     * @param int $lockwait Seconds that one ask for the lock of the steps waits.
      */
     public function __construct(
         ?runner $runner = null,
         ?callable $clock = null,
         ?callable $sleep = null,
-        ?callable $verdict = null
+        ?callable $verdict = null,
+        int $lockwait = self::LOCK_WAIT
     ) {
         $this->runner = $runner;
+        $this->lockwait = $lockwait;
         $this->clock = $clock ?? static fn(): int => time();
         $this->sleep = $sleep ?? static fn(int $seconds) => sleep($seconds);
         $this->verdict = $verdict;
@@ -115,19 +127,25 @@ final class backup_command {
         }
         $runner = $this->runner ?? runner::create(false);
         while (true) {
-            $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', 0);
+            $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', $this->lockwait);
             if (!$lock) {
-                $write(get_string('cli_backup_locked', 'tool_secbackup'));
-                return self::EXIT_NOT_RUN;
+                // The task (or another server) runs a step: the command goes on after it, from what it committed.
+                $say(get_string('cli_backup_lockwait', 'tool_secbackup'));
+                ($this->sleep)(self::LOCK_RETRY);
+                continue;
             }
             try {
                 $result = $runner->step($run, self::BUDGET);
             } finally {
                 $lock->release();
             }
-            $end = $this->outcome($run, $result, $runner, $write);
+            $end = $this->outcome($run, $result, $write);
             if ($end !== null) {
                 return $end;
+            }
+            if ($runner->last_error() !== null) {
+                // The run waits five minutes and is tried again; a run without a receipt after 24 hours is stopped.
+                $say(get_string('cli_backup_failed', 'tool_secbackup', $runner->last_error()));
             }
             $say(get_string('cli_backup_stage', 'tool_secbackup', $run->stage()));
             $next = $run->next_attempt();
@@ -144,31 +162,24 @@ final class backup_command {
      *
      * @param run_record $run The run.
      * @param string $result What the step answered.
-     * @param runner $runner The runner.
      * @param callable $write Writes one line.
      * @return int|null The exit code, or null when the backup goes on.
      */
-    private function outcome(run_record $run, string $result, runner $runner, callable $write): ?int {
+    private function outcome(run_record $run, string $result, callable $write): ?int {
         if ($result === 'done') {
             $write(get_string('cli_backup_done', 'tool_secbackup'));
             return self::EXIT_DONE;
         }
-        if ($result === 'aborted' && $run->status() === 'refused') {
-            $write(get_string('cli_backup_refused', 'tool_secbackup', get_string('api_' . $run->abort_code(), 'tool_secbackup')));
-            return self::EXIT_NOT_RUN;
-        }
         if ($result === 'aborted') {
-            $write(get_string('cli_backup_aborted', 'tool_secbackup', self::reason((string) $run->abort_code())));
+            $write($run->status() === 'refused'
+                ? get_string('cli_backup_refused', 'tool_secbackup', get_string('api_' . $run->abort_code(), 'tool_secbackup'))
+                : get_string('cli_backup_aborted', 'tool_secbackup', self::reason((string) $run->abort_code())));
             return self::EXIT_STOPPED;
         }
         if ($result === 'paused') {
             // The command does not stop at the end of a window: a run that pauses has its files on another server.
             $write(get_string('cli_backup_otherserver', 'tool_secbackup', (string) $run->hostname()));
             return self::EXIT_NOT_RUN;
-        }
-        if ($runner->last_error() !== null) {
-            $write(get_string('cli_backup_failed', 'tool_secbackup', $runner->last_error()));
-            return self::EXIT_STOPPED;
         }
         return null;
     }

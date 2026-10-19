@@ -72,6 +72,12 @@ final class tree_stage {
     /** @var int Names of the writer that could not be read and are written. */
     private int $unread = 0;
 
+    /** @var array|null The big file in progress: source, path, digests, piece (the next one), entries (before the file). */
+    private ?array $big;
+
+    /** @var string Why the work of the step stopped: more or window. */
+    private string $stop = 'more';
+
     /**
      * Constructor.
      *
@@ -86,6 +92,7 @@ final class tree_stage {
         $this->sources = $sources;
         $cursor = $context->cursor();
         $this->safe = ['source' => (int) ($cursor['source'] ?? 0), 'position' => $cursor['position'] ?? null];
+        $this->big = $cursor['big'] ?? null;
         $this->writer = new series_writer(
             $context->dedup_key(),
             $label,
@@ -149,10 +156,15 @@ final class tree_stage {
                     break;
                 }
                 $first = false;
+                $this->withdraw_unless($index, $file['path']);
                 if (!$this->add($index, $file)) {
-                    $outcome = 'more';
+                    $outcome = $this->stop;
                     break;
                 }
+            }
+            if ($outcome === 'next') {
+                // The source has ended: a file in progress that it did not give again is gone.
+                $this->withdraw_unless($index, null);
             }
             if ($outcome === 'next' && $this->waiting === []) {
                 $this->safe = ['source' => $index + 1, 'position' => null];
@@ -240,18 +252,122 @@ final class tree_stage {
      *
      * @param int $index The source.
      * @param array $file The file.
-     * @return bool False when there was no room for it: it is left to the next step.
+     * @return bool False when the step stops before the file is done (no room, no time, or the end of the window).
      */
     private function add(int $index, array $file): bool {
-        $bound = max($file['size'], series_writer::PIECE);
-        if (!$this->context->make_room(run_context::chunk_bound($bound))) {
+        $this->stop = 'more';
+        if ($file['size'] >= series_writer::FILE_LIMIT) {
+            if ($this->waiting !== []) {
+                // The open chunk goes first, so that nothing else waits while the big file is in progress.
+                if (!$this->context->make_room(run_context::chunk_bound(series_writer::PIECE))) {
+                    return false;
+                }
+                $this->take($this->writer->flush());
+            }
+            return $this->add_big($index, $file);
+        }
+        if (!$this->context->make_room(run_context::chunk_bound(series_writer::PIECE))) {
             return false;
         }
         $this->waiting[] = ['source' => $index, 'position' => $file['position'], 'root' => $file['root'],
             'path' => $file['path']];
-        $chunks = $this->writer->add($file['root'], $file['base'], $file['path']);
-        $this->take($chunks);
+        $this->take($this->writer->add($file['root'], $file['base'], $file['path'], true));
         return true;
+    }
+
+    /**
+     * Adds a big file, or goes on with it, one piece at a time: each piece is committed with its entry before its chunk is
+     * queued.
+     *
+     * @param int $index The source.
+     * @param array $file The file.
+     * @return bool False when the step stops in the middle of the file.
+     */
+    private function add_big(int $index, array $file): bool {
+        if ($this->big === null) {
+            $digests = $this->writer->big_digests($file['root'], $file['base'], $file['path']);
+            if ($digests === null) {
+                $this->take([]);
+                $this->safe = ['source' => $index, 'position' => $file['position']];
+                return true;
+            }
+            $this->big = ['source' => $index, 'path' => $file['path'], 'digests' => $digests, 'piece' => 0,
+                'entries' => $this->context->entries->commit()];
+        }
+        $start = $this->big['piece'];
+        $pieces = count($this->big['digests']['pieces']);
+        for ($piece = $start; $piece < $pieces; $piece++) {
+            if ($piece > $start && !$this->can_go_on()) {
+                return false;
+            }
+            if (!$this->context->make_room(run_context::chunk_bound(series_writer::PIECE))) {
+                return false;
+            }
+            $chunk = $this->writer->big_piece($file['root'], $file['base'], $file['path'], $this->big['digests'], $piece);
+            if ($chunk === null) {
+                $this->withdraw($file['root'] . ':' . $file['path']);
+                break;
+            }
+            $this->context->numbered($chunk);
+            $this->drain_entries();
+            $this->big['piece'] = $piece + 1;
+            if ($piece + 1 === $pieces) {
+                $this->big = null;
+                $this->safe = ['source' => $index, 'position' => $file['position']];
+            }
+            $this->commit();
+            $this->context->watch();
+        }
+        $this->safe = ['source' => $index, 'position' => $file['position']];
+        return true;
+    }
+
+    /**
+     * Whether the step may make another piece: it has time, and the window has not ended.
+     *
+     * @return bool
+     */
+    private function can_go_on(): bool {
+        $this->stop = $this->context->window_passed() ? 'window' : 'more';
+        return $this->stop === 'more' && !$this->context->out_of_time();
+    }
+
+    /**
+     * Withdraws the big file in progress unless it is the file that comes now: a file that a source does not give again
+     * (removed since its first pieces) is listed as unreadable.
+     *
+     * @param int $index The source of the file that comes now.
+     * @param string|null $path Its path; null when the source has ended.
+     */
+    private function withdraw_unless(int $index, ?string $path): void {
+        if ($this->big === null || ($this->big['source'] === $index && $this->big['path'] === $path)) {
+            return;
+        }
+        if ($this->big['source'] <= $index) {
+            $this->withdraw($this->sources[$this->big['source']]['name'] . ':' . $this->big['path']);
+            $this->commit();
+        }
+    }
+
+    /**
+     * Withdraws the big file in progress: its entries are cut back, it is listed as unreadable, and its pieces stay in the
+     * index (they are, or will be, stored), referred to by no entry.
+     *
+     * @param string $name Its root, a colon and its path.
+     */
+    private function withdraw(string $name): void {
+        $this->context->entries->truncate_to($this->big['entries']);
+        $this->context->journal('unreadable')->append($name);
+        $this->big = null;
+    }
+
+    /**
+     * Writes the entries that the writer has made since the last time.
+     */
+    private function drain_entries(): void {
+        $entries = $this->writer->entries();
+        $this->context->add_entries(array_slice($entries, $this->drained));
+        $this->drained = count($entries);
     }
 
     /**
@@ -267,8 +383,7 @@ final class tree_stage {
         $done = [];
         $entries = $this->writer->entries();
         $new = array_slice($entries, $this->drained);
-        $this->drained = count($entries);
-        $this->context->add_entries($new);
+        $this->drain_entries();
         foreach ($new as $entry) {
             $done[$entry['root'] . ':' . $entry['path']] = true;
         }
@@ -288,16 +403,17 @@ final class tree_stage {
             $this->safe = ['source' => $file['source'], 'position' => $file['position']];
         }
         if ($chunks !== []) {
-            $this->context->watch();
+            // Committed before the watch: a step stopped by the watch does not use the numbers again.
             $this->commit();
+            $this->context->watch();
         }
     }
 
     /**
-     * Commits the point to go on from, with the next number of the writer.
+     * Commits the point to go on from, with the next number of the writer and the big file in progress.
      */
     private function commit(): void {
-        $this->context->commit($this->safe + ['next' => $this->writer->next_number()]);
+        $this->context->commit($this->safe + ['next' => $this->writer->next_number(), 'big' => $this->big]);
     }
 
     /**

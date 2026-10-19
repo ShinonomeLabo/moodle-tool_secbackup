@@ -291,6 +291,21 @@ final class artifact_stage {
     }
 
     /**
+     * Marks the run completed and removes its temporary files: the receipt was verified (the stage is "done").
+     *
+     * @param run_context $context The step.
+     * @return string done.
+     */
+    public static function finish(run_context $context): string {
+        $context->run->finish($context->now());
+        $context->close();
+        // Whether the temporary files are gone is recorded, as it is for a run that stops.
+        $progress = ['done' => ['cleared' => $context->temp->clear($context->run->id())]] + $context->run->progress();
+        $context->run->commit('done', $progress, $context->run->entries_committed(), $context->now());
+        return 'done';
+    }
+
+    /**
      * The stage "receipt": the state of the run is asked for, 30, 60, 120 and 300 seconds apart and then every 600 seconds,
      * until the service has verified it.
      *
@@ -311,12 +326,7 @@ final class artifact_stage {
             $i = $context->get('index');
             receipt::verify($envelope, $trust, $context->siteid, $runid, $m['sha256'], $i['sha256'], $i['count']);
             $context->next_stage('done');
-            $context->run->finish($context->now());
-            $context->close();
-            // Whether the temporary files are gone is recorded, as it is for a run that stops.
-            $progress = ['done' => ['cleared' => $context->temp->clear($context->run->id())]] + $context->run->progress();
-            $context->run->commit('done', $progress, $context->run->entries_committed(), $context->now());
-            return 'done';
+            return self::finish($context);
         }
         if ($state->status() === 'failed') {
             $context->set_failure($state->failure_code() ?? 'verify_error');

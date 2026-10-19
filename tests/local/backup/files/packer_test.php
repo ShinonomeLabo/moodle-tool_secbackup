@@ -741,4 +741,99 @@ final class packer_test extends \advanced_testcase {
         unset($packer);
         $this->assertSame([self::key()], self::$wiped);
     }
+
+    public function test_a_big_file_is_read_once_for_the_digests_of_its_pieces_without_a_file(): void {
+        [$path, $hash] = $this->big_file(70 * self::MIB);
+        $handle = fopen($path, 'rb');
+        $digests = $this->packer()->big_digests($hash, $handle, 70 * self::MIB);
+        fclose($handle);
+        $content = file_get_contents($path);
+        $this->assertSame([
+            hash('sha256', substr($content, 0, 32 * self::MIB)),
+            hash('sha256', substr($content, 32 * self::MIB, 32 * self::MIB)),
+            hash('sha256', substr($content, 64 * self::MIB)),
+        ], $digests);
+        $this->assertSame([], $this->files());
+    }
+
+    public function test_the_first_read_of_a_big_file_checks_its_hash_and_its_length(): void {
+        [$path, $hash] = $this->big_file(5 * self::MIB);
+        $packer = $this->packer();
+        foreach ([[sha1('other'), 5 * self::MIB], [$hash, 5 * self::MIB + 1], [$hash, 5 * self::MIB - 1]] as [$claimed, $size]) {
+            $handle = fopen($path, 'rb');
+            try {
+                $packer->big_digests($claimed, $handle, $size);
+                $this->fail('No exception');
+            } catch (plugin_exception $e) {
+                $this->assertSame('tamper_detected', $e->errorcode);
+            } finally {
+                fclose($handle);
+            }
+        }
+        failing_stream::fail(1, self::MIB);
+        $handle = fopen(failing_stream::PROTOCOL . '://' . $path, 'rb');
+        try {
+            $packer->big_digests($hash, $handle, 5 * self::MIB);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('nfs_slow', $e->errorcode);
+        } finally {
+            fclose($handle);
+        }
+        $this->expectException(\coding_exception::class);
+        $packer->big_digests($hash, self::stream('small'), 5);
+    }
+
+    public function test_the_pieces_of_a_big_file_are_written_one_at_a_time_and_checked_against_the_first_read(): void {
+        [$path, $hash] = $this->big_file(70 * self::MIB);
+        $packer = $this->packer();
+        $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 70 * self::MIB);
+        fclose($handle);
+        $content = file_get_contents($path);
+        foreach ([0, 1, 2] as $piece) {
+            $handle = fopen($path, 'rb');
+            fseek($handle, $piece * packer::PIECE);
+            $info = $packer->big_piece($hash, $handle, 70 * self::MIB, $piece, $digests[$piece]);
+            fclose($handle);
+            $this->assertSame(chunk_name::file(self::key(), $hash, $piece), $info->name);
+            $this->assertSame([$info->name], $this->files(), 'One piece at a time is in the folder.');
+            $entry = $packer->entries()[$piece];
+            $this->assertSame([
+                't' => 'file', 'contenthash' => $hash, 'size' => 70 * self::MIB, 'chunk' => $info->name,
+                'offset' => $info->items[0]['offset'], 'length' => $info->items[0]['length'], 'piece' => $piece, 'pieces' => 3,
+            ], $entry);
+            $expected = substr($content, $piece * packer::PIECE, packer::PIECE);
+            $this->assertSame($expected, self::reader($info)->read_item($entry['offset']));
+            unlink($info->path);
+        }
+    }
+
+    public function test_a_piece_that_is_not_the_one_of_the_first_read_is_not_handed_out(): void {
+        [$path, $hash] = $this->big_file(40 * self::MIB);
+        $packer = $this->packer();
+        $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 40 * self::MIB);
+        fclose($handle);
+        // The file changes between the two reads.
+        $handle = fopen($path, 'r+b');
+        fseek($handle, packer::PIECE + 5);
+        fwrite($handle, 'changed');
+        fseek($handle, packer::PIECE);
+        try {
+            $packer->big_piece($hash, $handle, 40 * self::MIB, 1, $digests[1]);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('tamper_detected', $e->errorcode);
+        } finally {
+            fclose($handle);
+        }
+        $this->assertSame([], $this->files());
+        $this->assertSame([], $packer->entries());
+    }
+
+    public function test_a_piece_out_of_the_file_is_refused(): void {
+        $this->expectException(\coding_exception::class);
+        $this->packer()->big_piece(sha1('x'), self::stream('x'), 5 * self::MIB, 1, hash('sha256', 'x'));
+    }
 }

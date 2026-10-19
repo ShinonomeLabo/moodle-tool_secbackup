@@ -146,6 +146,112 @@ final class packer {
     }
 
     /**
+     * Reads a big file once, without writing anything: checks it against its content hash and its size, and gives the
+     * SHA-256 of each of its pieces.
+     *
+     * With big_piece(), a big file is handed out one piece at a time, so that the temporary folder never holds more than one
+     * of its pieces: a piece is named only when it is the same as in this read, which matched the content hash.
+     *
+     * @param string $contenthash Content hash of the file.
+     * @param resource $handle An open stream at the first byte of the content; the caller closes it.
+     * @param int $size Size of the file in the files table, FILE_LIMIT or more.
+     * @return string[] The SHA-256 of each piece, in hexadecimal, in order.
+     * @throws \coding_exception For a content hash that is not a SHA-1, or a size below FILE_LIMIT.
+     * @throws plugin_exception With nfs_slow when a read fails, and with tamper_detected when the content or the length is not
+     *     the one that the hash and the size name.
+     */
+    public function big_digests(string $contenthash, $handle, int $size): array {
+        $this->file_name($contenthash, 0);
+        if ($size < self::FILE_LIMIT) {
+            throw new \coding_exception('A big file has FILE_LIMIT bytes or more.');
+        }
+        // Held here, as in add_big(): a hash context in the arguments of a call is in the trace of an exception.
+        $this->digest = hash_init('sha1');
+        try {
+            $digests = [];
+            for ($offset = 0; $offset < $size; $offset += self::PIECE) {
+                $piece = hash_init('sha256');
+                for ($left = min(self::PIECE, $size - $offset); $left > 0; $left -= strlen($part)) {
+                    $part = self::read_part($handle, min(self::READ, $left));
+                    hash_update($this->digest, $part);
+                    hash_update($piece, $part);
+                }
+                $digests[] = hash_final($piece);
+            }
+            self::expect_end($handle);
+            if (hash_final($this->digest) !== $contenthash) {
+                throw new plugin_exception('tamper_detected');
+            }
+            return $digests;
+        } finally {
+            $this->digest = null;
+        }
+    }
+
+    /**
+     * Writes one piece of a big file, and hands it out when its content is the one that big_digests() read.
+     *
+     * @param string $contenthash Content hash of the file.
+     * @param resource $handle The stream, at the first byte of the piece; the caller closes it.
+     * @param int $size Size of the file in the files table.
+     * @param int $piece Number of the piece, from 0.
+     * @param string $digest Its SHA-256 from big_digests().
+     * @return chunk_info The piece, in the file with the name of the chunk. Its entry is in entries().
+     * @throws \coding_exception For a piece that the file does not have.
+     * @throws plugin_exception With tamper_detected when the content is not the one of the first read or ends early, with
+     *     nfs_slow when a read fails, and with temp_write_failed when the chunk cannot be written; no file is left then.
+     */
+    public function big_piece(string $contenthash, $handle, int $size, int $piece, string $digest): chunk_info {
+        $pieces = intdiv($size + self::PIECE - 1, self::PIECE);
+        if ($size < self::FILE_LIMIT || $piece < 0 || $piece >= $pieces) {
+            throw new \coding_exception('A piece of a big file is one that the file has.');
+        }
+        $this->digest = hash_init('sha256');
+        try {
+            $info = $this->write_piece($contenthash, $piece, $handle, min(self::PIECE, $size - $piece * self::PIECE));
+            $same = hash_equals($digest, hash_final($this->digest));
+        } finally {
+            $this->digest = null;
+        }
+        if (!$same) {
+            $path = $info->path;
+            error_silencer::run(static fn() => unlink($path), $warning);
+            throw new plugin_exception('tamper_detected');
+        }
+        $info = $this->publish($info);
+        $this->entries[$this->sequence++] = [
+            't' => 'file',
+            'contenthash' => $contenthash,
+            'size' => $size,
+            'chunk' => $info->name,
+            'offset' => $info->items[0]['offset'],
+            'length' => $info->items[0]['length'],
+            'piece' => $piece,
+            'pieces' => $pieces,
+        ];
+        return $info;
+    }
+
+    /**
+     * Reads a part of a stream that must have it.
+     *
+     * @param resource $handle The stream.
+     * @param int $length Bytes, 1 or more.
+     * @return string Between 1 and $length bytes.
+     * @throws plugin_exception With nfs_slow when the read fails, and with tamper_detected when the stream ends.
+     */
+    private static function read_part($handle, int $length): string {
+        $part = error_silencer::run(static fn() => fread($handle, $length), $warning);
+        if ($part === false || $warning !== '') {
+            throw new plugin_exception('nfs_slow', null, $warning === '' ? null : $warning);
+        }
+        if ($part === '') {
+            throw new plugin_exception('tamper_detected');
+        }
+        return $part;
+    }
+
+    /**
      * Writes the pending small files as a chunk, if there are any.
      *
      * @return chunk_info[] The chunk, or none.
