@@ -196,6 +196,7 @@ If you did not expect this, check the connection settings of the plugin.
 {$a->url}';
 $string['message_reenrolled_subject'] = 'This site was registered again with {$a->platform}';
 $string['messageprovider:connection'] = 'Changes to the connection with the backup service';
+$string['nfs_slow'] = 'A site file could not be read after several attempts. The shared storage that holds the files may be slow or unstable. The next run continues from where this one stopped.';
 $string['notifier_system'] = 'The system';
 $string['object_incomplete'] = 'The data that was sent to or read from the storage was not as long as expected, so it was discarded.';
 $string['object_rejected'] = 'The storage did not accept the request. The address for the transfer may have expired.';
@@ -256,6 +257,7 @@ $string['status_site'] = 'Site name on the platform';
 $string['status_siteid'] = 'Site ID';
 $string['status_unknown'] = 'Not known yet';
 $string['status_unreadable'] = 'Cannot be read.';
+$string['tamper_detected'] = 'The content of a site file does not match the hash it is stored under, so the file may have been changed or damaged. The run was stopped.';
 $string['task_poll_failed'] = 'The status request failed. See the status page of the plugin.';
 $string['task_poll_notregistered'] = 'The site is not registered, so nothing was asked.';
 $string['task_poll_ok'] = 'The status was received.';

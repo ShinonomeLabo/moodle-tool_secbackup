@@ -196,6 +196,7 @@ $string['message_reenrolled_body'] = '{$a->user} が、新しい登録コード�
 {$a->url}';
 $string['message_reenrolled_subject'] = 'このサイトを {$a->platform} に登録し直しました';
 $string['messageprovider:connection'] = 'バックアップのサービスとの接続の変更';
+$string['nfs_slow'] = 'サイトのファイルを何度か試しても読めませんでした。ファイルを置いている共有ストレージが遅いか、不安定かもしれません。次の回は、この回が止まったところから続けます。';
 $string['notifier_system'] = 'システム';
 $string['object_incomplete'] = '保存先へ送ったデータ、または保存先から読んだデータの長さが想定と違ったため、破棄しました。';
 $string['object_rejected'] = '保存先がリクエストを受け付けませんでした。転送用のアドレスの有効期限が切れた可能性があります。';
@@ -256,6 +257,7 @@ $string['status_site'] = 'プラットフォームでのサイト名';
 $string['status_siteid'] = 'サイト ID';
 $string['status_unknown'] = 'まだ分かりません';
 $string['status_unreadable'] = '読み取れません。';
+$string['tamper_detected'] = 'サイトのファイルの中身が、そのファイルを保存している名前（ハッシュ）と合っていません。ファイルが書き換えられたか、壊れた可能性があります。回を中止しました。';
 $string['task_poll_failed'] = '状態の問い合わせに失敗しました。連携ツールの状態の画面を確かめてください。';
 $string['task_poll_notregistered'] = 'サイトが登録されていないので、問い合わせませんでした。';
 $string['task_poll_ok'] = '状態を受け取りました。';
