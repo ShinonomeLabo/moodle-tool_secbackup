@@ -89,9 +89,10 @@ final class limit_setting_test extends \advanced_testcase {
         bool $integer,
         string $value
     ): void {
+        set_config($name, '123', 'tool_secbackup');
         $error = self::number($name, $min, $integer)->write_setting($value);
         $this->assertNotSame('', $error);
-        $this->assertFalse(get_config('tool_secbackup', $name));
+        $this->assertSame('123', get_config('tool_secbackup', $name));
     }
 
     /**
@@ -120,6 +121,7 @@ final class limit_setting_test extends \advanced_testcase {
      * @param string $value The value.
      */
     public function test_a_number_that_the_limits_use_is_saved(string $name, float $min, bool $integer, string $value): void {
+        set_config($name, '123', 'tool_secbackup');
         $this->assertSame('', self::number($name, $min, $integer)->write_setting($value));
         $this->assertSame($value, get_config('tool_secbackup', $name));
     }
@@ -162,17 +164,19 @@ final class limit_setting_test extends \advanced_testcase {
      * @param string $value The folder.
      */
     public function test_a_folder_that_the_limits_would_not_use_is_refused(string $value): void {
+        set_config('tempdir', '/var/tmp/known', 'tool_secbackup');
         $error = self::folder()->write_setting($value);
         $this->assertSame(get_string('setting_error_directory', 'tool_secbackup'), $error);
-        $this->assertFalse(get_config('tool_secbackup', 'tempdir'));
+        $this->assertSame('/var/tmp/known', get_config('tool_secbackup', 'tempdir'));
     }
 
     public function test_a_folder_inside_the_code_of_moodle_is_refused(): void {
         global $CFG;
+        set_config('tempdir', '/var/tmp/known', 'tool_secbackup');
         foreach ([$CFG->dirroot, $CFG->dirroot . '/', $CFG->dirroot . '/public/tmp', $CFG->dirroot . '/a/b'] as $value) {
             $this->assertSame(get_string('setting_error_dirroot', 'tool_secbackup'), self::folder()->write_setting($value), $value);
         }
-        $this->assertFalse(get_config('tool_secbackup', 'tempdir'));
+        $this->assertSame('/var/tmp/known', get_config('tool_secbackup', 'tempdir'));
     }
 
     public function test_a_folder_beside_the_code_of_moodle_is_saved(): void {
@@ -184,8 +188,9 @@ final class limit_setting_test extends \advanced_testcase {
     }
 
     public function test_a_value_with_spaces_around_it_is_refused_by_the_general_check(): void {
+        set_config('maxdbms', '123', 'tool_secbackup');
         $this->assertSame(get_string('validateerror', 'admin'), self::number('maxdbms', 1.0, true)->write_setting(' 5 '));
-        $this->assertFalse(get_config('tool_secbackup', 'maxdbms'));
+        $this->assertSame('123', get_config('tool_secbackup', 'maxdbms'));
     }
 
     public function test_an_empty_folder_is_saved_and_means_the_default(): void {
