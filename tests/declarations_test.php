@@ -167,6 +167,18 @@ final class declarations_test extends \advanced_testcase {
             $tree->locate('tool_secbackup_diagnostics')->url->out(false)
         );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_connect')->req_capability);
+        $limits = $tree->locate('tool_secbackup_settings');
+        $this->assertInstanceOf(\admin_settingpage::class, $limits);
+        $this->assertSame(['tool/secbackup:manage'], $limits->req_capability);
+        $names = [];
+        foreach ($limits->settings as $setting) {
+            $names[$setting->name] = $setting->get_defaultsetting();
+        }
+        $this->assertSame(
+            ['loadpercore' => '2', 'minmemorymb' => '256', 'maxdbms' => '500', 'minnfsmbps' => '5', 'tempbudgetmb' => '0',
+                'bandwidthmbps' => '0', 'tempdir' => ''],
+            $names
+        );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_diagnostics')->req_capability);
     }
 
@@ -186,6 +198,7 @@ final class declarations_test extends \advanced_testcase {
             $this->assertNull($tree->locate('tool_secbackup_status'));
             $this->assertNull($tree->locate('tool_secbackup_connect'));
             $this->assertNull($tree->locate('tool_secbackup_diagnostics'));
+            $this->assertNull($tree->locate('tool_secbackup_settings'));
         } finally {
             $this->setAdminUser();
             \admin_get_root(true, false);
