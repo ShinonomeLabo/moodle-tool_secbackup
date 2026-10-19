@@ -111,7 +111,10 @@ final class series_writer {
      * @param string $sitepublickey Public key of the site (32 bytes).
      * @param string $siteid ID of the site.
      * @param string $tempdir Existing folder for the chunks.
-     * @throws \coding_exception For a key that does not have 32 bytes, or a label or a run UUID that no chunk can have.
+     * @param int $firstnumber The number of the first chunk: a run that goes on in a new step gives the next_number() of the
+     *     writer of the step before, so that no number is used twice in the run.
+     * @throws \coding_exception For a key that does not have 32 bytes, or a label, a run UUID or a number that no chunk can
+     *     have.
      */
     public function __construct(
         #[\SensitiveParameter] string $dedupkey,
@@ -119,7 +122,8 @@ final class series_writer {
         string $runuuid,
         string $sitepublickey,
         string $siteid,
-        string $tempdir
+        string $tempdir,
+        int $firstnumber = 0
     ) {
         // The trace of an exception shows the parameters, and #[\SensitiveParameter] hides them only from PHP 8.2 on. So the
         // key moves to the property and the parameter is unset before anything below can throw.
@@ -131,12 +135,13 @@ final class series_writer {
         $this->siteid = $siteid;
         $this->tempdir = $tempdir;
         $this->type = $label === 'code' ? chunk_writer::TYPE_CODE : chunk_writer::TYPE_FILES;
+        $this->number = $firstnumber;
         try {
             if (strlen($this->dedupkey) !== SODIUM_CRYPTO_GENERICHASH_KEYBYTES) {
                 throw new \coding_exception('The key for names has 32 bytes.');
             }
-            // The first name checks the label and the run, so that no later name can fail.
-            $this->chunk_name(0);
+            // The first name checks the label, the run and the number, so that no later name can fail.
+            $this->chunk_name($firstnumber);
         } catch (\coding_exception $e) {
             // A constructor that throws is not followed by the destructor.
             sodium_memzero($this->dedupkey);
@@ -196,6 +201,15 @@ final class series_writer {
      */
     public function entries(): array {
         return $this->entries;
+    }
+
+    /**
+     * The number that the next chunk will have. A chunk that is open has taken its number.
+     *
+     * @return int
+     */
+    public function next_number(): int {
+        return $this->number;
     }
 
     /**

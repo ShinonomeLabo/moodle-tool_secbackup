@@ -771,4 +771,30 @@ final class series_writer_test extends \advanced_testcase {
         }
         self::$wiped = [];
     }
+
+    public function test_the_numbers_go_on_from_a_number_that_a_run_gives(): void {
+        $writer = new series_writer(
+            self::key(),
+            'dataroot',
+            self::RUN,
+            sodium_crypto_box_publickey(self::pair()),
+            self::SITE,
+            $this->dir,
+            7
+        );
+        $this->assertSame(7, $writer->next_number());
+        $this->put('a.txt', 'first');
+        $writer->add('dataroot', $this->base, 'a.txt');
+        // The open chunk has taken its number.
+        $this->assertSame(8, $writer->next_number());
+        [$chunk] = $writer->flush();
+        $this->assertSame(chunk_name::series(self::key(), 'dataroot', self::RUN, 7), $chunk->name);
+        $this->assertSame(8, $writer->next_number());
+        $this->assertSame(0, $this->writer()->next_number());
+    }
+
+    public function test_a_first_number_below_zero_is_refused(): void {
+        $this->expectException(\coding_exception::class);
+        new series_writer(self::key(), 'code', self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE, $this->dir, -1);
+    }
 }

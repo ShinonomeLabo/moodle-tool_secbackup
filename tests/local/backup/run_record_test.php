@@ -52,7 +52,14 @@ final class run_record_test extends \advanced_testcase {
         $this->assertEquals(0, $row->bytesuploaded);
         $this->assertEquals(0, $row->chunksuploaded);
         $this->assertNull($row->estimatedbytes);
-        $this->assertNotEmpty($row->hostname);
+        // Any server may go on with a run until the run says otherwise (a temporary folder of one server).
+        $this->assertNull($row->hostname);
+        $this->assertNull($run->hostname());
+        $this->assertNull($run->next_attempt());
+        $this->assertSame(0, $run->window_misses());
+        $this->assertSame(0, $run->bytes_uploaded());
+        $this->assertSame(0, $run->chunks_uploaded());
+        $this->assertNull($run->estimated_bytes());
     }
 
     public function test_an_unknown_trigger_is_refused(): void {
@@ -301,5 +308,83 @@ final class run_record_test extends \advanced_testcase {
         $this->assertSame('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e11', $row->runuuid);
         $this->assertSame(7, $run->entries_committed());
         $this->assertSame('0b6f1b0a-6d0e-4f3e-9b0e-6a3d3a0c5e11', run_record::active()->run_uuid());
+    }
+
+    public function test_a_commit_writes_the_stage_the_progress_and_the_entries_at_once(): void {
+        global $DB;
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+
+        $run->commit('files', ['cursor' => ['offset' => 120]], 42, 1100);
+
+        $row = $DB->get_record('tool_secbackup_runs', ['id' => $run->id()], '*', MUST_EXIST);
+        $this->assertSame('files', $row->stage);
+        $this->assertSame(['cursor' => ['offset' => 120]], json_decode($row->progress, true));
+        $this->assertEquals(42, $row->entriescommitted);
+        $this->assertEquals(1100, $row->timemodified);
+        $this->assertSame(42, $run->entries_committed());
+    }
+
+    public function test_a_commit_refuses_an_unknown_stage_and_a_url(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        try {
+            $run->commit('nowhere', [], 1, 1100);
+            $this->fail('No exception');
+        } catch (\coding_exception $e) {
+            $this->assertSame('prepare', run_record::active()->stage());
+        }
+        $this->expectException(\coding_exception::class);
+        $run->commit('files', ['tosend' => [['path' => 'https://example.com/a']]], 1, 1100);
+    }
+
+    public function test_the_server_of_a_run_is_stored_and_cleared(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('schedule', 1000);
+        $run->set_hostname(str_repeat('h', 300));
+        $this->assertSame(str_repeat('h', 255), run_record::active()->hostname());
+        $run->set_hostname(null);
+        $this->assertNull(run_record::active()->hostname());
+    }
+
+    public function test_the_window_misses_are_stored(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('schedule', 1000);
+        $run->set_window_misses(1);
+        $this->assertSame(1, run_record::active()->window_misses());
+    }
+
+    public function test_a_paused_run_becomes_active_again(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('schedule', 1000);
+        $run->pause(1010, 2000);
+        $this->assertSame(2000, run_record::active()->next_attempt());
+        $run->activate(2001);
+        $stored = run_record::active();
+        $this->assertSame('active', $stored->status());
+        $this->assertNull($stored->next_attempt());
+    }
+
+    public function test_a_refused_run_is_neither_active_nor_a_stop(): void {
+        $this->resetAfterTest();
+        run_record::create('schedule', 900)->abort('server_busy', 901);
+        $run = run_record::create('manual', 1000);
+        $run->refuse('run_limit_reached', 1001);
+        $this->assertSame('refused', $run->status());
+        $this->assertSame('run_limit_reached', $run->abort_code());
+        $this->assertNull(run_record::active());
+        $this->assertSame(1, run_record::consecutive_aborts());
+        $this->assertSame($run->id(), run_record::recent(1)[0]->id());
+    }
+
+    public function test_the_note_of_a_stop_is_kept_with_the_progress(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        $run->set_stage('files', ['cursor' => ['offset' => 5]], 1001);
+        $run->abort('disk_low', 1002, ['cleared' => true, 'leftovers' => 0]);
+        $this->assertSame(
+            ['abort' => ['cleared' => true, 'leftovers' => 0], 'cursor' => ['offset' => 5]],
+            run_record::recent(1)[0]->progress()
+        );
     }
 }

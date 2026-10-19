@@ -209,4 +209,40 @@ final class schedule_test extends \advanced_testcase {
         $s = $this->settings();
         $this->assertFalse(schedule::due($s, 'site-1', self::ts('2026-10-19 12:00', 'Asia/Tokyo'), null));
     }
+
+    public function test_the_next_slot_is_the_first_that_starts_at_or_after_a_time(): void {
+        $s = $this->settings();
+        $jitter = schedule::jitter(fake_service::SITE_ID, 180) * 60;
+        $start = self::ts('2026-10-20 02:00', 'Asia/Tokyo') + $jitter;
+        $end = self::ts('2026-10-20 05:00', 'Asia/Tokyo');
+        $five = self::ts('2026-10-19 05:00', 'Asia/Tokyo');
+        $noon = self::ts('2026-10-19 12:00', 'Asia/Tokyo');
+        $this->assertSame(['start' => $start, 'end' => $end], schedule::next_slot($s, fake_service::SITE_ID, $five));
+        $this->assertSame(['start' => $start, 'end' => $end], schedule::next_slot($s, fake_service::SITE_ID, $noon));
+        // A slot that begins at that very time is the next one.
+        $this->assertSame(['start' => $start, 'end' => $end], schedule::next_slot($s, fake_service::SITE_ID, $start));
+        // Inside a slot, the next one is the one of the next day.
+        $this->assertSame(
+            ['start' => $start + 86400, 'end' => $end + 86400],
+            schedule::next_slot($s, fake_service::SITE_ID, $start + 60)
+        );
+    }
+
+    public function test_the_next_slot_of_several_runs_a_day_and_across_midnight(): void {
+        $s = $this->settings(['runs_per_day' => 2]);
+        $jitter = schedule::jitter(fake_service::SITE_ID, 180) * 60;
+        $this->assertSame(
+            ['start' => self::ts('2026-10-19 14:00', 'Asia/Tokyo') + $jitter, 'end' => self::ts('2026-10-19 17:00', 'Asia/Tokyo')],
+            schedule::next_slot($s, fake_service::SITE_ID, self::ts('2026-10-19 05:00', 'Asia/Tokyo'))
+        );
+        settings::apply(instruction_factory::make('settings', 2, instruction_factory::settings_body(
+            ['window_start' => '23:00', 'window_end' => '01:00']
+        )));
+        $s = settings::current();
+        $jitter = schedule::jitter(fake_service::SITE_ID, 120) * 60;
+        $this->assertSame(
+            ['start' => self::ts('2026-10-19 23:00', 'Asia/Tokyo') + $jitter, 'end' => self::ts('2026-10-20 01:00', 'Asia/Tokyo')],
+            schedule::next_slot($s, fake_service::SITE_ID, self::ts('2026-10-19 01:00', 'Asia/Tokyo'))
+        );
+    }
 }

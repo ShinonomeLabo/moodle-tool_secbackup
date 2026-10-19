@@ -76,7 +76,7 @@ final class run_record {
             'timefinished' => null,
             'nextattempt' => null,
             'windowmisses' => 0,
-            'hostname' => \core_text::substr((string) gethostname(), 0, 255),
+            'hostname' => null,
             'progress' => null,
             'entriescommitted' => 0,
             'bytesuploaded' => 0,
@@ -89,6 +89,8 @@ final class run_record {
 
     /**
      * The latest run that is active or paused.
+     *
+     * A run that the service refused to start (status refused) is neither: it did not start.
      *
      * @return self|null
      */
@@ -164,7 +166,7 @@ final class run_record {
     }
 
     /**
-     * The status: active, paused, completed or aborted.
+     * The status: active, paused, completed, aborted or refused.
      *
      * @return string
      */
@@ -230,6 +232,60 @@ final class run_record {
     }
 
     /**
+     * When a paused run is tried again.
+     *
+     * @return int|null UNIX time, or null when the run is not waiting.
+     */
+    public function next_attempt(): ?int {
+        return $this->row->nextattempt === null ? null : (int) $this->row->nextattempt;
+    }
+
+    /**
+     * How many backup windows ended while the run was not done.
+     *
+     * @return int
+     */
+    public function window_misses(): int {
+        return (int) $this->row->windowmisses;
+    }
+
+    /**
+     * The server that started the run, when the temporary files of the run are on a disk of that server only.
+     *
+     * @return string|null Null when every server can go on with the run.
+     */
+    public function hostname(): ?string {
+        return $this->row->hostname === null || $this->row->hostname === '' ? null : $this->row->hostname;
+    }
+
+    /**
+     * The bytes of the chunks that the storage has taken.
+     *
+     * @return int
+     */
+    public function bytes_uploaded(): int {
+        return (int) $this->row->bytesuploaded;
+    }
+
+    /**
+     * The number of chunks that the storage has taken.
+     *
+     * @return int
+     */
+    public function chunks_uploaded(): int {
+        return (int) $this->row->chunksuploaded;
+    }
+
+    /**
+     * The estimated size of the backup.
+     *
+     * @return int|null Bytes, or null before the size was decided.
+     */
+    public function estimated_bytes(): ?int {
+        return $this->row->estimatedbytes === null ? null : (int) $this->row->estimatedbytes;
+    }
+
+    /**
      * Moves the run to a stage and stores its progress.
      *
      * @param string $stage One of STAGES.
@@ -285,6 +341,74 @@ final class run_record {
     }
 
     /**
+     * Writes the stage, its progress and the number of entries that were written, in one update: the point that a later step
+     * of the run goes on from.
+     *
+     * @param string $stage One of STAGES.
+     * @param array $progress The progress; it must not hold a URL.
+     * @param int $entries The number of entries of the list of the generation that are written.
+     * @param int $now The current time.
+     */
+    public function commit(string $stage, array $progress, int $entries, int $now): void {
+        if (!in_array($stage, self::STAGES, true)) {
+            throw new \coding_exception('Unknown stage of a backup run');
+        }
+        self::refuse_urls($progress);
+        $this->save([
+            'stage' => $stage,
+            'progress' => json_encode($progress, JSON_THROW_ON_ERROR),
+            'entriescommitted' => $entries,
+            'timemodified' => $now,
+        ]);
+    }
+
+    /**
+     * Records the server that started the run, or that any server may go on with it.
+     *
+     * @param string|null $hostname The name of the server, or null.
+     */
+    public function set_hostname(?string $hostname): void {
+        $this->save(['hostname' => $hostname === null ? null : \core_text::substr($hostname, 0, 255)]);
+    }
+
+    /**
+     * Stores how many backup windows ended while the run was not done.
+     *
+     * @param int $misses The number.
+     */
+    public function set_window_misses(int $misses): void {
+        $this->save(['windowmisses' => $misses]);
+    }
+
+    /**
+     * Makes a paused run active again.
+     *
+     * @param int $now The current time.
+     */
+    public function activate(int $now): void {
+        $this->save(['status' => 'active', 'nextattempt' => null, 'timemodified' => $now]);
+    }
+
+    /**
+     * Records that the service refused to start the run (the plan's number of runs, or a contract that is not active).
+     *
+     * The run never started, so it is not an aborted run: it does not count as a stop in a row. It is the latest run of the
+     * slot, so the schedule does not start another one in the same slot.
+     *
+     * @param string $code The reason: the error code of the service.
+     * @param int $now The current time.
+     */
+    public function refuse(string $code, int $now): void {
+        $this->save([
+            'status' => 'refused',
+            'abortcode' => $code,
+            'nextattempt' => null,
+            'timefinished' => $now,
+            'timemodified' => $now,
+        ]);
+    }
+
+    /**
      * Pauses the run until a time.
      *
      * @param int $now The current time.
@@ -308,15 +432,23 @@ final class run_record {
      *
      * @param string $code Why the run was aborted.
      * @param int $now The current time.
+     * @param array|null $note What the stop left, stored under "abort" in the progress (which keeps the rest); null for
+     *     nothing.
      */
-    public function abort(string $code, int $now): void {
-        $this->save([
+    public function abort(string $code, int $now, ?array $note = null): void {
+        $fields = [
             'status' => 'aborted',
             'abortcode' => $code,
             'nextattempt' => null,
             'timefinished' => $now,
             'timemodified' => $now,
-        ]);
+        ];
+        if ($note !== null) {
+            $progress = ['abort' => $note] + $this->progress();
+            self::refuse_urls($progress);
+            $fields['progress'] = json_encode($progress, JSON_THROW_ON_ERROR);
+        }
+        $this->save($fields);
     }
 
     /**

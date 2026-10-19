@@ -160,6 +160,24 @@ final class core_diff_test extends \advanced_testcase {
         $this->assertSame([], $diff->unlisted());
     }
 
+    public function test_the_walker_gives_the_files_that_the_hashes_are_made_of(): void {
+        $root = self::moodle([
+            'a/b' => 'ab',
+            'config.php' => 'secret settings',
+            '.git/HEAD' => 'ref',
+            'lib/node_modules/x/y.js' => 'js',
+            'local/added/lib.php' => 'plugin',
+            'z.txt' => 'z',
+        ]);
+        $diff = new core_diff($root, [$root . '/local/added']);
+        $walker = $diff->walker();
+        $paths = array_column($walker->next(null, 2), 'path');
+        $paths = array_merge($paths, array_column($walker->next(end($paths), 100), 'path'));
+        $this->assertSame(array_keys(self::hashes($diff)), $paths);
+        $this->assertSame(['a/b', 'version.php', 'z.txt'], $paths);
+        $this->assertSame($root, $diff->root());
+    }
+
     public function test_a_file_or_link_named_like_a_skipped_folder_follows_the_rules_of_the_service(): void {
         $root = self::moodle(['lib/.git' => 'a file called .git', 'lib/real/x' => 'x']);
         symlink($root . '/lib/real', $root . '/lib/node_modules');

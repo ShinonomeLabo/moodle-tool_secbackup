@@ -322,6 +322,15 @@ final class uploader {
     }
 
     /**
+     * The files of the chunks that wait, manifest and index included, in the order of the queue.
+     *
+     * @return string[]
+     */
+    public function queued_paths(): array {
+        return array_column($this->queue, 'path');
+    }
+
+    /**
      * Files that were sent and could not be removed. They are tried again at the next drain().
      *
      * @return string[]
@@ -676,7 +685,7 @@ final class uploader {
             && in_array($item['kind'] ?? null, ['object', 'manifest', 'index'], true)
             && ($item['kind'] === 'object'
                 ? is_string($item['name'] ?? null) && preg_match('/^[0-9a-f]{64}\z/', $item['name']) === 1
-                : ($item['name'] ?? false) === null)
+                : array_key_exists('name', $item) && $item['name'] === null)
             && is_string($item['path'] ?? null) && dirname($item['path']) === $folder
             && is_int($item['size'] ?? null) && $item['size'] > 0
             && is_string($item['sha256'] ?? null) && preg_match('/^[A-Za-z0-9+\/]{43}=\z/', $item['sha256']) === 1

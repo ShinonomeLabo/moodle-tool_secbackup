@@ -24,6 +24,7 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+$string['abort_unknown'] = 'バックアップを中止しました ({$a})。';
 $string['action_deregister'] = '登録を解除する';
 $string['action_next'] = '次へ進む';
 $string['action_register'] = '登録する';
@@ -80,6 +81,7 @@ $string['core_manifest_mismatch'] = 'バックアップのサービスから受�
 $string['crypto_chunk_corrupt'] = 'バックアップの塊が壊れているか、書き換えられているか、このサイトのものでないため、復号できませんでした。';
 $string['crypto_chunk_sourceshort'] = 'バックアップの塊に入れるデータが、想定の長さより前で終わりました。読んでいる間に変わった可能性があります。';
 $string['crypto_chunk_truncated'] = 'バックアップの塊が最後の区切りより前で終わっているため、途中で切れています。';
+$string['db_slow'] = 'データベースの応答が、連携ツールの限界の値より遅くなったため、バックアップを中止しました。次の予定のバックアップで、もう一度始めます。';
 $string['db_unsupported'] = 'このデータベースには対応していません。対応しているのは MySQL、MariaDB、PostgreSQL です。';
 $string['dedupkey_corrupt'] = '保存した、バックアップの塊の名前を作るための鍵を読めません。登録を解除してから、もう一度登録してください。';
 $string['dedupkey_savefailed'] = 'バックアップの塊の名前を作るための鍵を暗号化できなかったため、保存しませんでした。データのフォルダ (moodledata) にある暗号鍵のファイルを確かめてから、もう一度試してください。';
@@ -158,6 +160,7 @@ $string['envelope_signature'] = '接続先のサービスからの応答の署�
 $string['envelope_untrusted'] = 'この連携ツールが信頼していない鍵で署名された応答です。接続先の URL が正しいか確かめてください。';
 $string['event_deregistered'] = 'バックアップのサービスとの登録の解除';
 $string['event_enrolled'] = 'バックアップのサービスへのサイトの登録';
+$string['expired'] = 'バックアップのサービスが、24 時間以内にバックアップの終わりを受け取れなかったため、バックアップを止めました。';
 $string['field_code'] = '登録コード';
 $string['field_code_help'] = 'プラットフォームの画面で発行した、1 回限りの登録コードです。30 分で使えなくなります。';
 $string['field_code_invalid'] = '登録コードは SEC-BK-XXXX-XXXX-XXXX-XXXX-XXXX の形です。プラットフォームの画面から、もう一度コピーしてください。';
@@ -174,6 +177,12 @@ $string['field_publickey'] = 'このサイトの公開鍵';
 $string['field_publickey_help'] = 'プラットフォームの画面から、secbk1: で始まるこのサイトの公開鍵をコピーしてください。次の画面にフィンガープリントを出すので、正しい鍵をコピーしたかを確かめられます。';
 $string['instruction_invalid'] = 'バックアップのサービスから届いた指示を確かめられなかったので、使いませんでした。';
 $string['intro'] = 'この連携ツールは、このサイト (Moodle™) をバックアップのサービスにつなぎ、暗号化したバックアップを預けられるようにします。';
+$string['message_backupfailure_body'] = 'バックアップのサービスへのこのサイトのバックアップが、直近 {$a->count} 回続けて、保存される前に中止されました。
+
+最後の理由: {$a->reason}
+
+直し方は、連携ツールの状態の画面で確かめてください: {$a->url}';
+$string['message_backupfailure_subject'] = 'このサイトのバックアップが {$a->count} 回続けて中止されました';
 $string['message_deregistered_body'] = '{$a->user} が、このサイトの {$a->platform} との登録を解除しました。
 
 接続先の URL: {$a->endpoint}
@@ -201,7 +210,9 @@ $string['message_reenrolled_body'] = '{$a->user} が、新しい登録コード�
 
 {$a->url}';
 $string['message_reenrolled_subject'] = 'このサイトを {$a->platform} に登録し直しました';
+$string['messageprovider:backupfailure'] = '続けて中止されたバックアップ';
 $string['messageprovider:connection'] = 'バックアップのサービスとの接続の変更';
+$string['network_check_failed'] = 'バックアップのサービスまたは保存先への接続が、送る前の検査 (アドレス、名前の問い合わせ、ネットワーク) に合格しなかったため、バックアップを中止しました。連携ツールの接続の診断を開いてください。';
 $string['nfs_slow'] = 'サイトのファイルを何度か試しても読めませんでした。ファイルを置いている共有ストレージが遅いか、不安定かもしれません。次の回は、この回が止まったところから続けます。';
 $string['notifier_system'] = 'システム';
 $string['object_incomplete'] = '保存先へ送ったデータ、または保存先から読んだデータの長さが想定と違ったため、破棄しました。';
@@ -220,12 +231,15 @@ $string['publickey_invalid'] = 'このサイトの公開鍵は暗号化に使え
 $string['publickey_length'] = '公開鍵が途中で切れています。プラットフォームの画面から、鍵の全体をもう一度コピーしてください。';
 $string['publickey_prefix'] = '公開鍵は「secbk1:」で始まります。プラットフォームの画面から、もう一度コピーしてください。';
 $string['receipt_mismatch'] = 'バックアップのサービスの受領証が、このサイトの送ったバックアップと合いません。保存できたものとは数えません。';
+$string['restarted'] = 'バックアップの途中で、このサイトがその回の記録を失ったため、その回を中止して新しい回を始めました。';
 $string['result_fail'] = '問題あり';
 $string['result_info'] = '情報';
 $string['result_pass'] = '問題なし';
 $string['result_unknown'] = '不明';
 $string['result_warn'] = '注意';
 $string['secbackup:manage'] = 'あんしんLMSバックアップとの接続を管理する';
+$string['selinux_denied'] = 'このサーバの SELinux が、連携ツールの接続か一時ファイルを拒んだ可能性が高いため、バックアップを中止しました。変える設定は、連携ツールの接続の診断で確かめてください。';
+$string['server_busy'] = 'サーバの負荷か空きメモリが、連携ツールの限界の値を超えたため、バックアップを中止しました。次の予定のバックアップで、もう一度始めます。';
 $string['service_status_active'] = '有効';
 $string['service_status_awaiting_enrollment'] = '登録を待っています';
 $string['service_status_other'] = 'その他 ({$a})';
@@ -278,3 +292,10 @@ $string['transport_redirect'] = '接続先のサービスが別の場所へ案�
 $string['transport_tls'] = '接続先のサービスの証明書を確かめられませんでした。ネットワークに HTTPS の通信を途中で復号する機器 (セキュリティの装置やプロキシ) がある場合は、接続先の URL のホスト名を復号の対象から外すよう、その管理者に頼んでください。';
 $string['transport_too_large'] = '接続先のサービスからの応答が想定より大きかったので、捨てました。';
 $string['upload_failed'] = '保存先へのデータの送信が、何度やり直しても成功しなかったため、バックアップを中止しました。次の予定のバックアップで、もう一度始めます。';
+$string['verify_artifact_mismatch'] = '保存先にある世代の一覧または索引が、このサイトが報告したものと違うことを、バックアップのサービスが見つけました。このバックアップは保存されていません。';
+$string['verify_error'] = 'バックアップのサービスがバックアップを確かめられなかったため、このバックアップは保存されていません。';
+$string['verify_index_invalid'] = 'このサイトが送った索引を、バックアップのサービスが読めなかったため、このバックアップは保存されていません。';
+$string['verify_missing_chunks'] = 'このサイトが送ったデータの一部が保存先に見つからなかったため、このバックアップは保存されていません。';
+$string['verify_size_mismatch'] = '保存先にあるデータの大きさが、このサイトが報告したものと違うため、このバックアップは保存されていません。';
+$string['version_too_old'] = 'この連携ツールの版が、バックアップのサービスが受け付ける版より古いため、バックアップを中止しました。連携ツールを新しくしてください。';
+$string['window_ended'] = 'バックアップが 2 回続けて時間帯の中で終わらなかったため、バックアップを中止しました。次の予定のバックアップで、もう一度始めます。';

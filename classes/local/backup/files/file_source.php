@@ -83,6 +83,9 @@ class file_source {
     /**
      * Opens the content of a file for reading.
      *
+     * A content whose rows are gone (the files were deleted after the snapshot of the run listed them) is looked for in the
+     * trash only.
+     *
      * @param string $contenthash Content hash.
      * @return array|null ['handle' => stream, 'where' => 'filedir' or 'trashdir'], or null when the content is in neither.
      * @throws plugin_exception With nfs_slow when the content is there but cannot be opened.
@@ -90,7 +93,8 @@ class file_source {
     public function open(string $contenthash): ?array {
         $records = $this->db->get_records_select('files', 'contenthash = ? AND filesize > 0', [$contenthash], 'id', '*', 0, 1);
         if ($records === []) {
-            return null;
+            $handle = $this->trash_handle($contenthash);
+            return $handle === null ? null : ['handle' => $handle, 'where' => 'trashdir'];
         }
         $storage = get_file_storage();
         $file = $storage->get_file_instance(reset($records));

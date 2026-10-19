@@ -11,7 +11,7 @@
         <FIELD NAME="kind" TYPE="char" LENGTH="16" NOTNULL="true" DEFAULT="full" SEQUENCE="false" COMMENT="Kind of backup: full"/>
         <FIELD NAME="triggeredby" TYPE="char" LENGTH="16" NOTNULL="true" SEQUENCE="false" COMMENT="What started the run: schedule, manual or cli"/>
         <FIELD NAME="stage" TYPE="char" LENGTH="32" NOTNULL="true" SEQUENCE="false" COMMENT="Current stage of the run"/>
-        <FIELD NAME="status" TYPE="char" LENGTH="16" NOTNULL="true" DEFAULT="active" SEQUENCE="false" COMMENT="active, paused, completed or aborted"/>
+        <FIELD NAME="status" TYPE="char" LENGTH="16" NOTNULL="true" DEFAULT="active" SEQUENCE="false" COMMENT="active, paused, completed, aborted or refused"/>
         <FIELD NAME="abortcode" TYPE="char" LENGTH="40" NOTNULL="false" SEQUENCE="false" COMMENT="Why the run was aborted"/>
         <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
         <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>

@@ -1110,4 +1110,27 @@ final class uploader_test extends \advanced_testcase {
         $this->assertSame([$second->path], $uploader->leftovers());
         $this->assertSame([$second->path], $this->saved($folder)['leftovers']);
     }
+
+    public function test_the_paths_of_what_waits_are_known_and_survive_a_new_step(): void {
+        [$uploader, $run, $folder, $client, $endpoint] = $this->start();
+        $a = self::chunk($folder, 1);
+        $b = self::chunk($folder, 2);
+        $uploader->queue($a, 'object');
+        $uploader->queue($b, 'manifest');
+        $this->assertSame([$a->path, $b->path], $uploader->queued_paths());
+        $limits = new limits(2.0, 256, 500, 5.0, $this->tempdir, 100, 0);
+        $again = new uploader($client, $this->service_objects(), new temp_area($limits), $limits);
+        $again->resume($run);
+        $this->assertSame([$a->path, $b->path], $again->queued_paths());
+    }
+
+    /**
+     * A transport of the storage that goes to the fake service.
+     *
+     * @return object_transport
+     */
+    private function service_objects(): object_transport {
+        $settings = developer_settings::from_value(['allowprivatehosts' => true, 'skipnetworkchecks' => true]);
+        return new object_transport($settings, network_fakes::passing_s3_guard(), $this->network());
+    }
 }

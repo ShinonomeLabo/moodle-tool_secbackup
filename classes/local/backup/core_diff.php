@@ -112,13 +112,33 @@ final class core_diff {
     }
 
     /**
+     * A new walk of the files of the distribution that the list of official files would hold, with what it leaves out.
+     *
+     * A run that sends the whole Moodle program (when there is no official list to compare with) pages through it.
+     *
+     * @return tree_walker
+     */
+    public function walker(): tree_walker {
+        return new tree_walker($this->root, $this->excluded(), $this->list_names(...));
+    }
+
+    /**
+     * The folder of the distribution that this object reads.
+     *
+     * @return string
+     */
+    public function root(): string {
+        return $this->root;
+    }
+
+    /**
      * The hash of every file of the distribution that the list of official files would hold, in the order of the list.
      *
      * @return \Generator<string, string> SHA-256 in hexadecimal by path from the folder of the distribution, "/" between names.
      */
     public function local_hashes(): \Generator {
         $this->unhashable = [];
-        $this->walker = new tree_walker($this->root, $this->excluded(), $this->list_names(...));
+        $this->walker = $this->walker();
         $after = null;
         while (($page = $this->walker->next($after, self::PAGE)) !== []) {
             foreach ($page as $item) {

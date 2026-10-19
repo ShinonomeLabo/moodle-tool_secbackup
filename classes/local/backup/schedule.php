@@ -64,6 +64,36 @@ final class schedule {
     }
 
     /**
+     * The first slot that starts at or after a time.
+     *
+     * @param settings $s The settings.
+     * @param string $siteid The ID of this site.
+     * @param int $from The time.
+     * @return array{start: int, end: int} The UNIX times of the start (with the delay) and the end.
+     */
+    public static function next_slot(settings $s, string $siteid, int $from): array {
+        $length = ($s->window_end() - $s->window_start() + self::DAY) % self::DAY;
+        $runs = $s->runs_per_day();
+        $step = intdiv(self::DAY, $runs);
+        $jitter = self::jitter($siteid, $length);
+        $today = (new \DateTimeImmutable('@' . $from))->setTimezone($s->timezone())->setTime(0, 0);
+        // The starts go up from the first slot of yesterday to the last of today (the slots of a day fit in the day).
+        foreach ([$today->modify('-1 day'), $today] as $midnight) {
+            for ($k = 0; $k < $runs; $k++) {
+                $start = self::at($midnight, $s->window_start() + $k * $step + $jitter);
+                if ($start >= $from) {
+                    return ['start' => $start, 'end' => self::at($midnight, $s->window_start() + $k * $step + $length)];
+                }
+            }
+        }
+        $tomorrow = $today->modify('+1 day');
+        return [
+            'start' => self::at($tomorrow, $s->window_start() + $jitter),
+            'end' => self::at($tomorrow, $s->window_start() + $length),
+        ];
+    }
+
+    /**
      * Whether a run is due: a slot is going on and no run has been started since it began.
      *
      * @param settings $s The settings.

@@ -63,6 +63,6 @@ final class upgrade_test extends \advanced_testcase {
         global $CFG;
         require_once($CFG->libdir . '/upgradelib.php');
         require_once($CFG->dirroot . '/admin/tool/secbackup/db/upgrade.php');
-        $this->assertTrue(\xmldb_tool_secbackup_upgrade(2026101900));
+        $this->assertTrue(\xmldb_tool_secbackup_upgrade(2026102000));
     }
 }

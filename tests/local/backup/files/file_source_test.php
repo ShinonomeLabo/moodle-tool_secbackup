@@ -320,4 +320,18 @@ final class file_source_test extends \advanced_testcase {
         $this->assertSame([1], $this->slept);
         $this->assertCount(1, $packer->flush());
     }
+
+    public function test_a_file_whose_row_is_gone_since_the_snapshot_is_read_from_the_trash(): void {
+        global $CFG, $DB;
+        $file = $this->make('content deleted after the snapshot');
+        $hash = $file->get_contenthash();
+        $trash = $CFG->dataroot . '/trashdir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2);
+        mkdir($trash, 0777, true);
+        rename(self::filedir_path($hash), $trash . '/' . $hash);
+        $DB->delete_records('files', ['contenthash' => $hash]);
+        $opened = $this->source()->open($hash);
+        $this->assertSame('trashdir', $opened['where']);
+        $this->assertSame('content deleted after the snapshot', stream_get_contents($opened['handle']));
+        fclose($opened['handle']);
+    }
 }

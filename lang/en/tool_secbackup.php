@@ -24,6 +24,7 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+$string['abort_unknown'] = 'The backup was stopped ({$a}).';
 $string['action_deregister'] = 'Remove the registration';
 $string['action_next'] = 'Next';
 $string['action_register'] = 'Register';
@@ -80,6 +81,7 @@ $string['core_manifest_mismatch'] = 'The list of the official Moodle files from 
 $string['crypto_chunk_corrupt'] = 'A backup chunk is damaged, was changed or does not belong to this site, so it could not be decrypted.';
 $string['crypto_chunk_sourceshort'] = 'The data for a backup chunk ended before its expected length. It may have changed while it was read.';
 $string['crypto_chunk_truncated'] = 'A backup chunk ends before its last part, so it is incomplete.';
+$string['db_slow'] = 'The database answered more slowly than the limit of the plugin allows, so the backup was stopped. The next scheduled backup starts again.';
 $string['db_unsupported'] = 'This database is not supported. The plugin supports MySQL, MariaDB and PostgreSQL.';
 $string['dedupkey_corrupt'] = 'The stored key for the names of the backup chunks cannot be read. Remove the registration and register the site again.';
 $string['dedupkey_savefailed'] = 'The key for the names of the backup chunks could not be encrypted, so it was not saved. Check the encryption key file in the data directory and try again.';
@@ -158,6 +160,7 @@ $string['envelope_signature'] = 'The signature of the response from the service 
 $string['envelope_untrusted'] = 'The response was signed with a key that this plugin does not trust. Check that the connection URL is correct.';
 $string['event_deregistered'] = 'Registration with the backup service removed';
 $string['event_enrolled'] = 'Site registered with the backup service';
+$string['expired'] = 'The backup service did not receive the end of the backup within 24 hours, so it stopped the backup.';
 $string['field_code'] = 'Registration code';
 $string['field_code_help'] = 'The one-time registration code issued on the platform screen. It is valid for 30 minutes.';
 $string['field_code_invalid'] = 'A registration code has the form SEC-BK-XXXX-XXXX-XXXX-XXXX-XXXX. Copy it again from the platform screen.';
@@ -174,6 +177,12 @@ $string['field_publickey'] = 'Public key of this site';
 $string['field_publickey_help'] = 'Copy the public key of this site, which starts with secbk1:, from the platform screen. The next step shows its fingerprint, so that you can check that you copied the right key.';
 $string['instruction_invalid'] = 'The backup service sent an instruction that could not be verified, so it was not used.';
 $string['intro'] = 'This plugin connects this site (Moodle™) to the backup service, which keeps encrypted backups of the site.';
+$string['message_backupfailure_body'] = 'The last {$a->count} backups of this site to the backup service were stopped before they were stored.
+
+Last reason: {$a->reason}
+
+Open the status page of the plugin to see what to do: {$a->url}';
+$string['message_backupfailure_subject'] = 'The backups of this site were stopped {$a->count} times in a row';
 $string['message_deregistered_body'] = '{$a->user} removed the registration of this site with {$a->platform}.
 
 Connection URL: {$a->endpoint}
@@ -201,7 +210,9 @@ If you did not expect this, check the connection settings of the plugin.
 
 {$a->url}';
 $string['message_reenrolled_subject'] = 'This site was registered again with {$a->platform}';
+$string['messageprovider:backupfailure'] = 'Backups that were stopped several times in a row';
 $string['messageprovider:connection'] = 'Changes to the connection with the backup service';
+$string['network_check_failed'] = 'The connection to the backup service or to its storage did not pass the checks before sending (the address, the name lookup or the network), so the backup was stopped. Open the connection diagnostics of the plugin.';
 $string['nfs_slow'] = 'A site file could not be read after several attempts. The shared storage that holds the files may be slow or unstable. The next run continues from where this one stopped.';
 $string['notifier_system'] = 'The system';
 $string['object_incomplete'] = 'The data that was sent to or read from the storage was not as long as expected, so it was discarded.';
@@ -220,12 +231,15 @@ $string['publickey_invalid'] = 'The public key of this site cannot be used for e
 $string['publickey_length'] = 'The public key is not complete. Copy the whole key again from the platform screen.';
 $string['publickey_prefix'] = 'The public key must start with "secbk1:". Copy it again from the platform screen.';
 $string['receipt_mismatch'] = 'The receipt of the backup service does not match the backup that this site sent. The backup is not counted as stored.';
+$string['restarted'] = 'This site lost the record of the backup while it was running, so the backup was stopped and a new one was started.';
 $string['result_fail'] = 'Problem';
 $string['result_info'] = 'Information';
 $string['result_pass'] = 'OK';
 $string['result_unknown'] = 'Unknown';
 $string['result_warn'] = 'Warning';
 $string['secbackup:manage'] = 'Manage the connection to Shinonome LMS Backup';
+$string['selinux_denied'] = 'SELinux on this server probably blocked the connection or the temporary files of the plugin, so the backup was stopped. Open the connection diagnostics of the plugin for the settings to change.';
+$string['server_busy'] = 'The load of the server or its free memory went beyond the limits of the plugin, so the backup was stopped. The next scheduled backup starts again.';
 $string['service_status_active'] = 'Active';
 $string['service_status_awaiting_enrollment'] = 'Waiting for registration';
 $string['service_status_other'] = 'Other ({$a})';
@@ -278,3 +292,10 @@ $string['transport_redirect'] = 'The service answered with a redirect, which thi
 $string['transport_tls'] = 'The certificate of the service could not be verified. If the network decrypts HTTPS traffic (for example with a security appliance or a proxy), ask its administrator to exclude the host name of the connection URL.';
 $string['transport_too_large'] = 'The response of the service was larger than expected and was discarded.';
 $string['upload_failed'] = 'The data could not be sent to the storage after several tries, so the backup was stopped. The next scheduled backup starts again.';
+$string['verify_artifact_mismatch'] = 'The backup service found that the manifest or the index in the storage is not the one that this site reported, so the backup is not stored.';
+$string['verify_error'] = 'The backup service could not check the backup, so the backup is not stored.';
+$string['verify_index_invalid'] = 'The backup service could not read the index that this site sent, so the backup is not stored.';
+$string['verify_missing_chunks'] = 'The backup service did not find in the storage all the data that this site sent, so the backup is not stored.';
+$string['verify_size_mismatch'] = 'The backup service found data in the storage whose size is not the one that this site reported, so the backup is not stored.';
+$string['version_too_old'] = 'This version of the plugin is older than the backup service accepts, so the backup was stopped. Update the plugin.';
+$string['window_ended'] = 'The backup did not finish within two backup windows in a row, so it was stopped. The next scheduled backup starts again.';
