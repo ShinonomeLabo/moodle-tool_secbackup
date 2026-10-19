@@ -609,14 +609,20 @@ final class client {
      */
     private static function exact_object(response $response, array $fields): array {
         $data = json_decode($response->body, true, 8);
+        $problem = null;
         if (!is_array($data) || array_is_list($data)) {
-            throw self::invalid($response->status, 'body');
+            $problem = 'body';
+        } else {
+            $names = array_keys($data);
+            sort($names);
+            sort($fields);
+            $problem = $names !== $fields ? 'fields' : null;
         }
-        $names = array_keys($data);
-        sort($names);
-        sort($fields);
-        if ($names !== $fields) {
-            throw self::invalid($response->status, 'fields');
+        if ($problem !== null) {
+            // The answer can hold signed URLs, and the trace of an exception shows its arguments: the argument goes first.
+            $status = $response->status;
+            unset($response);
+            throw self::invalid($status, $problem);
         }
         return $data;
     }

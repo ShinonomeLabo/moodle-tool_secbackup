@@ -1608,4 +1608,58 @@ final class client_runs_test extends \advanced_testcase {
             ini_set('zend.exception_ignore_args', (string) $previous);
         }
     }
+
+    /**
+     * Answers whose top level is wrong, by the call that reads them.
+     *
+     * @return array
+     */
+    public static function wrong_top_level_provider(): array {
+        return [
+            'upload urls' => ['urls'],
+            'the list of official files' => ['core'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('wrong_top_level_provider')]
+    /**
+     * An answer with the wrong fields at its top level keeps its body, and the signed URLs in it, out of every trace.
+     *
+     * @dataProvider wrong_top_level_provider
+     * @param string $case The call.
+     */
+    public function test_the_body_is_not_in_the_trace_of_an_answer_with_wrong_fields(string $case): void {
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $url = 'https://app.example.test/_s3/o?X-Amz-Signature=sekretvalue2';
+            $body = json_encode(['x' => $url, 'items' => [$url]]);
+            $client = self::answering([new Response(200, [], $body)]);
+            unset($body);
+            try {
+                if ($case === 'urls') {
+                    $client->upload_urls(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN, [
+                        ['kind' => 'index', 'name' => null, 'size' => 5, 'sha256' => self::SHA_A],
+                    ]);
+                } else {
+                    $client->core_manifest(
+                        self::endpoint(),
+                        signing_keypair::generate(),
+                        fake_service::SITE_ID,
+                        '2024100703.10',
+                        '20250113'
+                    );
+                }
+                $this->fail('No exception');
+            } catch (\tool_secbackup\local\plugin_exception $e) {
+                $this->assertSame('api_response_invalid', $e->errorcode);
+                foreach (\tool_secbackup\tests\trace_strings::of($e) as $string) {
+                    $this->assertStringNotContainsString('sekretvalue2', $string);
+                }
+                $found = \tool_secbackup\tests\trace_strings::objects_in_plugin_frames($e);
+                $this->assertNotContains(\tool_secbackup\local\net\response::class, $found);
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+    }
 }

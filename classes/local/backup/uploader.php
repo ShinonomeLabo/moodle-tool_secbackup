@@ -30,8 +30,11 @@ use tool_secbackup\local\plugin_exception;
 /**
  * Sends the chunks of a run to the storage and removes each file once the storage has taken it.
  *
- * Chunks are queued as they are made. drain() asks the backup service for upload URLs (up to 256 in one request), sends the
- * files, and removes a file when its upload is confirmed. The queue is kept in the folder of the run (names, sizes and
+ * Chunks are queued as they are made (queue() only records them). Before making a chunk the run asks needs_drain(), and sends
+ * what waits with drain($run, true) when it says yes, so that the files in the folder stay inside the budget.
+ *
+ * drain() asks the backup service for upload URLs (up to 256 in one request), sends the files, and removes a file when its
+ * upload is confirmed. The queue is kept in the folder of the run (names, sizes and
  * digests, never a URL), so the next step of the run goes on from it. A step that has to wait, for a busy service or a failed
  * send, pauses the run and says until when; a stop that the run cannot recover from is an exception whose error code is the
  * reason for stopping the run.
@@ -121,9 +124,6 @@ final class uploader {
 
     /** @var string[] Files that were sent and could not be removed. */
     private array $leftovers = [];
-
-    /** @var run_record|null The run, once drain() or resume() has been given it. */
-    private ?run_record $run = null;
 
     /** @var upload_target[] Where the chunks of the batch in hand go. Kept here, so that no call of the plugin has them as
      *      an argument: a trace shows the arguments, and the URLs are secrets. */
@@ -217,7 +217,25 @@ final class uploader {
     }
 
     /**
+     * Whether what waits must be sent before a chunk of this size is made.
+     *
+     * The rule for the run (12b): ask this before making each chunk, with the size of the chunk (the largest that a writer
+     * can make when it is not known), and call drain($run, true) first when it says yes. Then the files of the queue never take
+     * more room than the budget, except a chunk that alone is larger than the budget. A budget of zero is no room at all, so
+     * then anything that waits must go first. queue() does not do this: it only records.
+     *
+     * @param int $nextbytes Bytes of the chunk that is about to be made.
+     * @return bool
+     */
+    public function needs_drain(int $nextbytes): bool {
+        return $this->queue !== [] && $this->pending_bytes() + $nextbytes > $this->temp->budget_bytes();
+    }
+
+    /**
      * Puts a chunk in the queue. The queue is saved before this returns.
+     *
+     * It only records: it asks the service for nothing, sends nothing, and does not pause the run. A manifest or an index that
+     * is queued again, at the same path or at another, replaces the one that waits. See needs_drain() for the room.
      *
      * @param chunk_info $chunk The chunk, as the writer returned it. Its file is in the folder of the run.
      * @param string $kind object, manifest or index.
@@ -230,10 +248,6 @@ final class uploader {
         }
         $folder = dirname($chunk->path);
         $this->load($folder);
-        if ($this->run !== null && $this->queue !== [] && $this->pending_bytes() + $chunk->size > $this->temp->budget_bytes()) {
-            // What waits is sent first, so that the files of the queue never take more room than the budget.
-            $this->drain($this->run, true);
-        }
         $item = [
             'kind' => $kind,
             'name' => $kind === 'object' ? $chunk->name : null,
@@ -250,6 +264,7 @@ final class uploader {
             // A chunk that waits has this name, so the content is the same. A file of another path is not needed.
             if ($this->queue[$same[0]]['path'] !== $item['path']) {
                 $this->discard($item['path']);
+                $this->save();
             }
             return;
         } else {
@@ -273,7 +288,6 @@ final class uploader {
      * @throws plugin_exception With temp_write_failed when the folder cannot be used.
      */
     public function resume(run_record $run): void {
-        $this->run = $run;
         $this->loaded = false;
         $this->queue = [];
         $this->retryat = null;
@@ -329,9 +343,9 @@ final class uploader {
      * Sends what waits.
      *
      * Without $force the chunks are sent only when a request is full, or when the room that is left in the budget of the
-     * temporary area could not hold a chunk as large as the largest one so far. So the queued files stay inside the budget,
-     * except a chunk that is larger than all before it, which is sent at the next call. A budget of zero is no room at all,
-     * so then each chunk is sent at once.
+     * temporary area could not hold a chunk as large as the largest one so far, or when the budget is zero (no room at all).
+     * The run keeps the queue inside the budget by asking needs_drain() before it makes a chunk, and calling this with $force
+     * when it says yes.
      *
      * @param run_record $run The run; it must have its ID at the backup service.
      * @param bool $force Whether to send everything that waits.
@@ -340,7 +354,6 @@ final class uploader {
      *         or upload_failed. Other errors of the service and of the connection are thrown as they are.
      */
     public function drain(run_record $run, bool $force): void {
-        $this->run = $run;
         $this->load($this->temp->for_run($run->id()));
         $this->remove_leftovers();
         $now = ($this->clock)();
