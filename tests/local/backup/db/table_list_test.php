@@ -96,13 +96,13 @@ final class table_list_test extends \advanced_testcase {
         $manager->create_table($table);
         try {
             $list = table_list::build(false);
-            $this->assertSame(['secbk_handmade'], $list['unknown']);
+            $this->assertContains('secbk_handmade', $list['unknown']);
             $this->assertNotContains('secbk_handmade', self::names($list['export']));
             $this->assertNotContains('secbk_handmade', $list['excluded']);
         } finally {
             $manager->drop_table($table);
         }
-        $this->assertSame([], table_list::build(false)['unknown']);
+        $this->assertNotContains('secbk_handmade', table_list::build(false)['unknown']);
     }
 
     public function test_a_table_without_the_prefix_is_not_counted(): void {

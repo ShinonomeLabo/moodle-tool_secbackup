@@ -30,6 +30,9 @@ final class size_estimate {
      * MySQL and MariaDB give the data_length of information_schema.tables, which leaves out the indexes and is an estimate
      * of the engine; PostgreSQL gives pg_total_relation_size(), which includes indexes and large objects of the table.
      *
+     * Call it with the connection of Moodle ($DB) or before the snapshot of the export begins. On PostgreSQL a query that
+     * fails inside a transaction aborts the transaction, and the 0 that this method gives for it would hide that.
+     *
      * @param \moodle_database $db The connection.
      * @param \xmldb_table[] $tables The tables.
      * @return int Bytes; 0 for no tables, for a database that cannot tell and when the database does not answer.

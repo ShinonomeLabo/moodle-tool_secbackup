@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\backup\db;
 
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\trace_strings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\db\snapshot_mysql::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\db\snapshot_pgsql::class)]
@@ -164,6 +165,20 @@ final class snapshot_test extends \advanced_testcase {
         }
     }
 
+    /**
+     * Checks that a password is in no text of an exception.
+     *
+     * @param \Throwable $e The exception.
+     * @param string $password The password.
+     */
+    private function assert_without_password(\Throwable $e, string $password): void {
+        $texts = array_merge([$e->getMessage(), $e->getTraceAsString(), (string)($e->debuginfo ?? '')], trace_strings::of($e));
+        foreach ($texts as $text) {
+            $this->assertStringNotContainsString($password, $text);
+        }
+        $this->assertNull($e->getPrevious());
+    }
+
     public function test_a_failed_connection_does_not_show_the_password(): void {
         global $CFG;
         $this->resetAfterTest();
@@ -175,22 +190,71 @@ final class snapshot_test extends \advanced_testcase {
             connection_factory::open();
             $this->fail('The connection was opened with a wrong password');
         } catch (\dml_connection_exception $e) {
-            $this->assertNotEmpty($e->getTrace());
-            $strings = [$e->getMessage(), (string)$e->debuginfo, $e->getTraceAsString()];
-            for ($x = $e; $x !== null; $x = $x->getPrevious()) {
-                array_walk_recursive($x->getTrace(), static function ($value) use (&$strings): void {
-                    $value = $value instanceof \SensitiveParameterValue ? $value->getValue() : $value;
-                    $strings[] = is_string($value) ? $value : '';
-                });
-            }
-            foreach ($strings as $text) {
-                $this->assertStringNotContainsString($password, $text);
-            }
-            $this->assertNull($e->getPrevious());
+            $trace = $e->getTrace();
+            $this->assertNotEmpty($trace);
+            $this->assert_without_password($e, $password);
         } finally {
             restore_error_handler();
             // Some drivers report the failed connection with debugging() too.
             $this->resetDebugging();
+        }
+    }
+
+    public function test_a_failure_after_the_link_is_up_does_not_show_the_password(): void {
+        global $CFG;
+        $this->resetAfterTest();
+        $password = 'wrong-pass-' . bin2hex(random_bytes(6));
+        $CFG->dbpass = $password;
+        $failures = [
+            'a dml exception' => static fn(): \Throwable => new \dml_read_exception('server version'),
+            'a plain exception' => static fn(): \Throwable => new \RuntimeException('server version'),
+        ];
+        foreach ($failures as $label => $make) {
+            $driver = $this->createMock(\moodle_database::class);
+            $driver->method('connect')->willReturnCallback(
+                // Like a driver, the stand-in has the password as an argument of the call that fails.
+                static function (string $host, string $user, string $pass) use ($make): void {
+                    throw $make();
+                }
+            );
+            $driver->expects($this->once())->method('dispose');
+            try {
+                connection_factory::open($driver);
+                $this->fail($label . ' did not stop the connection');
+            } catch (\dml_connection_exception $e) {
+                $this->assertContains($password, trace_strings::of($this->original($driver, $make)), $label);
+                $this->assert_without_password($e, $password);
+            }
+        }
+    }
+
+    /**
+     * The exception that the stand-in driver throws, made as the driver makes it, to show that its trace holds the password.
+     *
+     * @param \moodle_database $driver The stand-in.
+     * @param \Closure $make Makes the exception.
+     * @return \Throwable
+     */
+    private function original(\moodle_database $driver, \Closure $make): \Throwable {
+        global $CFG;
+        try {
+            $driver->connect('h', 'u', $CFG->dbpass, 'n', 'p');
+        } catch (\Throwable $e) {
+            return $e;
+        }
+        $this->fail('The stand-in driver did not throw');
+    }
+
+    public function test_a_driver_that_cannot_be_disposed_still_gives_the_connection_exception(): void {
+        $driver = $this->createMock(\moodle_database::class);
+        $driver->method('connect')->willThrowException(new \RuntimeException('server version'));
+        $driver->method('dispose')->willThrowException(new \RuntimeException('already closed'));
+        try {
+            connection_factory::open($driver);
+            $this->fail('The connection was opened');
+        } catch (\dml_connection_exception $e) {
+            $this->assertStringContainsString('RuntimeException', (string)$e->debuginfo);
+            $this->assertNull($e->getPrevious());
         }
     }
 }

@@ -33,6 +33,11 @@ use tool_secbackup\local\crypto\chunk_writer;
  * than MAX_BYTES is a block of its own. The rows are in the order of their id; a block starts after the id that the caller
  * gives, so the caller asks again with the last id of the block until there are no rows.
  *
+ * A block is read in two steps, so that what the driver holds is the block and not the page of 5,000 rows: a query measures
+ * the rows after the id (the sizes of their columns, in bytes, on the server), the writer chooses the last row whose
+ * running total is within MAX_BYTES less the room for the first line, and a second query fetches the rows up to that id.
+ * The size of the lines, which JSON escapes and base64 make longer than the bytes, still decides the cut.
+ *
  * Invalid UTF-8 in a row is not replaced: the JSON encoding throws, so the run stops rather than saves changed data.
  *
  * @package    tool_secbackup
@@ -52,15 +57,11 @@ final class block_writer {
     /** @var int Flags of every JSON encoding. */
     private const JSON = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
 
-    /** @var string[] Names of the XMLDB types, by their number. */
-    private const TYPES = [
-        XMLDB_TYPE_INTEGER => 'int',
-        XMLDB_TYPE_NUMBER => 'number',
-        XMLDB_TYPE_FLOAT => 'float',
-        XMLDB_TYPE_CHAR => 'char',
-        XMLDB_TYPE_TEXT => 'text',
-        XMLDB_TYPE_BINARY => 'binary',
-    ];
+    /** @var string The mark that MySQL and MariaDB put around the name of a column (a grave accent). */
+    private const MYSQL_QUOTE = "\x60";
+
+    /** @var int Bytes that the measuring query counts for a column that is not text, characters or bytes. */
+    private const FIXED_COLUMN = 24;
 
     /** @var \moodle_database The connection of the export, inside its snapshot. */
     private \moodle_database $db;
@@ -116,6 +117,38 @@ final class block_writer {
     }
 
     /**
+     * The last id of the next block, from the sizes of the rows.
+     *
+     * The rows after $afterid are measured, at most MAX_ROWS of them, and counted from the first until the next one would
+     * take the total over the room that a block has for rows; the first row is always counted.
+     *
+     * @param \xmldb_table $table The table, as its install.xml file describes it; it has an id column.
+     * @param int $afterid The rows with a larger id.
+     * @return int|null The id of the last row of the window, or null when no row has a larger id.
+     * @throws \coding_exception For a table without an id column.
+     */
+    public function window_end(\xmldb_table $table, int $afterid): ?int {
+        $fields = $this->fields($table);
+        $room = self::MAX_BYTES - strlen($this->header($table, $fields, PHP_INT_MAX, PHP_INT_MAX));
+        $rows = $this->db->get_recordset_sql($this->measuring_sql($table, $fields), [$afterid], 0, self::MAX_ROWS);
+        try {
+            $total = 0;
+            $end = null;
+            foreach ($rows as $row) {
+                $size = (int)$row->sz;
+                if ($end !== null && $total + $size > $room) {
+                    break;
+                }
+                $total += $size;
+                $end = (int)$row->id;
+            }
+        } finally {
+            $rows->close();
+        }
+        return $end;
+    }
+
+    /**
      * Writes the next block of a table.
      *
      * @param \xmldb_table $table The table, as its install.xml file describes it; it has an id column.
@@ -128,21 +161,18 @@ final class block_writer {
      * @throws \tool_secbackup\local\plugin_exception With temp_write_failed when the chunk cannot be written.
      */
     public function next_block(\xmldb_table $table, int $afterid): ?array {
-        if ($table->getField('id') === null) {
-            throw new \coding_exception('A table to export has an id column.');
+        $end = $this->window_end($table, $afterid);
+        if ($end === null) {
+            return null;
         }
-        $fields = $table->getFields();
-        $reserve = strlen($this->header($table, $fields, PHP_INT_MAX, PHP_INT_MAX));
+        $fields = $this->fields($table);
+        $length = strlen($this->header($table, $fields, PHP_INT_MAX, PHP_INT_MAX));
         $lines = [];
-        $length = $reserve;
         $first = null;
         $last = null;
-        $columns = implode(', ', array_map(static fn(\xmldb_field $field): string => $field->getName(), $fields));
         $rows = $this->db->get_recordset_sql(
-            "SELECT $columns FROM {" . $table->getName() . "} WHERE id > ? ORDER BY id",
-            [$afterid],
-            0,
-            self::MAX_ROWS
+            'SELECT ' . $this->column_list($fields) . ' FROM {' . $table->getName() . '} WHERE id > ? AND id <= ? ORDER BY id',
+            [$afterid, $end]
         );
         try {
             foreach ($rows as $row) {
@@ -161,8 +191,8 @@ final class block_writer {
         if ($lines === []) {
             return null;
         }
-        $plain = $this->header($table, $fields, $first, $last) . implode('', $lines);
         $count = count($lines);
+        $plain = $this->header($table, $fields, $first, $last) . implode('', $lines);
         unset($lines);
         $sha256 = hash('sha256', $plain);
         $chunk = $this->write($table->getName(), $first, $last, $sha256, $plain);
@@ -177,21 +207,88 @@ final class block_writer {
     }
 
     /**
+     * The columns of a table to export.
+     *
+     * @param \xmldb_table $table The table.
+     * @return \xmldb_field[]
+     * @throws \coding_exception For a table without an id column.
+     */
+    private function fields(\xmldb_table $table): array {
+        if ($table->getField('id') === null) {
+            throw new \coding_exception('A table to export has an id column.');
+        }
+        return $table->getFields();
+    }
+
+    /**
+     * A name of a column the way the database writes it, so that a reserved word (such as order) can be one.
+     *
+     * @param string $name The name.
+     * @return string
+     */
+    private function quoted(string $name): string {
+        return match ($this->db->get_dbfamily()) {
+            'mysql' => self::MYSQL_QUOTE . $name . self::MYSQL_QUOTE,
+            'postgres' => '"' . $name . '"',
+            default => $name,
+        };
+    }
+
+    /**
+     * The columns of a table, in order, for a query.
+     *
+     * @param \xmldb_field[] $fields The columns.
+     * @return string
+     */
+    private function column_list(array $fields): string {
+        return implode(', ', array_map(fn(\xmldb_field $field): string => $this->quoted($field->getName()), $fields));
+    }
+
+    /**
+     * The query that measures the rows: the id and the size in bytes of the data of the row.
+     *
+     * The size is the sum of the bytes of the columns of characters, text and binary data (null counts 0) and a fixed
+     * allowance for every other column. It is a decimal number, so that a sum of large columns cannot overflow an integer.
+     * OCTET_LENGTH counts bytes on MySQL, MariaDB and PostgreSQL, and PostgreSQL does not need to read a stored large value
+     * for it.
+     *
+     * @param \xmldb_table $table The table.
+     * @param \xmldb_field[] $fields The columns.
+     * @return string
+     */
+    private function measuring_sql(\xmldb_table $table, array $fields): string {
+        $sizes = ['0.0'];
+        foreach ($fields as $field) {
+            $variable = in_array($field->getType(), [XMLDB_TYPE_CHAR, XMLDB_TYPE_TEXT, XMLDB_TYPE_BINARY], true);
+            $column = $this->quoted($field->getName());
+            $sizes[] = $variable ? 'COALESCE(OCTET_LENGTH(' . $column . '), 0)' : (string)self::FIXED_COLUMN;
+        }
+        return 'SELECT id, (' . implode(' + ', $sizes) . ') AS sz FROM {' . $table->getName() . '} WHERE id > ? ORDER BY id';
+    }
+
+    /**
      * Encrypts the plain text of a block into its file.
      *
      * @param string $table Name of the table.
      * @param int $from First id.
      * @param int $to Last id.
      * @param string $sha256 SHA-256 of the plain text, in hexadecimal.
-     * @param string $plain The plain text.
+     * @param #[|\SensitiveParameter|]|string $plain The plain text.
      * @return chunk_info
      */
-    private function write(string $table, int $from, int $to, string $sha256, string $plain): chunk_info {
+    private function write(
+        string $table,
+        int $from,
+        int $to,
+        string $sha256,
+        #[\SensitiveParameter] string $plain
+    ): chunk_info {
         try {
             $name = chunk_name::db($this->dedupkey, $this->runuuid, $table, $from, $to, $sha256);
         } catch (\coding_exception $e) {
-            // Made again here: the trace of the exception from chunk_name holds the key as an argument on PHP before 8.2.
-            throw new \coding_exception($e->getMessage());
+            // Made again from the hint: the trace of the exception from chunk_name holds the key as an argument on PHP before
+            // 8.2, and its message is not made into a hint again with its prefix.
+            throw new \coding_exception($e->a);
         }
         $compressed = gzencode($plain, self::GZIP_LEVEL) ?: throw new \coding_exception('The block cannot be compressed.');
         $path = $this->tempdir . '/' . $name;
@@ -217,7 +314,7 @@ final class block_writer {
     private function header(\xmldb_table $table, array $fields, int $from, int $to): string {
         $columns = array_map(static fn(\xmldb_field $field): array => [
             'name' => $field->getName(),
-            'type' => self::TYPES[$field->getType()],
+            'type' => $field->getXMLDBTypeName($field->getType()) ?: 'unknown',
         ], $fields);
         return json_encode(
             ['table' => $table->getName(), 'columns' => array_values($columns), 'from' => $from, 'to' => $to],

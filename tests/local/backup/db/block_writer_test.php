@@ -28,6 +28,7 @@ use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\trace_strings;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -462,6 +463,9 @@ final class block_writer_test extends \advanced_testcase {
             /** @var bool Whether close() has been called. */
             public bool $closed = false;
 
+            /** @var int Rows given out so far. */
+            public int $yielded = 0;
+
             /** @var \stdClass[] The rows. */
             private array $rows;
 
@@ -484,6 +488,7 @@ final class block_writer_test extends \advanced_testcase {
              */
             #[\ReturnTypeWillChange]
             public function current() {
+                $this->yielded++;
                 return $this->rows[$this->position];
             }
 
@@ -526,37 +531,341 @@ final class block_writer_test extends \advanced_testcase {
         };
     }
 
+    /** @var string The family of database that the stand-in is. */
+    private string $family = 'postgres';
+
+    /** @var array[] The queries that the stand-in got: 'sql', 'params' and 'num' (the limit). */
+    private array $queries = [];
+
+    /** @var \moodle_recordset|null The last recordset of the measuring query. */
+    private ?\moodle_recordset $measured = null;
+
+    /** @var \moodle_recordset|null The last recordset of the query that fetches the rows. */
+    private ?\moodle_recordset $fetched = null;
+
     /**
-     * A connection that is a stand-in and gives one recordset.
+     * A connection that is a stand-in on PostgreSQL's way of writing: it answers the measuring query with the sizes it is
+     * given (1 for a row that has none), and the query that fetches the rows with the rows between the ids of the query.
      *
-     * @param \moodle_recordset $rows The rows.
+     * @param array[] $rows The rows, as arrays with an id.
+     * @param int[] $sizes The size that the measuring query gives, by id.
+     * @param int[] $vanished Ids of rows that the measuring query gives and the fetching query does not.
      * @return \moodle_database
      */
-    private function stand_in(\moodle_recordset $rows): \moodle_database {
+    private function stand_in(array $rows, array $sizes = [], array $vanished = []): \moodle_database {
         $db = $this->createMock(\moodle_database::class);
-        $db->method('get_recordset_sql')->willReturn($rows);
+        $db->method('get_dbfamily')->willReturn($this->family);
+        $db->method('get_recordset_sql')->willReturnCallback(
+            function (string $sql, ?array $params, int $from = 0, int $num = 0) use ($rows, $sizes, $vanished): \moodle_recordset {
+                $this->queries[] = ['sql' => $sql, 'params' => $params, 'num' => $num];
+                $inside = array_values(array_filter(
+                    $rows,
+                    static fn(array $row): bool => $row['id'] > $params[0] && $row['id'] <= ($params[1] ?? PHP_INT_MAX)
+                ));
+                if (str_contains($sql, ' AS sz')) {
+                    $inside = array_slice($inside, 0, $num ?: count($inside));
+                    $this->measured = self::rows_of(array_map(
+                        static fn(array $row): array => ['id' => $row['id'], 'sz' => $sizes[$row['id']] ?? 1],
+                        $inside
+                    ));
+                    return $this->measured;
+                }
+                $this->fetched = self::rows_of(array_values(array_filter(
+                    $inside,
+                    static fn(array $row): bool => !in_array($row['id'], $vanished, true)
+                )));
+                return $this->fetched;
+            }
+        );
         return $db;
     }
 
+    /**
+     * A row of config_log as the database layer gives it.
+     *
+     * @param int $id Id.
+     * @param string $value Value.
+     * @return array
+     */
+    private static function log_row(int $id, string $value = 'v'): array {
+        return [
+            'id' => $id, 'userid' => '0', 'timemodified' => '1', 'plugin' => 'p', 'name' => 'n', 'value' => $value,
+            'oldvalue' => null,
+        ];
+    }
+
+    /**
+     * The length of the line of such a row.
+     *
+     * @param int $id Id.
+     * @param int $bytes Length of the value.
+     * @return int
+     */
+    private static function line_length(int $id, int $bytes): int {
+        $row = self::log_row($id, str_repeat('x', $bytes));
+        $values = array_map(static fn($value) => $value === null ? null : (string)$value, array_values($row));
+        return strlen(json_encode($values, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) + 1;
+    }
+
+    /**
+     * The length of the first line of a block of config_log, for ids.
+     *
+     * @param int $from First id.
+     * @param int $to Last id.
+     * @return int
+     */
+    private static function header_length(int $from, int $to): int {
+        $columns = [];
+        $types = [
+            'id' => 'int', 'userid' => 'int', 'timemodified' => 'int', 'plugin' => 'char', 'name' => 'char',
+            'value' => 'text', 'oldvalue' => 'text',
+        ];
+        foreach ($types as $name => $type) {
+            $columns[] = ['name' => $name, 'type' => $type];
+        }
+        return strlen(json_encode(['table' => 'config_log', 'columns' => $columns, 'from' => $from, 'to' => $to])) + 1;
+    }
+
+    public function test_the_block_is_measured_first_and_only_its_window_is_fetched(): void {
+        $rows = array_map(static fn(int $id): array => self::log_row($id), range(1, 5));
+        $sizes = array_fill_keys(range(1, 5), 3000000);
+        $block = $this->writer($this->stand_in($rows, $sizes))->next_block(self::log_table(), 0);
+        $this->assertCount(2, $this->queries);
+        [$measure, $fetch] = $this->queries;
+        $this->assertSame([0], $measure['params']);
+        $this->assertSame(block_writer::MAX_ROWS, $measure['num']);
+        $this->assertStringContainsString('id > ? ORDER BY id', $measure['sql']);
+        // Two rows of 3,000,000 bytes fit in 8 MiB, a third does not: the rows are fetched up to the second.
+        $this->assertSame([0, 2], $fetch['params']);
+        $this->assertStringContainsString('id > ? AND id <= ? ORDER BY id', $fetch['sql']);
+        $this->assertSame(0, $fetch['num']);
+        $this->assertSame([2, 2], [$block['rows'], $block['to']]);
+        // The window was the block: no row was fetched and thrown away.
+        $this->assertSame(2, $this->fetched->yielded);
+        $this->assertTrue($this->measured->closed);
+        $this->assertTrue($this->fetched->closed);
+    }
+
+    public function test_the_measuring_query_sums_the_sizes_of_the_columns_that_can_be_large(): void {
+        $this->writer($this->stand_in([self::log_row(1)]))->next_block(self::log_table(), 0);
+        $sql = $this->queries[0]['sql'];
+        foreach (['plugin', 'name', 'value', 'oldvalue'] as $column) {
+            $this->assertStringContainsString('COALESCE(OCTET_LENGTH("' . $column . '"), 0)', $sql);
+        }
+        // The other columns (id, userid, timemodified) count a fixed size each, and the sum is not an integer that can overflow.
+        $this->assertSame(3, substr_count($sql, '+ 24'));
+        $this->assertStringContainsString('0.0 + ', $sql);
+        $this->assertStringContainsString('"value"', $this->queries[1]['sql']);
+    }
+
+    public function test_the_columns_are_quoted_the_way_of_each_family(): void {
+        $this->family = 'mysql';
+        $this->writer($this->stand_in([self::log_row(1)]))->next_block(self::log_table(), 0);
+        $this->assertStringContainsString('COALESCE(OCTET_LENGTH(' . "\x60" . 'value' . "\x60" . '), 0)', $this->queries[0]['sql']);
+        $this->assertStringContainsString("\x60" . 'oldvalue' . "\x60", $this->queries[1]['sql']);
+        $this->queries = [];
+        $this->family = 'other';
+        $this->writer($this->stand_in([self::log_row(1)]))->next_block(self::log_table(), 0);
+        $columns = 'SELECT id, userid, timemodified, plugin, name, value, oldvalue FROM';
+        $this->assertStringContainsString($columns, $this->queries[1]['sql']);
+        $this->assertStringNotContainsString('"', $this->queries[1]['sql']);
+    }
+
+    public function test_the_window_ends_at_the_budget_exactly(): void {
+        $rows = [self::log_row(1), self::log_row(2)];
+        $writer = $this->writer($this->stand_in($rows, [1 => 1, 2 => 1]));
+        $this->assertSame(2, $writer->window_end(self::log_table(), 0));
+        // Rows that together are the budget fit, one byte more does not (the budget leaves room for the header).
+        $reserve = self::header_length(PHP_INT_MAX, PHP_INT_MAX);
+        $limit = block_writer::MAX_BYTES - $reserve;
+        $this->assertSame(2, $this->writer($this->stand_in($rows, [1 => $limit - 10, 2 => 10]))->window_end(self::log_table(), 0));
+        $this->assertSame(1, $this->writer($this->stand_in($rows, [1 => $limit - 10, 2 => 11]))->window_end(self::log_table(), 0));
+    }
+
+    public function test_a_row_larger_than_the_budget_is_a_window_of_one_row(): void {
+        $rows = [self::log_row(1), self::log_row(2)];
+        $writer = $this->writer($this->stand_in($rows, [1 => 9000000, 2 => 10]));
+        $block = $writer->next_block(self::log_table(), 0);
+        $this->assertSame([0, 1], $this->queries[1]['params']);
+        $this->assertSame([1, 1, 1], [$block['rows'], $block['from'], $block['to']]);
+        $this->assertNull($this->writer($this->stand_in([]))->window_end(self::log_table(), 0));
+    }
+
+    public function test_the_real_size_decides_the_cut_inside_the_window(): void {
+        // The measured sizes say that the four rows fit; the lines, with the escapes of JSON, do not.
+        $value = str_repeat('"', 1500000);
+        $rows = array_map(static fn(int $id): array => self::log_row($id, $value), [1, 2, 3, 4]);
+        $block = $this->writer($this->stand_in($rows, array_fill_keys([1, 2, 3, 4], 1500000)))->next_block(self::log_table(), 0);
+        $this->assertSame([0, 4], $this->queries[1]['params']);
+        $this->assertSame(2, $block['rows']);
+        $this->assertLessThanOrEqual(block_writer::MAX_BYTES, $block['length']);
+        $this->assertTrue($this->fetched->closed);
+    }
+
+    public function test_the_lines_alone_may_fit_but_the_header_must_fit_too(): void {
+        $first = 1000000;
+        // The lines of the two rows together are as long as 8 MiB less the header that the block really has, plus one.
+        $second = block_writer::MAX_BYTES - self::header_length(1, 2) + 1 - self::line_length(1, $first) - self::line_length(2, 0);
+        $rows = [self::log_row(1, str_repeat('x', $first)), self::log_row(2, str_repeat('x', $second))];
+        $this->assertSame(
+            block_writer::MAX_BYTES + 1 - self::header_length(1, 2),
+            self::line_length(1, $first) + self::line_length(2, $second)
+        );
+        $block = $this->writer($this->stand_in($rows))->next_block(self::log_table(), 0);
+        $this->assertSame(1, $block['rows']);
+        $this->assertLessThanOrEqual(block_writer::MAX_BYTES, $block['length']);
+    }
+
+    public function test_rows_that_fill_the_budget_exactly_are_one_block(): void {
+        $first = 1000000;
+        $reserve = self::header_length(PHP_INT_MAX, PHP_INT_MAX);
+        $second = block_writer::MAX_BYTES - $reserve - self::line_length(1, $first) - self::line_length(2, 0);
+        $rows = [self::log_row(1, str_repeat('x', $first)), self::log_row(2, str_repeat('x', $second))];
+        $block = $this->writer($this->stand_in($rows))->next_block(self::log_table(), 0);
+        $this->assertSame(2, $block['rows']);
+        $this->assertLessThanOrEqual(block_writer::MAX_BYTES, $block['length']);
+    }
+
+    public function test_the_types_that_are_not_special_get_the_name_of_core_and_their_values_as_text(): void {
+        $table = new \xmldb_table('config_log');
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $table->add_field('stamp', XMLDB_TYPE_DATETIME);
+        $odd = new \xmldb_field('odd');
+        $odd->setType(99);
+        $table->addField($odd);
+        $rows = [['id' => 1, 'stamp' => '2026-10-19 00:00:00', 'odd' => 7]];
+        $block = $this->writer($this->stand_in($rows))->next_block($table, 0);
+        [$header, $row] = array_slice(self::decode($this->plain_text($block)), 0, 2);
+        $this->assertSame(
+            [['name' => 'id', 'type' => 'int'], ['name' => 'stamp', 'type' => 'datetime'], ['name' => 'odd', 'type' => 'unknown']],
+            $header['columns']
+        );
+        $this->assertSame(['1', '2026-10-19 00:00:00', '7'], $row);
+        $this->assertStringNotContainsString('OCTET_LENGTH', $this->queries[0]['sql']);
+        $this->assertStringContainsString('"stamp"', $this->queries[1]['sql']);
+    }
+
+    public function test_rows_that_are_gone_when_they_are_fetched_give_no_block(): void {
+        $block = $this->writer($this->stand_in([self::log_row(1)], [], [1]))->next_block(self::log_table(), 0);
+        $this->assertNull($block);
+        $this->assertTrue($this->fetched->closed);
+        $this->assertSame([], array_values(array_diff(scandir($this->dir), ['.', '..'])));
+    }
+
+    public function test_the_text_of_a_block_is_a_sensitive_parameter(): void {
+        $parameters = (new \ReflectionMethod(block_writer::class, 'write'))->getParameters();
+        $marked = array_filter(
+            $parameters,
+            static fn(\ReflectionParameter $parameter): bool => $parameter->getAttributes('SensitiveParameter') !== []
+        );
+        $names = array_map(static fn(\ReflectionParameter $parameter): string => $parameter->getName(), $marked);
+        $this->assertContains('plain', $names);
+    }
+
+    /**
+     * Creates a table for a test and gives its description.
+     *
+     * @param string $name Name of the table.
+     * @param array $columns Name => [xmldb type, length].
+     * @return \xmldb_table
+     */
+    private function create_table(string $name, array $columns): \xmldb_table {
+        global $DB;
+        $table = new \xmldb_table($name);
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        foreach ($columns as $column => [$type, $length]) {
+            $table->add_field($column, $type, $length);
+        }
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $DB->get_manager()->create_table($table);
+        return $table;
+    }
+
+    public function test_a_real_binary_column_round_trips_every_byte(): void {
+        global $DB;
+        $bytes = ['a' => "\x00\x01\xff\xfe\x00abc\x80", 'b' => implode('', array_map('chr', range(0, 255)))];
+        $table = $this->create_table('secbk_bin', ['data' => [XMLDB_TYPE_BINARY, null]]);
+        try {
+            foreach ($bytes as $value) {
+                $DB->insert_record('secbk_bin', (object)['data' => $value]);
+            }
+            $export = $this->export();
+            try {
+                $block = $this->writer($export)->next_block($table, 0);
+                [$header, $first, $second] = self::decode($this->plain_text($block));
+                $this->assertSame([['name' => 'id', 'type' => 'int'], ['name' => 'data', 'type' => 'binary']], $header['columns']);
+                $this->assertSame($bytes['a'], base64_decode($first[1], true));
+                $this->assertSame($bytes['b'], base64_decode($second[1], true));
+            } finally {
+                $export->dispose();
+            }
+        } finally {
+            $DB->get_manager()->drop_table($table);
+        }
+    }
+
+    public function test_a_column_named_with_a_reserved_word_is_read(): void {
+        global $DB;
+        $table = $this->create_table('secbk_reserved', ['order' => [XMLDB_TYPE_CHAR, '20'], 'note' => [XMLDB_TYPE_TEXT, null]]);
+        try {
+            $quoted = $DB->get_manager()->generator->getEncQuoted('order');
+            $this->assertNotSame('order', $quoted);
+            $DB->execute("INSERT INTO {secbk_reserved} ($quoted, note) VALUES (?, ?)", ['first', null]);
+            $DB->execute("INSERT INTO {secbk_reserved} ($quoted, note) VALUES (?, ?)", ['second', 'text']);
+            $export = $this->export();
+            try {
+                $writer = $this->writer($export);
+                $block = $writer->next_block($table, 0);
+                [$header, $first, $second] = self::decode($this->plain_text($block));
+                $this->assertSame('order', $header['columns'][1]['name']);
+                $this->assertSame('first', $first[1]);
+                $this->assertSame('second', $second[1]);
+                $this->assertSame((int)$first[0] + 1, (int)$second[0]);
+                $this->assertSame((int)$second[0], $writer->window_end($table, 0));
+            } finally {
+                $export->dispose();
+            }
+        } finally {
+            $DB->get_manager()->drop_table($table);
+        }
+    }
+
+    public function test_a_column_with_no_value_counts_nothing_in_the_measure(): void {
+        $base = self::last_id();
+        // The large text is in one column and the other one is null: a sum with a null in it would be null.
+        self::add_rows(3, str_repeat('a', 3000000));
+        $ids = self::ids_after($base);
+        $export = $this->export();
+        try {
+            $writer = $this->writer($export);
+            $this->assertSame($ids[1], $writer->window_end(self::log_table(), $base));
+            $this->assertSame($ids[2], $writer->window_end(self::log_table(), $ids[1]));
+            $this->assertNull($writer->window_end(self::log_table(), $ids[2]));
+        } finally {
+            $export->dispose();
+        }
+    }
+
     public function test_a_value_that_is_not_utf8_stops_the_block_and_closes_the_recordset(): void {
-        $row = ['userid' => '0', 'timemodified' => '1', 'plugin' => 'p', 'name' => 'n', 'oldvalue' => null];
-        $rows = self::rows_of([['id' => 1, 'value' => 'ok'] + $row, ['id' => 2, 'value' => "bad\xff"] + $row]);
+        $rows = [self::log_row(1, 'ok'), self::log_row(2, "bad\xff")];
         try {
             $this->writer($this->stand_in($rows))->next_block(self::log_table(), 0);
             $this->fail('A value that is not UTF-8 was written');
         } catch (\JsonException $e) {
-            $this->assertTrue($rows->closed);
+            $this->assertTrue($this->measured->closed);
+            $this->assertTrue($this->fetched->closed);
         }
         $this->assertSame([], array_values(array_diff(scandir($this->dir), ['.', '..'])));
     }
 
     public function test_numbers_that_the_database_layer_gives_are_written_as_text(): void {
-        $rows = self::rows_of([[
+        $rows = [[
             'id' => 1, 'userid' => 5, 'timemodified' => 2.5, 'plugin' => 'p', 'name' => 'n', 'value' => 'ok', 'oldvalue' => null,
-        ]]);
+        ]];
         $block = $this->writer($this->stand_in($rows))->next_block(self::log_table(), 0);
         $this->assertSame(['1', '5', '2.5', 'p', 'n', 'ok', null], self::decode($this->plain_text($block))[1]);
-        $this->assertTrue($rows->closed);
+        $this->assertTrue($this->measured->closed);
+        $this->assertTrue($this->fetched->closed);
     }
 
     public function test_no_part_file_is_left_when_the_block_cannot_be_finished(): void {
@@ -606,32 +915,6 @@ final class block_writer_test extends \advanced_testcase {
     }
 
     /**
-     * Every string in the traces of an exception and of the exceptions it chains, also inside SensitiveParameterValue.
-     *
-     * @param \Throwable $exception The exception.
-     * @return string[]
-     */
-    private static function trace_strings(\Throwable $exception): array {
-        $strings = [];
-        $collect = static function (mixed $value) use (&$collect, &$strings): void {
-            if ($value instanceof \SensitiveParameterValue) {
-                $value = $value->getValue();
-            }
-            if (is_string($value)) {
-                $strings[] = $value;
-            } else if (is_array($value)) {
-                array_walk($value, $collect);
-            }
-        };
-        for ($e = $exception; $e !== null; $e = $e->getPrevious()) {
-            foreach ($e->getTrace() as $frame) {
-                $collect($frame['args'] ?? []);
-            }
-        }
-        return $strings;
-    }
-
-    /**
      * Checks that the trace of an exception holds no argument with the key.
      *
      * @param \Throwable $exception The exception, made while zend.exception_ignore_args was off.
@@ -641,7 +924,7 @@ final class block_writer_test extends \advanced_testcase {
             array_filter($exception->getTrace(), static fn(array $frame): bool => !empty($frame['args'])),
             'The trace keeps the arguments, so the check means something.'
         );
-        foreach (self::trace_strings($exception) as $argument) {
+        foreach (trace_strings::of($exception) as $argument) {
             $this->assertStringNotContainsString(self::key(), $argument);
         }
     }
@@ -661,7 +944,7 @@ final class block_writer_test extends \advanced_testcase {
             $this->fail('A key of 31 bytes was accepted');
         } catch (\coding_exception $e) {
             $this->assertStringContainsString('32 bytes', $e->getMessage());
-            foreach (self::trace_strings($e) as $argument) {
+            foreach (trace_strings::of($e) as $argument) {
                 $this->assertStringNotContainsString($key, $argument);
             }
             $this->assertNotEmpty($e->getTrace());
@@ -672,15 +955,17 @@ final class block_writer_test extends \advanced_testcase {
     public function test_a_name_that_a_chunk_cannot_have_is_refused_and_the_trace_has_no_key(): void {
         $table = new \xmldb_table('Not-A-Name');
         $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
-        $rows = self::rows_of([['id' => 1]]);
         try {
-            $this->writer($this->stand_in($rows))->next_block($table, 0);
+            $this->writer($this->stand_in([['id' => 1]]))->next_block($table, 0);
             $this->fail('A table name that a chunk cannot have was accepted');
         } catch (\coding_exception $e) {
             $this->assertStringContainsString('table name', $e->getMessage());
+            // Made again from the hint: the prefix of the message of Moodle is not repeated.
+            $this->assertSame(1, substr_count($e->getMessage(), 'Coding error detected'));
             $this->assert_trace_hides_the_key($e);
         }
-        $this->assertTrue($rows->closed);
+        $this->assertTrue($this->measured->closed);
+        $this->assertTrue($this->fetched->closed);
         $this->assertSame([], array_values(array_diff(scandir($this->dir), ['.', '..'])));
     }
 
@@ -703,12 +988,15 @@ final class block_writer_test extends \advanced_testcase {
 
     public function test_the_writer_cannot_be_copied_or_serialised(): void {
         $writer = $this->writer($this->createMock(\moodle_database::class));
+        self::$wiped = [];
         try {
             $copy = clone $writer;
             $this->fail('A writer was cloned');
         } catch (\coding_exception $e) {
             $this->assertStringContainsString('cloned', $e->getMessage());
         }
+        // The refused copy kept no key: had it kept one, destroying it would have wiped that key (a copy of the same bytes).
+        $this->assertSame([], self::$wiped);
         try {
             serialize($writer);
             $this->fail('A writer was serialised');

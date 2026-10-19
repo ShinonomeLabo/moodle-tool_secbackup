@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\crypto;
 
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\trace_strings;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -1079,44 +1080,6 @@ final class chunk_writer_test extends \basic_testcase {
     }
 
     /**
-     * Every string among the arguments of the trace of an exception and of the exceptions it chains.
-     *
-     * From PHP 8.2 on, an argument marked #[\SensitiveParameter] is a SensitiveParameterValue: its value is looked at
-     * too, since a secret that only the marking hides is still kept in the trace.
-     *
-     * @param \Throwable $exception The exception.
-     * @return string[]
-     */
-    private static function trace_strings(\Throwable $exception): array {
-        $strings = [];
-        for ($e = $exception; $e !== null; $e = $e->getPrevious()) {
-            foreach ($e->getTrace() as $frame) {
-                self::collect_strings($frame['args'] ?? [], $strings);
-            }
-        }
-        return $strings;
-    }
-
-    /**
-     * Adds the strings in a value, in its arrays and in the values of its SensitiveParameterValue objects.
-     *
-     * @param mixed $value The value.
-     * @param string[] $strings The strings found so far.
-     */
-    private static function collect_strings(mixed $value, array &$strings): void {
-        if ($value instanceof \SensitiveParameterValue) {
-            $value = $value->getValue();
-        }
-        if (is_string($value)) {
-            $strings[] = $value;
-        } else if (is_array($value)) {
-            foreach ($value as $item) {
-                self::collect_strings($item, $strings);
-            }
-        }
-    }
-
-    /**
      * Checks that no argument in the trace of an exception holds one of the secrets.
      *
      * @param \Throwable $exception The exception, made while zend.exception_ignore_args was off.
@@ -1127,7 +1090,7 @@ final class chunk_writer_test extends \basic_testcase {
             array_filter($exception->getTrace(), fn($frame) => !empty($frame['args'])),
             'The trace keeps the arguments, so the check means something.'
         );
-        foreach (self::trace_strings($exception) as $argument) {
+        foreach (trace_strings::of($exception) as $argument) {
             foreach ($secrets as $secret) {
                 $this->assertStringNotContainsString($secret, $argument);
             }
@@ -1209,7 +1172,7 @@ final class chunk_writer_test extends \basic_testcase {
         } finally {
             ini_set('zend.exception_ignore_args', $previous);
         }
-        $this->assertContains('hidden secret', self::trace_strings($e));
+        $this->assertContains('hidden secret', trace_strings::of($e));
     }
 
     public function test_a_writer_cannot_be_cloned(): void {

@@ -44,24 +44,35 @@ final class connection_factory {
     /**
      * Opens a new connection to the database of the site, for the export only. The caller calls dispose() on it.
      *
-     * A failure to connect is the exception of Moodle, made here: the exception of the driver carries the arguments of
-     * connect() in its trace, and the password is one of them.
+     * Whatever goes wrong while the driver connects, including a failure after the link is up, is reported as a new
+     * dml_connection_exception made here, with no previous exception: the trace of the driver's own exception carries the
+     * arguments of connect(), and the password is one of them. Its debug information is that of the driver's exception when
+     * that is an exception of Moodle, else the name of its class.
      *
+     * @param \moodle_database|null $driver The driver to connect; by default a new one of the type of the site (a seam for
+     *     tests).
      * @return \moodle_database
      * @throws \dml_connection_exception When the database cannot be reached.
      * @throws plugin_exception With db_unsupported for a driver that cannot be loaded.
      */
-    public static function open(): \moodle_database {
+    public static function open(?\moodle_database $driver = null): \moodle_database {
         global $CFG;
-        $db = \moodle_database::get_driver_instance($CFG->dbtype, $CFG->dblibrary);
+        $db = $driver ?? \moodle_database::get_driver_instance($CFG->dbtype, $CFG->dblibrary);
         if ($db === null) {
             throw new plugin_exception('db_unsupported');
         }
         try {
             $options = self::options($CFG->dboptions ?? []);
             $db->connect($CFG->dbhost, $CFG->dbuser, $CFG->dbpass, $CFG->dbname, $CFG->prefix, $options);
-        } catch (\dml_connection_exception $e) {
-            throw new \dml_connection_exception((string)$e->debuginfo);
+        } catch (\Throwable $e) {
+            $debuginfo = $e instanceof \moodle_exception ? (string)$e->debuginfo : get_class($e);
+            try {
+                $db->dispose();
+            } catch (\Throwable) {
+                // The link is given up anyway; the failure to report is the one of connect().
+                unset($db);
+            }
+            throw new \dml_connection_exception($debuginfo);
         }
         return $db;
     }
