@@ -85,7 +85,8 @@ final class fake_service {
      * - runs: the runs by ID; nextrun: counter of run IDs; holdverify: true to leave a completed run in verifying until
      *   verify_run() is called; receiptpayload: fields that replace those of the receipt; coremanifests: published lists.
      * - mode (more): run_in_progress, run_limit_reached, run_not_found, run_state_invalid, capacity_recheck_required,
-     *   artifact_signature_invalid, core_manifest_not_found answer every request with that error.
+     *   artifact_signature_invalid, core_manifest_not_found, contract_inactive answer every request with that error.
+     * - contractinactive: true to refuse only a new run and the upload URLs with contract_inactive (the contract ended).
      *
      * @return array
      */
@@ -107,6 +108,7 @@ final class fake_service {
             'nextrun' => 1,
             'holdverify' => false,
             'receiptpayload' => [],
+            'contractinactive' => false,
             'coremanifests' => [],
             'requests' => [],
             'lastbody' => null,
@@ -151,6 +153,8 @@ final class fake_service {
                 return [422, [], self::error('artifact_signature_invalid', ['artifact' => 'manifest'])];
             case 'core_manifest_not_found':
                 return [404, [], self::error('core_manifest_not_found')];
+            case 'contract_inactive':
+                return [403, [], self::error('contract_inactive')];
         }
         if (str_starts_with($path, '/_s3/')) {
             return $this->object($method, substr($path, strlen('/_s3/')), $headers, $body);
@@ -387,7 +391,7 @@ final class fake_service {
             return $this->core_manifest($data);
         }
         if ($method === 'POST' && $relative === '/runs') {
-            return $this->start_run($data);
+            return $this->state['contractinactive'] ? [403, [], self::error('contract_inactive')] : $this->start_run($data);
         }
         if (preg_match('~^/runs/([0-9a-f-]{36})(?:/(capacity|upload-urls|complete|fail))?\z~', $relative, $m) !== 1) {
             return [404, [], self::error('not_found')];
@@ -522,13 +526,17 @@ final class fake_service {
             }
             $total += $item['size'];
         }
+        if ($this->state['contractinactive']) {
+            return [403, [], self::error('contract_inactive')];
+        }
         $run = &$this->state['runs'][$id];
         if (!in_array($run['status'], ['started', 'uploading'], true)) {
             return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
         }
         $requested = $run['reserved'] + $total;
         if ($run['estimated'] === null || $requested > $run['estimated'] * 1.1) {
-            return [409, [], self::error('capacity_recheck_required', ['requested_bytes' => $requested,
+            // The figure is what was granted so far: the refused batch is not in it.
+            return [409, [], self::error('capacity_recheck_required', ['requested_bytes' => $run['reserved'],
                 'estimated_bytes' => $run['estimated']])];
         }
         $run['reserved'] = $requested;
@@ -547,15 +555,20 @@ final class fake_service {
             if (isset($item['name'])) {
                 $entry['name'] = $item['name'];
             }
+            $headers = [
+                'Content-Length' => (string) $item['size'],
+                'x-amz-checksum-sha256' => $item['sha256'],
+                'x-amz-storage-class' => 'STANDARD',
+                'x-amz-object-lock-mode' => 'COMPLIANCE',
+                'x-amz-object-lock-retain-until-date' => $retain,
+            ];
+            if ($item['kind'] === 'object') {
+                // An object is stored once; the manifest and the index are named by the run and can be sent again.
+                $headers['If-None-Match'] = '*';
+            }
             $issued[] = $entry + [
                 'url' => $this->storage_url($key),
-                'headers' => [
-                    'Content-Length' => (string) $item['size'],
-                    'x-amz-checksum-sha256' => $item['sha256'],
-                    'x-amz-storage-class' => 'STANDARD',
-                    'x-amz-object-lock-mode' => 'COMPLIANCE',
-                    'x-amz-object-lock-retain-until-date' => $retain,
-                ],
+                'headers' => $headers,
                 'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now() + 900),
             ];
         }
@@ -617,6 +630,11 @@ final class fake_service {
         if ($run['status'] !== 'uploading') {
             return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
         }
+        if ($run['estimated'] === null) {
+            // A refused decision is no decision: the service wants a new one before it takes the report.
+            return [409, [], self::error('capacity_recheck_required', ['requested_bytes' => $run['reserved'],
+                'estimated_bytes' => null])];
+        }
         $key = (string) base64_decode($this->state['signingkey']);
         $manifesttext = "SECBACKUP-MANIFEST-V1\n" . self::SITE_ID . "\n" . $id . "\n" . $manifest['sha256'];
         $indextext = "SECBACKUP-INDEX-V1\n" . self::SITE_ID . "\n" . $id . "\n" . $index['sha256'] . "\n" . $index['count'];
@@ -644,7 +662,7 @@ final class fake_service {
      */
     private function fail(string $id, array $data): array {
         $codes = ['server_busy', 'disk_low', 'db_slow', 'nfs_slow', 'selinux_denied', 'capacity_refused', 'network_check_failed',
-            'signature_invalid', 'tamper_detected', 'version_too_old', 'upload_failed', 'window_ended', 'restarted'];
+            'signature_invalid', 'tamper_detected', 'version_too_old', 'upload_failed', 'window_ended', 'restarted', 'contract_inactive'];
         if (array_keys($data) !== ['code'] || !in_array($data['code'], $codes, true)) {
             return [422, [], self::error('invalid_request')];
         }
@@ -700,6 +718,13 @@ final class fake_service {
                 || !isset($headers['x-amz-object-lock-mode'], $headers['x-amz-object-lock-retain-until-date'])
             ) {
                 return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+            }
+            $condition = $headers['if-none-match'] ?? null;
+            if ($condition !== null && $condition !== '*') {
+                return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+            }
+            if ($condition === '*' && isset($this->state['objects'][$key])) {
+                return [412, [], '<Error><Code>PreconditionFailed</Code></Error>'];
             }
             $this->state['objects'][$key] = base64_encode($body);
             return [200, [], ''];

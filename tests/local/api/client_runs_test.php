@@ -335,6 +335,7 @@ final class client_runs_test extends \advanced_testcase {
             ['capacity_recheck_required', 409, 'api_capacity_recheck_required'],
             ['artifact_signature_invalid', 422, 'api_artifact_signature_invalid'],
             ['core_manifest_not_found', 404, 'api_core_manifest_not_found'],
+            ['contract_inactive', 403, 'api_contract_inactive'],
         ];
     }
 
@@ -512,6 +513,47 @@ final class client_runs_test extends \advanced_testcase {
                 fake_service::SITE_ID,
                 self::RUN . "\n",
                 'restarted'
+            )],
+            'estimate above what a number holds exactly' => [static fn(client $c, $p) => $c->capacity(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                9007199254740992
+            )],
+            'size of zero' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [['kind' => 'index', 'name' => null, 'size' => 0, 'sha256' => self::SHA_A]]
+            )],
+            'size above what a number holds exactly' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [['kind' => 'index', 'name' => null, 'size' => 9007199254740992, 'sha256' => self::SHA_A]]
+            )],
+            'the same object twice' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [
+                    ['kind' => 'object', 'name' => self::NAME_A, 'size' => 1, 'sha256' => self::SHA_A],
+                    ['kind' => 'object', 'name' => self::NAME_A, 'size' => 2, 'sha256' => self::SHA_A],
+                ]
+            )],
+            'the manifest twice' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [
+                    ['kind' => 'manifest', 'name' => null, 'size' => 1, 'sha256' => self::SHA_A],
+                    ['kind' => 'manifest', 'size' => 1, 'sha256' => self::SHA_A],
+                ]
             )],
             'negative estimate' => [static fn(client $c, $p) => $c->capacity(
                 self::endpoint(),
@@ -767,7 +809,13 @@ final class client_runs_test extends \advanced_testcase {
         $this->assertSame('10', $targets[0]->headers()['Content-Length']);
         $this->assertSame('40', $targets[3]->headers()['Content-Length']);
         $this->assertSame(self::SHA_A, $targets[0]->headers()['x-amz-checksum-sha256']);
-        $this->assertCount(5, $targets[0]->headers());
+        // An object is bound to a sixth header, which makes the PUT refuse an object that is stored already.
+        $this->assertCount(6, $targets[0]->headers());
+        $this->assertSame('*', $targets[0]->headers()['If-None-Match']);
+        $this->assertCount(6, $targets[1]->headers());
+        $this->assertCount(5, $targets[2]->headers());
+        $this->assertCount(5, $targets[3]->headers());
+        $this->assertArrayNotHasKey('If-None-Match', $targets[3]->headers());
         $this->assertSame(self::NOW + 900, $targets[0]->expires_at());
         $this->assertStringContainsString('/objects/' . self::NAME_A . '?', $targets[0]->url()->url());
         $this->assertStringContainsString('/manifests/' . $runid . '?', $targets[2]->url()->url());
@@ -803,7 +851,8 @@ final class client_runs_test extends \advanced_testcase {
             $runid,
             [['kind' => 'index', 'name' => null, 'size' => 30, 'sha256' => self::SHA_A]]
         ));
-        $this->assertSame(30, $e->requestedbytes);
+        // The bytes that were granted so far: the refused batch is not in them.
+        $this->assertSame(0, $e->requestedbytes);
         $this->assertNull($e->estimatedbytes);
         $client->capacity(self::endpoint(), $pair, fake_service::SITE_ID, $runid, 100);
         $e = $this->expect_api_error('api_capacity_recheck_required', fn() => $client->upload_urls(
@@ -813,8 +862,48 @@ final class client_runs_test extends \advanced_testcase {
             $runid,
             [['kind' => 'index', 'name' => null, 'size' => 111, 'sha256' => self::SHA_A]]
         ));
-        $this->assertSame(111, $e->requestedbytes);
+        $this->assertSame(0, $e->requestedbytes);
         $this->assertSame(100, $e->estimatedbytes);
+        // After a batch was granted the figure is its size, whatever is refused next.
+        $client->upload_urls(self::endpoint(), $pair, fake_service::SITE_ID, $runid, [
+            ['kind' => 'index', 'name' => null, 'size' => 60, 'sha256' => self::SHA_A],
+        ]);
+        $e = $this->expect_api_error('api_capacity_recheck_required', fn() => $client->upload_urls(
+            self::endpoint(),
+            $pair,
+            fake_service::SITE_ID,
+            $runid,
+            [['kind' => 'index', 'name' => null, 'size' => 51, 'sha256' => self::SHA_A]]
+        ));
+        $this->assertSame(60, $e->requestedbytes);
+    }
+
+    public function test_a_contract_that_ends_in_the_middle_of_a_run_is_refused_when_the_urls_are_asked_for(): void {
+        $pair = signing_keypair::generate();
+        $service = self::service($pair);
+        $client = self::client($service->handler());
+        $runid = self::begin($client, $pair);
+        $service->state['contractinactive'] = true;
+        $e = $this->expect_api_error('api_contract_inactive', fn() => $client->upload_urls(
+            self::endpoint(),
+            $pair,
+            fake_service::SITE_ID,
+            $runid,
+            [['kind' => 'index', 'name' => null, 'size' => 30, 'sha256' => self::SHA_A]]
+        ));
+        $this->assertSame([403, 'contract_inactive'], [$e->httpstatus, $e->servercode]);
+        // A run does not start either; the run that is open is not touched.
+        $this->expect_api_error('api_contract_inactive', fn() => $client->start_run(self::endpoint(), $pair, fake_service::SITE_ID));
+        $client->fail(self::endpoint(), $pair, fake_service::SITE_ID, $runid, 'contract_inactive');
+        $this->assertSame('contract_inactive', $service->state['runs'][$runid]['failure_code']);
+    }
+
+    public function test_the_sixth_header_of_an_object_is_taken_only_as_a_star_and_only_for_an_object(): void {
+        $answer = self::good_targets();
+        $answer['items'][0]['headers']['if-none-match'] = '*';
+        $targets = self::targets_from($answer);
+        $this->assertSame('*', $targets[0]->headers()['if-none-match']);
+        $this->assertCount(5, $targets[1]->headers());
     }
 
     /**
@@ -944,6 +1033,22 @@ final class client_runs_test extends \advanced_testcase {
                 $a['items'][0]['headers'] = ['10', self::SHA_A, 'STANDARD', 'COMPLIANCE', 'x'];
             }),
             'a header more' => $change(static function (array &$a): void {
+                $a['items'][0]['headers']['x-amz-acl'] = 'public-read';
+            }),
+            'if-none-match that is not a star' => $change(static function (array &$a): void {
+                $a['items'][0]['headers']['If-None-Match'] = '"abc"';
+            }),
+            'if-none-match as a list' => $change(static function (array &$a): void {
+                $a['items'][0]['headers']['If-None-Match'] = ['*'];
+            }),
+            'if-none-match for an index' => $change(static function (array &$a): void {
+                $a['items'][1]['headers']['If-None-Match'] = '*';
+            }),
+            'if-none-match twice in another case' => $change(static function (array &$a): void {
+                $a['items'][0]['headers']['If-None-Match'] = '*';
+                $a['items'][0]['headers']['if-none-match'] = '*';
+            }),
+            'a sixth header that is not if-none-match' => $change(static function (array &$a): void {
                 $a['items'][0]['headers']['x-amz-acl'] = 'public-read';
             }),
             'a header less' => $change(static function (array &$a): void {
@@ -1193,7 +1298,8 @@ final class client_runs_test extends \advanced_testcase {
             $next = $each->start_run(self::endpoint(), $pair, fake_service::SITE_ID)->run_id();
             $each->fail(self::endpoint(), $pair, fake_service::SITE_ID, $next, $code);
         }
-        $this->assertCount(13, client::FAIL_CODES);
+        $this->assertCount(14, client::FAIL_CODES);
+        $this->assertContains('contract_inactive', client::FAIL_CODES);
     }
 
     public function test_a_run_that_the_service_does_not_know_is_not_found(): void {

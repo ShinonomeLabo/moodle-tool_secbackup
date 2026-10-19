@@ -44,16 +44,19 @@ final class client {
     private const KNOWN_ERRORS = ['invalid_request', 'signature_required', 'signature_invalid', 'timestamp_out_of_range',
         'nonce_reused', 'enrollment_code_invalid', 'site_not_enrolled', 'ip_not_allowed', 'encryption_key_mismatch',
         'wwwroot_mismatch', 'body_too_large', 'run_in_progress', 'run_limit_reached', 'run_not_found', 'run_state_invalid',
-        'capacity_recheck_required', 'artifact_signature_invalid', 'core_manifest_not_found'];
+        'capacity_recheck_required', 'artifact_signature_invalid', 'core_manifest_not_found', 'contract_inactive'];
 
-    /** @var string[] Reasons with which a run can be stopped (the contract's list of 13). */
+    /** @var string[] Reasons with which a run can be stopped (the contract's list of 14). */
     public const FAIL_CODES = ['server_busy', 'disk_low', 'db_slow', 'nfs_slow', 'selinux_denied', 'capacity_refused',
         'network_check_failed', 'signature_invalid', 'tamper_detected', 'version_too_old', 'upload_failed', 'window_ended',
-        'restarted'];
+        'restarted', 'contract_inactive'];
 
     /** @var string[] The five headers that an upload URL binds, in lower case. */
     private const UPLOAD_HEADERS = ['content-length', 'x-amz-checksum-sha256', 'x-amz-object-lock-mode',
         'x-amz-object-lock-retain-until-date', 'x-amz-storage-class'];
+
+    /** @var int Largest whole number that a JSON number of the service holds exactly (2^53 - 1). */
+    private const MAX_EXACT = 9007199254740991;
 
     /** @var int Most items in one request for upload URLs. */
     private const MAX_UPLOAD_ITEMS = 256;
@@ -307,8 +310,8 @@ final class client {
         int $estimatedbytes
     ): capacity_result {
         self::check_run_id($runid);
-        if ($estimatedbytes < 0) {
-            throw new \coding_exception('An estimate is not below zero.');
+        if ($estimatedbytes < 0 || $estimatedbytes > self::MAX_EXACT) {
+            throw new \coding_exception('An estimate is not below zero, and not above 2^53 - 1.');
         }
         $response = $this->call(
             $endpoint,
@@ -660,6 +663,7 @@ final class client {
             throw new \coding_exception('A request has from 1 to 256 items, in a list.');
         }
         $request = [];
+        $seen = [];
         foreach ($items as $item) {
             // The name of a manifest or an index is null, and may be left out.
             if (is_array($item) && !array_key_exists('name', $item) && ($item['kind'] ?? null) !== 'object') {
@@ -671,13 +675,18 @@ final class client {
             if (
                 $keys !== ['kind', 'name', 'sha256', 'size']
                 || !in_array($kind, ['object', 'manifest', 'index'], true)
-                || !is_int($item['size']) || $item['size'] < 0
+                || !is_int($item['size']) || $item['size'] < 1 || $item['size'] > self::MAX_EXACT
                 || !self::is_sha256($item['sha256'])
                 || ($kind === 'object' ? !is_string($item['name']) || preg_match('/^[0-9a-f]{64}\z/', $item['name']) !== 1
                     : $item['name'] !== null)
             ) {
                 throw new \coding_exception('An item of a request for upload URLs is not in its shape.');
             }
+            $identity = $kind . '|' . (string) $item['name'];
+            if (isset($seen[$identity])) {
+                throw new \coding_exception('An object, the manifest or the index is asked for once in a request.');
+            }
+            $seen[$identity] = true;
             $entry = ['kind' => $kind];
             if ($kind === 'object') {
                 $entry['name'] = $item['name'];
@@ -728,7 +737,7 @@ final class client {
     }
 
     /**
-     * Checks that the headers of an upload URL are exactly the five that it binds, and that the two that carry the request
+     * Checks that the headers of an upload URL are exactly the five that it binds (and, for an object, the sixth If-None-Match: *), and that the two that carry the request
      * are what was asked for.
      *
      * @param mixed $headers The headers of the answer.
@@ -736,7 +745,7 @@ final class client {
      * @throws api_exception When they are not.
      */
     private static function check_upload_headers(mixed $headers, array $item): void {
-        if (!is_array($headers) || array_is_list($headers) || count($headers) !== count(self::UPLOAD_HEADERS)) {
+        if (!is_array($headers) || array_is_list($headers)) {
             throw self::invalid(200, 'headers');
         }
         $lower = [];
@@ -746,9 +755,19 @@ final class client {
             }
             $lower[strtolower((string) $name)] = $value;
         }
+        $expected = self::UPLOAD_HEADERS;
+        // An object is bound to a sixth header, which is exactly "*": the storage then refuses to replace a stored object.
+        if (array_key_exists('if-none-match', $lower)) {
+            if ($item['kind'] !== 'object' || $lower['if-none-match'] !== '*') {
+                throw self::invalid(200, 'headers');
+            }
+            $expected[] = 'if-none-match';
+            sort($expected);
+        }
         $names = array_keys($lower);
         sort($names);
-        if ($names !== self::UPLOAD_HEADERS) {
+        // Two names that differ in case only would have been merged above, and then the count would not match.
+        if (count($headers) !== count($expected) || $names !== $expected) {
             throw self::invalid(200, 'headers');
         }
         if ($lower['content-length'] !== (string) $item['size'] || $lower['x-amz-checksum-sha256'] !== $item['sha256']) {

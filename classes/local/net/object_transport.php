@@ -39,6 +39,7 @@ final class object_transport {
         'x-amz-storage-class',
         'x-amz-object-lock-mode',
         'x-amz-object-lock-retain-until-date',
+        'if-none-match',
     ];
 
     /** @var int Slowest speed a transfer is expected to reach, in bytes a second (128 KiB). */
@@ -92,7 +93,8 @@ final class object_transport {
      *
      * @param #[|\SensitiveParameter|]|object_url $url Pre-signed URL.
      * @param string[] $headers Headers by name: only Content-Length, x-amz-checksum-sha256, x-amz-storage-class,
-     *        x-amz-object-lock-mode and x-amz-object-lock-retain-until-date, and Content-Length is required.
+     *        x-amz-object-lock-mode, x-amz-object-lock-retain-until-date and If-None-Match (exactly "*"), and Content-Length
+     *        is required. With If-None-Match the storage answers 412 for an object that is stored already, which is a success.
      * @param string $path File to send.
      * @param int $bandwidthbytespersecond Upper limit of the sending speed; 0 for none.
      * @throws \coding_exception When a header is not one of the five, is given twice, or is not a plain value, when
@@ -126,6 +128,10 @@ final class object_transport {
                 $curl[CURLOPT_MAX_SEND_SPEED_LARGE] = $bandwidthbytespersecond;
             }
             $response = $this->request('PUT', $url, $options, $curl, $declared, $bandwidthbytespersecond, transport::MAX_RESPONSE);
+            if ($response->getStatusCode() === 412 && self::is_conditional($headers)) {
+                // Stored already: the version that is kept is the one that was sent first.
+                return;
+            }
             self::check_status($response->getStatusCode());
             // The position of the stream is the number of bytes that the client took from it.
             if ($body->tell() !== $declared) {
@@ -191,10 +197,13 @@ final class object_transport {
         foreach ($headers as $name => $value) {
             $lower = strtolower((string) $name);
             if (!in_array($lower, self::BOUND_HEADERS, true) || isset($seen[$lower])) {
-                throw new \coding_exception('A header is one of the five that the URL is bound to, once.');
+                throw new \coding_exception('A header is one of the five (or If-None-Match) that the URL is bound to, once.');
             }
             if (!is_string($value) || preg_match('/^[\x20-\x7e]*\z/', $value) !== 1) {
                 throw new \coding_exception('The value of a header is plain text.');
+            }
+            if ($lower === 'if-none-match' && $value !== '*') {
+                throw new \coding_exception('If-None-Match is "*" or it is not sent.');
             }
             $seen[$lower] = $value;
         }
@@ -202,6 +211,21 @@ final class object_transport {
             throw new \coding_exception('Content-Length is a number.');
         }
         return (int) $seen['content-length'];
+    }
+
+    /**
+     * Whether the headers make the PUT conditional.
+     *
+     * @param string[] $headers Headers by name, checked already.
+     * @return bool
+     */
+    private static function is_conditional(array $headers): bool {
+        foreach (array_keys($headers) as $name) {
+            if (strtolower((string) $name) === 'if-none-match') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -339,7 +339,8 @@ final class fake_service_test extends \basic_testcase {
         // No decision yet.
         $answer = self::signed($service, $secret, 'POST', $urls, $item(10));
         $error = $answer[2]['error'];
-        $this->assertSame(['capacity_recheck_required', 10, null], [$error['code'], $error['requested_bytes'],
+        // The figure is what was granted so far: the refused batch is not in it.
+        $this->assertSame(['capacity_recheck_required', 0, null], [$error['code'], $error['requested_bytes'],
             $error['estimated_bytes']]);
         // A refused decision is no decision.
         self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":2000000000000}');
@@ -348,11 +349,11 @@ final class fake_service_test extends \basic_testcase {
         // 110% of the estimate is the most that is given: 110 bytes pass, 111 do not.
         $this->assertSame(200, self::signed($service, $secret, 'POST', $urls, $item(110))[0]);
         $answer = self::signed($service, $secret, 'POST', $urls, $item(1));
-        $this->assertSame([409, 111, 100], [$answer[0], $answer[2]['error']['requested_bytes'],
+        $this->assertSame([409, 110, 100], [$answer[0], $answer[2]['error']['requested_bytes'],
             $answer[2]['error']['estimated_bytes']]);
     }
 
-    public function test_the_headers_of_an_upload_url_are_the_five_of_the_contract(): void {
+    public function test_the_headers_of_an_upload_url_are_the_five_of_the_contract_and_an_object_has_a_sixth(): void {
         [$service, $secret] = self::enrolled();
         self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
         self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
@@ -363,9 +364,14 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame(['kind', 'name', 'url', 'headers', 'expires_at'], array_keys($item));
         $this->assertSame(
             ['Content-Length' => '7', 'x-amz-checksum-sha256' => self::SHA, 'x-amz-storage-class' => 'STANDARD',
-            'x-amz-object-lock-mode' => 'COMPLIANCE', 'x-amz-object-lock-retain-until-date' => '2025-11-07T00:00:00Z'],
+            'x-amz-object-lock-mode' => 'COMPLIANCE', 'x-amz-object-lock-retain-until-date' => '2025-11-07T00:00:00Z',
+            'If-None-Match' => '*'],
             $item['headers']
         );
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', json_encode(['items' => [
+            ['kind' => 'manifest', 'size' => 7, 'sha256' => self::SHA]]]));
+        $this->assertCount(5, $answer[2]['items'][0]['headers']);
+        $this->assertArrayNotHasKey('If-None-Match', $answer[2]['items'][0]['headers']);
         $this->assertSame('https://app.example.test/_s3/sites/' . fake_service::SITE_ID . '/objects/' . $name
             . '?X-Amz-Expires=900&X-Amz-Signature=0123456789abcdef', $item['url']);
     }
@@ -413,6 +419,7 @@ final class fake_service_test extends \basic_testcase {
             ['capacity_recheck_required', 409, 'requested_bytes'],
             ['artifact_signature_invalid', 422, 'artifact'],
             ['core_manifest_not_found', 404, null],
+            ['contract_inactive', 403, null],
         ];
     }
 
@@ -433,5 +440,57 @@ final class fake_service_test extends \basic_testcase {
         $error = json_decode($answer[2], true)['error'];
         $this->assertSame($mode, $error['code']);
         $this->assertSame($detail === null, !array_key_exists((string) $detail, $error));
+    }
+
+    public function test_the_contract_can_end_in_the_middle_of_a_run(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
+        $service->state['contractinactive'] = true;
+        $urls = json_encode(['items' => [['kind' => 'index', 'size' => 1, 'sha256' => self::SHA]]]);
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', $urls);
+        $this->assertSame([403, 'contract_inactive'], [$answer[0], self::code($answer)]);
+        $answer = self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        $this->assertSame([403, 'contract_inactive'], [$answer[0], self::code($answer)]);
+        // The other calls are not about the contract.
+        $this->assertSame(200, self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}')[0]);
+        $this->assertSame(200, self::signed($service, $secret, 'POST', self::RUN . '/fail', '{"code":"contract_inactive"}')[0]);
+    }
+
+    public function test_complete_needs_a_decided_estimate(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
+        $urls = json_encode(['items' => [['kind' => 'index', 'size' => 1, 'sha256' => self::SHA]]]);
+        $this->assertSame(200, self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', $urls)[0]);
+        // A refused decision is no decision: the run is uploading, and the report is asked to wait for a new decision.
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":2000000000000}');
+        $body = json_encode([
+            'manifest' => ['sha256' => self::SHA, 'size' => 1, 'signature' => 'x'],
+            'index' => ['sha256' => self::SHA, 'size' => 1, 'count' => 0, 'signature' => 'x'],
+            'stats' => [],
+        ]);
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/complete', $body);
+        $this->assertSame([409, 'capacity_recheck_required', 1, null], [$answer[0], self::code($answer),
+            $answer[2]['error']['requested_bytes'], $answer[2]['error']['estimated_bytes']]);
+    }
+
+    public function test_the_fake_storage_keeps_an_object_that_is_stored_when_the_put_is_conditional(): void {
+        $service = self::service();
+        $put = static fn(string $body, array $more): array => $service->handle('PUT', 'app.example.test', '/_s3/k', [
+            'content-length' => (string) strlen($body),
+            'x-amz-checksum-sha256' => base64_encode(hash('sha256', $body, true)),
+            'x-amz-object-lock-mode' => 'COMPLIANCE',
+            'x-amz-object-lock-retain-until-date' => '2025-11-07T00:00:00Z',
+        ] + $more, $body);
+        $this->assertSame(200, $put('first', ['if-none-match' => '*'])[0]);
+        $answer = $put('second', ['if-none-match' => '*']);
+        $this->assertSame(412, $answer[0]);
+        $this->assertStringContainsString('PreconditionFailed', $answer[2]);
+        $this->assertSame('first', base64_decode($service->state['objects']['k']));
+        // A PUT that is not conditional replaces it, and another value of the header is not "*".
+        $this->assertSame(400, $put('third', ['if-none-match' => '"x"'])[0]);
+        $this->assertSame(200, $put('third', [])[0]);
+        $this->assertSame('third', base64_decode($service->state['objects']['k']));
     }
 }
