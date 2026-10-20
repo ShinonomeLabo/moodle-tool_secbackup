@@ -51,6 +51,10 @@ Behat (every page and every operation of the plugin, see `tests/behat/inventory.
 combination above, and in Firefox, Edge and Safari on every Moodle version with PostgreSQL and MariaDB (the newest PHP of
 the version; Safari on a macOS runner, with the databases of Homebrew).
 
+A manual run of the workflow can choose the scope `phpunit`: PHPUnit and the code checks on every combination above,
+without Behat, the secure OS machines and the coverage, for a quicker answer while a change is made. A change is ready only
+after a run with the scope `all`, which every push to `main` and every pull request have.
+
 The access control that the operating system ships is tested in real virtual machines (the job `Secure OS ...`): SELinux
 on Rocky Linux 9 and 10 and AlmaLinux 9 and 10, and AppArmor on Debian 12 and 13 and Ubuntu 22.04 and 24.04 (as shipped, and
 with the `php-fpm` profile of the distribution in enforce mode). Each job runs the plugin's connection diagnostics from the

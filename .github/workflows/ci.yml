@@ -5,7 +5,18 @@ on:
     branches:
       - main
   pull_request:
+  # A manual run can leave out the browsers and the virtual machines, for a quicker answer from PHPUnit while a change is
+  # made. Such a run is not the whole check: a change is ready only after a run with the scope all, which a push to main and
+  # every pull request always have (there the input is empty, so every job runs).
   workflow_dispatch:
+    inputs:
+      scope:
+        description: 'all: every job. phpunit: PHPUnit and the code checks on every combination, without Behat, the secure OS machines and the coverage.'
+        type: choice
+        options:
+          - all
+          - phpunit
+        default: all
 
 permissions:
   contents: read
@@ -266,7 +277,7 @@ jobs:
       # Moodle asks for many files and AJAX calls at once, so the server gets several workers.
       - name: Behat features
         id: behat
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && inputs.scope != 'phpunit' }}
         env:
           PHP_CLI_SERVER_WORKERS: '4'
         run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
@@ -330,6 +341,7 @@ jobs:
   # test job. A scenario has to pass the first time (--auto-rerun 0). No secret and no coverage here.
   behat:
     name: Behat ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
 
@@ -444,6 +456,7 @@ jobs:
   # version supports; the web server is the one of PHP, and safaridriver is the one of macOS.
   behat-safari:
     name: Behat safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    if: inputs.scope != 'phpunit'
     runs-on: macos-26
     timeout-minutes: 60
 
@@ -655,9 +668,11 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The lines of the pages are counted by the Behat run of the job test, so a run without Behat cannot count 100%.
   coverage:
     name: Line coverage of all combinations
     needs: test
+    if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -716,6 +731,7 @@ jobs:
   # result), never the URL or any detail text, and the job uploads no artifact.
   secureos:
     name: Secure OS ${{ matrix.template }} ${{ matrix.state }}
+    if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 

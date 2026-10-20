@@ -113,13 +113,13 @@ every template is `ok`.
 
 ## In GitHub Actions
 
-The job `secureos` of `.github/workflows/ci.yml` runs on every push to `main`, every pull request and every manual run, like
-the other jobs (so the CI badge covers it). It is a matrix of twelve jobs: the four SELinux templates (`rocky-9`, `rocky-10`,
-`almalinux-9`, `almalinux-10`, state `selinux`) and the four AppArmor templates (`debian-12`, `debian-13`, `ubuntu-22.04`,
-`ubuntu-24.04`), each in the states `standard` and `confined`; `fail-fast` is off. Each job installs QEMU and Lima with
-`lima-vm/lima-actions/setup` (pinned by commit, Lima `v2.2.1`, the version the scripts were run with on the Mac), builds one
-machine from the distribution's own packages and runs `run-template.sh -s <state> <template>`. It has the workflow's
-read-only permissions, `timeout-minutes: 45`, and uploads nothing.
+The job `secureos` of `.github/workflows/ci.yml` runs on every push to `main`, every pull request and every manual run with
+the scope `all`, like the other jobs (so the CI badge covers it). It is a matrix of twelve jobs: the four SELinux templates
+(`rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10`, state `selinux`) and the four AppArmor templates (`debian-12`,
+`debian-13`, `ubuntu-22.04`, `ubuntu-24.04`), each in the states `standard` and `confined`; `fail-fast` is off. Each job
+installs QEMU and Lima with `lima-vm/lima-actions/setup` (pinned by commit, Lima `v2.2.1`, the version the scripts were run
+with on the Mac), builds one machine from the distribution's own packages and runs `run-template.sh -s <state> <template>`.
+It has the workflow's read-only permissions, `timeout-minutes: 45`, and uploads nothing.
 
 **What it checks.** For each state, from the web server and from the command line: whether the plugin's name check and
 connection check pass or fail as the access control allows or denies (`dns`, `connection`, the codes behind them), that the
