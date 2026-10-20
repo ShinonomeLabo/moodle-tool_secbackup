@@ -240,8 +240,8 @@ final class present_list {
             throw self::invalid('end');
         }
         self::write($out, $records);
-        // The flush is checked on its own: fclose() says true even when the flush that it makes fails. The file is closed in
-        // either case.
+        // The flush is the check: fclose() reports nothing, not a failed flush and not a failed close of the file system, so
+        // its answer is kept only in case a later PHP gives one. The file is closed in either case.
         $flushed = fflush($out);
         $closed = fclose($out);
         $out = null;

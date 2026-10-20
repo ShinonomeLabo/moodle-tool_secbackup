@@ -282,8 +282,9 @@ jobs:
           PHP_CLI_SERVER_WORKERS: '4'
         run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
 
-      # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL). Any other code, 255
-      # above all, is a PHP fatal error, and it fails the step even when the lines were covered by another combination.
+      # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL, 2: the backup ran
+      # nothing). Any other code, 255 above all, is a PHP fatal error, and it fails the step even when the lines were covered
+      # by another combination.
       # The last run is under open_basedir, which hides /proc and /sys: the diagnostics have to say unknown, with no PHP message
       # (.dev/ci/diagnose-open-basedir.sh says what it checks).
       - name: Command line scripts

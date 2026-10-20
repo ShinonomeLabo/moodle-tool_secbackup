@@ -27,8 +27,16 @@ check 1 "$script" --no-such-option
 check 0 "$script"
 check 0 "$script" --endpoint=http://localhost:8099/api/lms-backup/v1
 check 1 "$script" --endpoint=ftp://example.org/api
-# Without --now the backup only goes on with a running one: the development site has none, so it runs nothing (2).
 check 0 "$dir/backup.php" --help
 check 1 "$dir/backup.php" --no-such-option
-check 2 "$dir/backup.php"
+# Without --now the backup goes on with a running one until it ends, so the plain run is made only on a site that has none:
+# then it runs nothing (2). A site with a running backup (or a check that fails) fails this script without that run.
+live="$("$compose" exec -T webserver php -r "define('CLI_SCRIPT', true); require('$dir/../../../../config.php');
+    echo \\tool_secbackup\\local\\backup\\run_record::active() === null ? 'none' : 'live', PHP_EOL;" 2>&1 | tail -n 1 | tr -d '\r')" || true
+if [ "$live" = none ]; then
+    check 2 "$dir/backup.php"
+else
+    echo "backup.php was not run without --now: the development site has a running backup, or it could not be checked ($live)." >&2
+    failed=1
+fi
 exit "$failed"
