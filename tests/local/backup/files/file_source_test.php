@@ -456,4 +456,67 @@ final class file_source_test extends \advanced_testcase {
             $this->assertFalse(is_resource($handle));
         }
     }
+
+    public function test_a_piece_that_the_file_does_not_have_is_a_coding_error_before_anything_is_read(): void {
+        [$source, $hash, $size, $digests, $packer] = $this->three_pieces();
+        foreach ([-1, 3] as $piece) {
+            try {
+                $source->big_piece($hash, $size, $piece, $digests[0], $packer);
+                $this->fail('No exception for piece ' . $piece);
+            } catch (\coding_exception $e) {
+                $this->assertStringContainsString('A piece of a big file is one that the file has.', $e->getMessage());
+            }
+        }
+        $this->assertSame(0, failing_stream::$opened);
+    }
+
+    public function test_an_earlier_piece_or_another_content_opens_the_stream_again(): void {
+        global $DB;
+        $other = random_bytes(packer::FILE_LIMIT + 10);
+        $otherhash = $this->make($other, 'other.bin')->get_contenthash();
+        [$source, $hash, $size, $digests, $packer] = $this->three_pieces();
+        unlink($source->big_piece($hash, $size, 1, $digests[1], $packer)->path);
+        // The stream cannot seek and is past piece 0: it is closed, and a new one is read from the start.
+        unlink($source->big_piece($hash, $size, 0, $digests[0], $packer)->path);
+        $this->assertSame(2, failing_stream::$opened);
+        $this->assertSame(1, failing_stream::$closed);
+        $this->assertSame(3 * packer::PIECE, failing_stream::$bytesread);
+        // A piece of another content closes the stream that is open.
+        $piece = $source->big_piece($otherhash, strlen($other), 0, hash('sha256', $other), $packer);
+        $this->assertSame(3, failing_stream::$opened);
+        $this->assertSame(3, failing_stream::$closed, 'The stream of the first content, and the one of the other at its end.');
+        $this->assertSame($otherhash, $packer->entries()[2]['contenthash']);
+        $this->assertFileExists($piece->path);
+    }
+
+    public function test_a_read_that_fails_while_the_stream_reads_past_a_piece_is_tried_again(): void {
+        [$source, $hash, $size, $digests, $packer] = $this->three_pieces();
+        // The next stream fails after 1000 bytes, while it reads past piece 0 to get to piece 1.
+        failing_stream::fail(1, 1000);
+        $chunk = $source->big_piece($hash, $size, 1, $digests[1], $packer);
+        $this->assertSame(1, $packer->entries()[0]['piece']);
+        $this->assertFileExists($chunk->path);
+        $this->assertSame([1], $this->slept);
+        $this->assertSame(2, failing_stream::$opened);
+        $this->assertSame(1, failing_stream::$closed, 'The stream that failed is closed; the other is kept for piece 2.');
+        $source->close();
+    }
+
+    public function test_a_content_that_ends_before_a_piece_is_not_the_one_its_hash_names(): void {
+        global $DB;
+        $content = random_bytes(packer::PIECE + 100);
+        $hash = $this->make($content)->get_contenthash();
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
+        $packer = $this->packer(make_request_directory());
+        try {
+            // The table says three pieces; the content holds two.
+            $source->big_piece($hash, 2 * packer::PIECE + 100, 2, hash('sha256', 'x'), $packer);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('tamper_detected', $e->errorcode);
+        }
+        $this->assertSame([], $this->slept);
+        $this->assertSame(failing_stream::$opened, failing_stream::$closed);
+        $this->assertSame([], $packer->entries());
+    }
 }

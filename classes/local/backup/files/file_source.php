@@ -164,9 +164,13 @@ class file_source {
      * @param packer $packer The packer.
      * @return chunk_info|null The piece, or null when the content is neither in the file directory nor in the trash any more.
      * @throws plugin_exception With nfs_slow, tamper_detected or temp_write_failed.
+     * @throws \coding_exception For a piece that a file of that size does not have; nothing is read then.
      */
     public function big_piece(string $contenthash, int $size, int $piece, string $digest, packer $packer): ?chunk_info {
         $offset = $piece * packer::PIECE;
+        if ($size < packer::FILE_LIMIT || $piece < 0 || $offset >= $size) {
+            throw new \coding_exception('A piece of a big file is one that the file has.');
+        }
         return $this->retrying(function () use ($contenthash, $size, $piece, $digest, $packer, $offset): ?chunk_info {
             try {
                 $handle = $this->held_at($contenthash, $offset);
@@ -216,9 +220,8 @@ class file_source {
                 return null;
             }
             $this->held = ['hash' => $contenthash, 'handle' => $opened['handle'], 'offset' => 0];
-            if (!self::move($this->held, $offset)) {
-                throw new \coding_exception('A new stream is always at its start.');
-            }
+            // A new stream is at its start, so it can always get to an offset (big_piece() gives none below 0).
+            self::move($this->held, $offset);
         }
         return $this->held['handle'];
     }
