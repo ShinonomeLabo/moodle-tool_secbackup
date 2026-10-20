@@ -72,12 +72,13 @@ final class abort_reason {
      * What happened when the backup service did not start a run.
      *
      * @param string $code The answer of the service.
-     * @param int|null $retryat When the service lets a run start again, if it said so.
+     * @param int|null $retryat When the service lets a run start again, if it said so. A time that has come is not shown.
      * @param string $platform The name of the platform.
+     * @param int|null $now The current time; null for time().
      * @return string Plain text.
      */
-    public static function refusal_text(string $code, ?int $retryat, string $platform): string {
-        if ($code === 'run_limit_reached' && $retryat !== null) {
+    public static function refusal_text(string $code, ?int $retryat, string $platform, ?int $now = null): string {
+        if ($code === 'run_limit_reached' && $retryat !== null && $retryat > ($now ?? time())) {
             return get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate($retryat));
         }
         $known = in_array($code, self::REFUSALS, true);

@@ -375,4 +375,18 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertSame(count($packed), count(array_unique($packed)), 'No content was packed again.');
         $this->assertContains(get_string('cli_backup_lockwait', 'tool_secbackup'), $lines);
     }
+
+    public function test_a_refusal_for_the_number_of_backups_says_when_one_can_start_again(): void {
+        $this->fixture->service->state['mode'] = 'run_limit_reached';
+        $refused = $this->fixture->time;
+        [$code, $lines] = $this->run_command(true);
+        $this->assertSame(1, $code);
+        // The service answered with a wait of an hour, from the clock of the command.
+        $this->assertSame(get_string(
+            'cli_backup_refused',
+            'tool_secbackup',
+            get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate($refused + 3600))
+        ), $lines[count($lines) - 2]);
+        $this->assertSame($refused + 3600, run_record::recent(1)[0]->retry_at());
+    }
 }

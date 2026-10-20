@@ -179,7 +179,7 @@ final class backup_command {
                 $write(get_string(
                     'cli_backup_refused',
                     'tool_secbackup',
-                    abort_reason::refusal_text($code, $run->retry_at(), $platform)
+                    abort_reason::refusal_text($code, $run->retry_at(), $platform, ($this->clock)())
                 ));
                 $advice = abort_reason::refusal_advice($code, $platform);
             } else {

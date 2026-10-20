@@ -584,11 +584,21 @@ final class status_page_test extends \advanced_testcase {
 
     public function test_a_refusal_for_the_number_of_backups_says_when_one_can_start_again(): void {
         self::register();
-        run_record::create('manual', 1760000000)->refuse('run_limit_reached', 1760000001, 3600);
+        $refused = time() - 60;
+        run_record::create('manual', $refused - 1)->refuse('run_limit_reached', $refused, 3600);
         $this->assertStringContainsString(
-            s(get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate(1760003601))),
+            s(get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate($refused + 3600))),
             (new status_page())->render()
         );
+    }
+
+    public function test_a_refusal_for_the_number_of_backups_whose_time_has_come_says_no_time(): void {
+        self::register();
+        $refused = time() - 3600;
+        run_record::create('manual', $refused - 1)->refuse('run_limit_reached', $refused, 1800);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(s(get_string('refused_run_limit_reached', 'tool_secbackup')), $html);
+        $this->assertStringNotContainsString(s(userdate($refused + 1800)), $html);
     }
 
     public function test_a_backup_that_started_after_a_refusal_hides_it(): void {

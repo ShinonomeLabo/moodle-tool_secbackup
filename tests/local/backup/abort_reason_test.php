@@ -116,6 +116,11 @@ final class abort_reason_test extends \advanced_testcase {
         $this->assertStringNotContainsString('接続の診断', $ja['abort_network_check_failed']);
         $this->assertStringNotContainsString('もう一度登録', $ja['abort_signature_invalid']);
         $this->assertStringNotContainsString('新しくしてください', $ja['abort_version_too_old']);
+        // That the next backup tries again is advice.
+        $this->assertStringNotContainsString('next scheduled backup', $en['abort_upload_failed']);
+        $this->assertStringContainsString('next scheduled backup', $en['abort_upload_failed_advice']);
+        $this->assertStringNotContainsString('次の予定のバックアップ', $ja['abort_upload_failed']);
+        $this->assertStringContainsString('次の予定のバックアップ', $ja['abort_upload_failed_advice']);
     }
 
     public function test_a_refusal_has_its_own_text_and_advice(): void {
@@ -133,9 +138,33 @@ final class abort_reason_test extends \advanced_testcase {
         );
         $this->assertSame(
             get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate(1760003600)),
-            abort_reason::refusal_text('run_limit_reached', 1760003600, 'P')
+            abort_reason::refusal_text('run_limit_reached', 1760003600, 'P', 1760003599)
         );
         $this->assertSame(get_string('refused_unknown', 'tool_secbackup', 'x'), abort_reason::refusal_text('x', null, 'P'));
         $this->assertSame(get_string('refused_unknown_advice', 'tool_secbackup'), abort_reason::refusal_advice('x', 'P'));
+    }
+
+    public function test_a_time_to_start_again_that_has_passed_is_not_shown(): void {
+        $now = 1760003600;
+        $this->assertSame(
+            get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate($now + 1)),
+            abort_reason::refusal_text('run_limit_reached', $now + 1, 'P', $now)
+        );
+        foreach ([$now, $now - 3600] as $retryat) {
+            $this->assertSame(
+                get_string('refused_run_limit_reached', 'tool_secbackup'),
+                abort_reason::refusal_text('run_limit_reached', $retryat, 'P', $now),
+                (string) $retryat
+            );
+        }
+        // Without a time given, it is now.
+        $this->assertSame(
+            get_string('refused_run_limit_reached', 'tool_secbackup'),
+            abort_reason::refusal_text('run_limit_reached', time() - 60, 'P')
+        );
+        $this->assertSame(
+            get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate(time() + 3600)),
+            abort_reason::refusal_text('run_limit_reached', time() + 3600, 'P')
+        );
     }
 }
