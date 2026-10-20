@@ -20,6 +20,7 @@ use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\faulty_stream;
 use tool_secbackup\tests\trace_strings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\manifest_builder::class)]
@@ -49,7 +50,52 @@ final class manifest_builder_test extends \advanced_testcase {
 
     protected function tearDown(): void {
         ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
+        faulty_stream::unregister();
         parent::tearDown();
+    }
+
+    /**
+     * A builder whose folder is reached through the wrapper that makes faults, with lines in it.
+     *
+     * @param int $lines Lines appended and committed.
+     * @return array [builder, the real folder]
+     */
+    private function faulty_builder(int $lines): array {
+        faulty_stream::register();
+        $folder = make_request_directory();
+        $builder = new manifest_builder(faulty_stream::url($folder));
+        for ($n = 1; $n <= $lines; $n++) {
+            $builder->append(['n' => $n]);
+        }
+        $builder->commit();
+        return [$builder, $folder];
+    }
+
+    /**
+     * Runs a call that must fail with temp_write_failed.
+     *
+     * @param callable $call The call.
+     * @param string $info The debug information that the failure has.
+     */
+    private function assert_write_failure(callable $call, string $info): void {
+        try {
+            $call();
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('temp_write_failed', $e->errorcode);
+            $this->assertSame($info, $e->debuginfo);
+        }
+        $this->assertTrue(faulty_stream::used(), 'The fault was met.');
+    }
+
+    /**
+     * Builds the chunk of a builder.
+     *
+     * @param manifest_builder $builder The builder.
+     * @return \tool_secbackup\local\crypto\chunk_info
+     */
+    private static function build(manifest_builder $builder): \tool_secbackup\local\crypto\chunk_info {
+        return $builder->build(['v' => 1], str_repeat('k', 32), self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
     }
 
     /**
@@ -309,5 +355,116 @@ final class manifest_builder_test extends \advanced_testcase {
                 $this->assertStringNotContainsString('kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk', $string);
             }
         }
+    }
+
+    public function test_a_line_that_cannot_be_written_is_a_failure_and_is_not_counted(): void {
+        [$builder, $folder] = $this->faulty_builder(1);
+        faulty_stream::fail('write', '/entries.jsonl');
+        $this->assert_write_failure(fn() => $builder->append(['n' => 2]), 'entries_write');
+        $this->assertSame(1, $builder->commit());
+        $this->assertSame("{\"n\":1}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
+    public function test_lines_that_cannot_be_made_safe_on_the_disk_are_a_failure(): void {
+        [$builder] = $this->faulty_builder(1);
+        $builder->append(['n' => 2]);
+        faulty_stream::fail('flush', '/entries.jsonl');
+        $this->assert_write_failure(fn() => $builder->commit(), 'entries_flush');
+    }
+
+    /**
+     * The faults of a file that cannot be cut.
+     *
+     * @return array
+     */
+    public static function cut_fault_provider(): array {
+        return ['the file does not open' => ['open:r+b'], 'the file does not get shorter' => ['truncate']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('cut_fault_provider')]
+    /**
+     * A file that cannot be cut back keeps every line, and the failure says so.
+     *
+     * @dataProvider cut_fault_provider
+     * @param string $fault The fault.
+     */
+    public function test_lines_that_cannot_be_dropped_are_a_failure_and_stay(string $fault): void {
+        [$builder, $folder] = $this->faulty_builder(2);
+        $builder->append(['n' => 3]);
+        faulty_stream::fail($fault, '/entries.jsonl');
+        $this->assert_write_failure(fn() => $builder->truncate_to(1), 'entries_truncate');
+        $this->assertSame("{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
+    public function test_a_file_that_cannot_be_read_again_for_its_lines_is_a_failure(): void {
+        [$builder, $folder] = $this->faulty_builder(2);
+        faulty_stream::fail('open:rb', '/entries.jsonl');
+        $this->assert_write_failure(fn() => $builder->truncate_to(1), 'entries_short');
+        $this->assertSame("{\"n\":1}\n{\"n\":2}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
+    public function test_a_cut_line_that_cannot_be_dropped_when_a_builder_opens_is_a_failure(): void {
+        faulty_stream::register();
+        $folder = make_request_directory();
+        file_put_contents($folder . '/entries.jsonl', "{\"n\":1}\n{\"n\":");
+        faulty_stream::fail('truncate', '/entries.jsonl');
+        $this->assert_write_failure(fn() => new manifest_builder(faulty_stream::url($folder)), 'entries_truncate');
+    }
+
+    public function test_every_line_can_be_dropped_while_the_file_is_open(): void {
+        [$builder, $folder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $builder->append(['n' => 2]);
+        $builder->commit();
+        $builder->truncate_to(0);
+        $this->assertSame('', file_get_contents($folder . '/entries.jsonl'));
+        $this->assertSame(0, $builder->commit());
+        $builder->append(['n' => 3]);
+        $this->assertSame(1, $builder->commit());
+        $this->assertSame("{\"n\":3}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
+    /**
+     * The faults of the files that build() writes and reads.
+     *
+     * @return array
+     */
+    public static function build_fault_provider(): array {
+        return [
+            'the compressed file does not open' => ['open:wb', '/manifest.jsonl.gz', 'manifest_open'],
+            'the lines do not open' => ['open:rb', '/entries.jsonl', 'manifest_open'],
+            'the compressed file cannot be written' => ['write', '/manifest.jsonl.gz', 'manifest_write'],
+            'the compressed file does not open again' => ['open:rb', '/manifest.jsonl.gz', 'manifest_read'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('build_fault_provider')]
+    /**
+     * A list that cannot be compressed or read back is a failure, and leaves no compressed file and no chunk.
+     *
+     * @dataProvider build_fault_provider
+     * @param string $fault The fault.
+     * @param string $suffix The end of the path that it applies to.
+     * @param string $info The debug information of the failure.
+     */
+    public function test_a_list_whose_files_fail_is_not_built(string $fault, string $suffix, string $info): void {
+        [$builder, $folder] = $this->faulty_builder(2);
+        faulty_stream::fail($fault, $suffix);
+        $this->assert_write_failure(fn() => self::build($builder), $info);
+        $this->assertFileDoesNotExist($folder . '/manifest.jsonl.gz');
+        $this->assertFileDoesNotExist($folder . '/manifest.chunk');
+    }
+
+    public function test_lines_that_are_gone_from_the_file_when_the_list_is_built_are_a_failure(): void {
+        [$builder, $folder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $builder->append(['n' => 2]);
+        $builder->commit();
+        // Something else cut the file after the commit.
+        $handle = fopen($folder . '/entries.jsonl', 'r+b');
+        ftruncate($handle, 3);
+        fclose($handle);
+        $this->assert_write_failure(fn() => self::build($builder), 'manifest_short');
+        $this->assertFileDoesNotExist($folder . '/manifest.jsonl.gz');
     }
 }

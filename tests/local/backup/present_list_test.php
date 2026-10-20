@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\backup;
 
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\faulty_stream;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\present_list::class)]
 /**
@@ -34,6 +35,31 @@ final class present_list_test extends \advanced_testcase {
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
+    }
+
+    protected function tearDown(): void {
+        faulty_stream::unregister();
+        parent::tearDown();
+    }
+
+    /**
+     * Loads a list of two chunks through the wrapper that makes faults, with a fault.
+     *
+     * @param string $fault The operation that fails.
+     * @param string $suffix The end of the path that it applies to.
+     * @param string $folder The real folder of the records.
+     * @return present_list
+     */
+    private function load_with_fault(string $fault, string $suffix, string $folder): present_list {
+        faulty_stream::register();
+        $gz = $this->gz(self::header(2) . str_repeat('a', 64) . " 10\n" . str_repeat('b', 64) . " 20\n");
+        faulty_stream::fail($fault, $suffix);
+        return present_list::load(
+            faulty_stream::url($gz),
+            self::SITE,
+            faulty_stream::url($folder),
+            static fn(string $path): array => [1073741824, 2147483648]
+        );
     }
 
     /**
@@ -290,5 +316,55 @@ final class present_list_test extends \advanced_testcase {
         } catch (plugin_exception $e) {
             $this->assertSame('temp_write_failed', $e->errorcode);
         }
+    }
+
+    /**
+     * The faults of the files of a present list, and what each gives.
+     *
+     * @return array
+     */
+    public static function fault_provider(): array {
+        return [
+            'the fetched file does not open' => ['open:rb', '/present', 'signature_invalid', 'open'],
+            'the records cannot be written' => ['write', '.records', 'temp_write_failed', 'present_write'],
+            'the records do not open again' => ['open:rb', '.records', 'temp_write_failed', 'present_reopen'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('fault_provider')]
+    /**
+     * A file of the list that fails is a failure that leaves no records in the folder.
+     *
+     * @dataProvider fault_provider
+     * @param string $fault The operation that fails.
+     * @param string $suffix The end of the path that it applies to.
+     * @param string $code The error code.
+     * @param string $info The debug information.
+     */
+    public function test_a_file_of_the_list_that_fails_leaves_no_records(
+        string $fault,
+        string $suffix,
+        string $code,
+        string $info
+    ): void {
+        $folder = make_request_directory();
+        try {
+            $this->load_with_fault($fault, $suffix, $folder);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame($code, $e->errorcode);
+            $this->assertStringContainsString($info, (string) $e->debuginfo);
+        }
+        $this->assertTrue(faulty_stream::used(), 'The fault was met.');
+        $this->assertSame([], glob($folder . '/*.records'));
+    }
+
+    public function test_a_list_read_through_the_wrapper_without_a_fault_is_found(): void {
+        $folder = make_request_directory();
+        $list = $this->load_with_fault('open:rb', '/not-a-file-of-the-list', $folder);
+        $this->assertSame(2, $list->count());
+        $this->assertSame(20, $list->size_of(str_repeat('b', 64)));
+        $list->close();
+        $this->assertSame([], glob($folder . '/*.records'));
     }
 }

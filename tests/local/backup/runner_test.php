@@ -106,6 +106,12 @@ final class runner_test extends \advanced_testcase {
         $this->make_site();
     }
 
+    protected function tearDown(): void {
+        // PHPUnit 9 keeps every test case until the end of the run: what the fake storage holds goes with its test.
+        unset($this->fixture);
+        parent::tearDown();
+    }
+
     /**
      * Makes the content of the site: files of the file store, a data root, an added plugin and a Moodle program.
      */
@@ -1997,5 +2003,353 @@ final class runner_test extends \advanced_testcase {
         // Ended once: the connection is let go.
         $context->end_export();
         $context->close();
+    }
+
+    public function test_an_export_connection_that_cannot_be_let_go_does_not_throw_out_of_the_step(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $context = $this->context($run);
+        $disposed = 0;
+        $db = $this->createMock(\moodle_database::class);
+        $db->method('dispose')->willReturnCallback(function () use (&$disposed): void {
+            $disposed++;
+            if ($disposed === 1) {
+                throw new \dml_exception('dbconnectionfailed');
+            }
+        });
+        $snapshot = new class implements \tool_secbackup\local\backup\db\snapshot {
+            /** @var int How many times end() was called. */
+            public int $ended = 0;
+
+            /**
+             * Begins nothing.
+             *
+             * @param \moodle_database $db The connection.
+             */
+            public function begin(\moodle_database $db): void {
+            }
+
+            /**
+             * Ends the transaction.
+             *
+             * @param \moodle_database $db The connection.
+             */
+            public function end(\moodle_database $db): void {
+                $this->ended++;
+            }
+        };
+        $context->hold_export($db, $snapshot);
+        $context->end_export();
+        $this->assertSame(1, $snapshot->ended);
+        $this->assertSame(1, $disposed);
+        // The connection was let go even though letting it go failed: it is not ended or let go again.
+        $context->end_export();
+        $context->close();
+        $this->assertSame(1, $snapshot->ended);
+        $this->assertSame(1, $disposed);
+    }
+
+    public function test_a_file_of_the_step_that_cannot_be_closed_does_not_keep_the_others_open(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $context = $this->context($run);
+        $journals = (new \ReflectionProperty(run_context::class, 'journals'))->getValue($context);
+        $handle = new \ReflectionProperty(journal::class, 'handle');
+        foreach ($journals as $journal) {
+            $journal->append('line');
+        }
+        $first = reset($journals);
+        // The first file was closed under the journal, so closing it again fails.
+        fclose($handle->getValue($first));
+        $context->close();
+        foreach (array_slice($journals, 1) as $name => $journal) {
+            $this->assertNull($handle->getValue($journal), $name);
+        }
+        $handle->setValue($first, null);
+    }
+
+    public function test_a_run_that_waits_for_its_receipt_past_24_hours_asks_once_more_and_is_stopped_as_expired(): void {
+        $this->fixture->service->state['holdverify'] = true;
+        $run = run_record::create('manual', $this->fixture->time);
+        $started = $this->fixture->time;
+        $runner = $this->runner();
+        for ($i = 0; $i < 50 && $run->stage() !== 'receipt'; $i++) {
+            $runner->step($run, 600);
+        }
+        $this->assertSame('receipt', $run->stage());
+        $this->fixture->set_time($started + runner::EXPIRES_AFTER + 60);
+        $polls = $this->fixture->count('GET', '/runs/' . $run->run_uuid());
+        $this->assertSame('aborted', $runner->step($run, 600));
+        // The receipt was asked for once more: the service had not verified the run, so it is stopped.
+        $this->assertSame($polls + 1, $this->fixture->count('GET', '/runs/' . $run->run_uuid()));
+        $this->assertSame('expired', $run->abort_code());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+    }
+
+    /**
+     * Adds a file to the file store of the test site.
+     *
+     * @param string $name File name.
+     * @param string $content Content.
+     * @return string The content hash.
+     */
+    private function store_file(string $name, string $content): string {
+        return get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
+            'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
+            'filename' => $name], $content)->get_contenthash();
+    }
+
+    /**
+     * The path of a content in the file directory.
+     *
+     * @param string $hash The content hash.
+     * @return string
+     */
+    private static function filedir(string $hash): string {
+        global $CFG;
+        return $CFG->dataroot . '/filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash;
+    }
+
+    /**
+     * The entries of the list of a run that are of one kind and match a field.
+     *
+     * @param string $runid The run.
+     * @param string $type The kind of entry.
+     * @param string $field The field.
+     * @param string $value Its value.
+     * @return array[]
+     */
+    private function entries_of(string $runid, string $type, string $field, string $value): array {
+        [, $entries] = $this->manifest($runid);
+        return array_values(array_filter($entries, fn(array $e): bool => $e['t'] === $type && ($e[$field] ?? null) === $value));
+    }
+
+    public function test_a_big_content_that_is_in_no_store_is_listed_as_missing(): void {
+        $hash = $this->store_file('gone.bin', random_bytes(packer::FILE_LIMIT + 10));
+        unlink(self::filedir($hash));
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains($hash, $header['missing_files']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash));
+    }
+
+    public function test_a_big_content_that_goes_between_two_pieces_is_withdrawn(): void {
+        $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
+        $source = function (\moodle_database $db) use ($hash): file_source {
+            return new class ($db, self::filedir($hash)) extends file_source {
+                /** @var string The content that goes after its first piece. */
+                private string $path;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param \moodle_database $db Connection.
+                 * @param string $path The content that goes.
+                 */
+                public function __construct(\moodle_database $db, string $path) {
+                    parent::__construct($db, static fn(int $seconds) => null);
+                    $this->path = $path;
+                }
+
+                /**
+                 * Writes a piece; the content goes after its first piece.
+                 *
+                 * @param string $contenthash Content hash.
+                 * @param int $size Size.
+                 * @param int $piece Piece.
+                 * @param string $digest Digest.
+                 * @param packer $packer Packer.
+                 * @return chunk_info|null
+                 */
+                public function big_piece(string $contenthash, int $size, int $piece, string $digest, packer $packer): ?chunk_info {
+                    $chunk = parent::big_piece($contenthash, $size, $piece, $digest, $packer);
+                    if ($piece === 0 && $contenthash === basename($this->path)) {
+                        $this->close();
+                        unlink($this->path);
+                    }
+                    return $chunk;
+                }
+            };
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(['filesource' => $source]), $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains($hash, $header['missing_files']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash));
+        // The first piece was sent: it is stored and in the index, with no entry.
+        $piece = chunk_name::file(dedup_key::load_or_create(), $hash, 0);
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertArrayHasKey($piece, $sizes);
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_the_pieces_of_a_big_file_that_the_present_list_holds_are_not_sent_again(): void {
+        $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
+        $first = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $first));
+        $key = dedup_key::load_or_create();
+        $kept = chunk_name::file($key, $hash, 0);
+        $lost = chunk_name::file($key, $hash, 1);
+        // The storage has lost the second piece: the list has the first only.
+        unset($this->fixture->service->state['objects']['sites/' . self::SITE . '/objects/' . $lost]);
+        $this->publish_present_list();
+        $this->fixture->advance(86400);
+        $before = $this->fixture->puts();
+        $second = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $second));
+        $after = $this->fixture->puts();
+        $keptkey = 'sites/' . self::SITE . '/objects/' . $kept;
+        $lostkey = 'sites/' . self::SITE . '/objects/' . $lost;
+        $this->assertSame($before[$keptkey], $after[$keptkey]);
+        $this->assertSame(1, $after[$lostkey] - ($before[$lostkey] ?? 0));
+        $pieces = $this->entries_of($second->run_uuid(), 'file', 'contenthash', $hash);
+        $this->assertSame([0, 1], array_column($pieces, 'piece'));
+        $this->assertSame([$kept, $lost], array_column($pieces, 'chunk'));
+        // The index of the second run has both pieces, and every chunk in it is stored.
+        [, $sizes] = $this->index($second->run_uuid());
+        $this->assertArrayHasKey($kept, $sizes);
+        $this->assertArrayHasKey($lost, $sizes);
+        $this->assertSame([], array_diff_key($sizes, $this->stored_chunks()));
+    }
+
+    public function test_small_files_that_fill_a_pack_are_sent_while_the_stage_goes_on(): void {
+        global $DB;
+        // Without a big file between them in the order of the hashes, which would send a part of the pack first.
+        $DB->delete_records('files', ['contenthash' => $this->hashes['big']]);
+        $hashes = [];
+        for ($i = 0; $i < 9; $i++) {
+            $hashes[] = $this->store_file('full' . $i . '.bin', random_bytes(packer::FILE_LIMIT - 1));
+        }
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        $chunks = [];
+        foreach ($hashes as $hash) {
+            $entries = $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash);
+            $this->assertCount(1, $entries, $hash);
+            $chunks[$entries[0]['chunk']] = true;
+        }
+        // More than 32 MiB of small files do not fit one pack.
+        $this->assertGreaterThan(1, count($chunks));
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_small_file_before_a_big_one_is_sent_in_a_chunk_of_its_own(): void {
+        file_put_contents($this->dataroot . '/a.txt', 'small before');
+        file_put_contents($this->dataroot . '/b.bin', random_bytes(series_writer::FILE_LIMIT + 10));
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        $small = $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'a.txt');
+        $big = $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'b.bin');
+        $later = $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'lang/ja/langconfig.php');
+        $this->assertCount(1, $small);
+        $this->assertCount(1, $big);
+        // The chunk of the small file was closed before the big file: the small files after it are in another one.
+        $this->assertNotSame($small[0]['chunk'], $later[0]['chunk']);
+        $this->assertNotSame($small[0]['chunk'], $big[0]['chunk']);
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_chunk_of_small_files_that_cannot_be_sent_before_a_big_file_makes_the_stage_wait(): void {
+        // Eight files of almost 4 MiB fill a chunk (32 MiB); the ninth starts the next, which waits when the big file (next in the
+        // walk) comes.
+        for ($i = 0; $i < 9; $i++) {
+            file_put_contents($this->dataroot . '/f' . $i . '.bin', random_bytes(series_writer::FILE_LIMIT - 1));
+        }
+        file_put_contents($this->dataroot . '/g.bin', random_bytes(series_writer::FILE_LIMIT + 10));
+        $run = run_record::create('manual', $this->fixture->time);
+        $busy = 0;
+        $this->fixture->intercept = function (RequestInterface $request) use ($run, &$busy) {
+            if (!str_ends_with($request->getUri()->getPath(), '/upload-urls') || $run->stage() !== 'dataroot' || $busy > 0) {
+                return null;
+            }
+            $items = json_decode((string) $request->getBody(), true)['items'];
+            $request->getBody()->rewind();
+            if (max(array_column($items, 'size')) < 30 * 1048576) {
+                return null;
+            }
+            // The full chunk of small files is to be sent: the service is busy.
+            $busy++;
+            return new Response(503, ['Retry-After' => '120'], json_encode(['error' => ['code' => 'busy']]));
+        };
+        $runner = $this->runner(['limits' => $this->limits(0), 'diskspace' => fn(string $folder): array => [0, 1000]]);
+        $result = '';
+        for ($i = 0; $i < 50 && $busy === 0; $i++) {
+            $result = $runner->step($run, 600);
+            if ($run->next_attempt() !== null && $run->next_attempt() > $this->fixture->time) {
+                $this->fixture->set_time($run->next_attempt());
+            }
+        }
+        $this->assertSame(1, $busy);
+        $this->assertSame('continue', $result);
+        $this->assertSame('dataroot', $run->stage());
+        $this->assertNull($run->progress()['cursor']['big'] ?? null, 'The big file was not begun.');
+        // The ninth file still waits in its chunk, which was not closed: the stage goes on from after the eighth.
+        $this->assertSame('f7.bin', $run->progress()['cursor']['position']);
+        $this->assertSame('done', $this->finish($runner, $run));
+        foreach (['f0.bin', 'f8.bin', 'g.bin'] as $path) {
+            $this->assertCount(1, $this->entries_of($run->run_uuid(), 'dataroot', 'path', $path), $path);
+        }
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_big_file_of_the_data_root_that_goes_before_it_is_read_is_unreadable(): void {
+        file_put_contents($this->dataroot . '/a.bin', random_bytes(series_writer::FILE_LIMIT + 10));
+        file_put_contents($this->dataroot . '/b.bin', random_bytes(series_writer::FILE_LIMIT + 10));
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['sample' => function () use ($run): array {
+            // Once the first big file is made, the second goes: the walk listed it with its size.
+            if ($run->stage() === 'dataroot' && is_file($this->dataroot . '/b.bin')) {
+                unlink($this->dataroot . '/b.bin');
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('done', $this->finish($runner, $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains('dataroot:b.bin', $header['unreadable']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'b.bin'));
+        $this->assertCount(1, $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'a.bin'));
+    }
+
+    public function test_a_step_without_time_stops_between_two_pieces_of_a_big_file_of_the_data_root(): void {
+        file_put_contents($this->dataroot . '/big.bin', random_bytes(series_writer::PIECE + 100));
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        $between = false;
+        $result = '';
+        for ($i = 0; $i < 200 && $result !== 'done'; $i++) {
+            $result = $runner->step($run, 1);
+            $between = $between || ($run->stage() === 'dataroot' && ($run->progress()['cursor']['big']['piece'] ?? 0) === 1);
+            if ($run->next_attempt() !== null && $run->next_attempt() > $this->fixture->time) {
+                $this->fixture->set_time($run->next_attempt());
+            }
+        }
+        $this->assertSame('done', $result);
+        $this->assertTrue($between, 'A step ended after the first piece.');
+        $this->assertSame([0, 1], array_column($this->entries_of($run->run_uuid(), 'dataroot', 'path', 'big.bin'), 'piece'));
+        foreach ($this->fixture->puts() as $key => $count) {
+            $this->assertSame(1, $count, $key);
+        }
+    }
+
+    public function test_a_big_file_of_the_data_root_that_goes_while_it_is_in_progress_is_withdrawn(): void {
+        file_put_contents($this->dataroot . '/big.bin', random_bytes(series_writer::PIECE + 100));
+        $run = run_record::create('manual', $this->fixture->time);
+        $cut = $this->runner(['sample' => function () use ($run): array {
+            if ($run->stage() === 'dataroot') {
+                throw new \RuntimeException('The process was stopped.');
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('continue', $cut->step($run, 600));
+        $this->assertSame(1, $run->progress()['cursor']['big']['piece']);
+        unlink($this->dataroot . '/big.bin');
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains('dataroot:big.bin', $header['unreadable']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'big.bin'));
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
     }
 }

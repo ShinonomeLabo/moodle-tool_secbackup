@@ -31,6 +31,7 @@ use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\crypto\key_exception;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\tests\failing_stream;
+use tool_secbackup\tests\faulty_stream;
 use tool_secbackup\tests\full_disk_stream;
 use tool_secbackup\tests\trace_strings;
 
@@ -96,6 +97,7 @@ final class series_writer_test extends \advanced_testcase {
         ini_set('zend.exception_ignore_args', (string) $this->ignoreargs);
         failing_stream::unregister();
         full_disk_stream::unregister();
+        faulty_stream::unregister();
         parent::tearDown();
     }
 
@@ -417,6 +419,21 @@ final class series_writer_test extends \advanced_testcase {
         $writer->flush();
         $this->assertSame('secret', $writer->entries()[0]['root']);
         $this->assertSame(['secret:missing', 'dataroot:also/missing'], $writer->unreadable());
+    }
+
+    public function test_a_file_that_is_a_folder_once_it_is_open_is_unreadable_and_not_read(): void {
+        // A file that was replaced by a folder between the look at the path and the opening.
+        faulty_stream::register();
+        file_put_contents($this->base . '/swapped.txt', 'not read');
+        file_put_contents($this->base . '/kept.txt', 'kept');
+        faulty_stream::fail('stat', '/swapped.txt');
+        $writer = $this->writer();
+        $this->assertSame([], $writer->add('dataroot', faulty_stream::url($this->base), 'swapped.txt'));
+        $this->assertTrue(faulty_stream::used());
+        $this->assertSame([], $writer->add('dataroot', faulty_stream::url($this->base), 'kept.txt'));
+        $this->assertSame(['dataroot:swapped.txt'], $writer->unreadable());
+        $writer->flush();
+        $this->assertSame(['kept.txt'], array_column($writer->entries(), 'path'));
     }
 
     public function test_a_folder_in_place_of_a_file_is_unreadable(): void {
