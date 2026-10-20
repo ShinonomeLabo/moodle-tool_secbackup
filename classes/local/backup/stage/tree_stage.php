@@ -256,6 +256,16 @@ final class tree_stage {
      */
     private function add(int $index, array $file): bool {
         $this->stop = 'more';
+        if (
+            $this->big !== null && $file['size'] < series_writer::FILE_LIMIT
+            && $this->big['source'] === $index && $this->big['path'] === $file['path']
+        ) {
+            // The big file in progress is small now: what was written of it is cut back (its pieces stay in the index), and it
+            // is taken whole as a small file, so it is in the entries once and not listed as unreadable.
+            $this->context->entries->truncate_to($this->big['entries']);
+            $this->big = null;
+            $this->commit();
+        }
         if ($file['size'] >= series_writer::FILE_LIMIT) {
             if ($this->waiting !== []) {
                 // The open chunk goes first, so that nothing else waits while the big file is in progress.

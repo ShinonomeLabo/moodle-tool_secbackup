@@ -40,6 +40,15 @@ final class failing_stream {
     /** @var \Closure|null Called with the bytes given so far before each read. */
     public static ?\Closure $onread = null;
 
+    /** @var int Bytes that all streams have given since the protocol was registered. */
+    public static int $bytesread = 0;
+
+    /** @var int Streams opened since the protocol was registered. */
+    public static int $opened = 0;
+
+    /** @var int Streams closed since the protocol was registered. */
+    public static int $closed = 0;
+
     /** @var resource|null Context that PHP sets. */
     public $context;
 
@@ -67,6 +76,9 @@ final class failing_stream {
     public static function unregister(): void {
         self::$failing = 0;
         self::$onread = null;
+        self::$bytesread = 0;
+        self::$opened = 0;
+        self::$closed = 0;
         if (in_array(self::PROTOCOL, stream_get_wrappers(), true)) {
             stream_wrapper_unregister(self::PROTOCOL);
         }
@@ -98,6 +110,7 @@ final class failing_stream {
             return false;
         }
         $this->inner = $inner;
+        self::$opened++;
         if (self::$failing > 0) {
             self::$failing--;
             $this->fails = true;
@@ -124,6 +137,7 @@ final class failing_stream {
         }
         $data = fread($this->inner, $count);
         $this->given += strlen((string) $data);
+        self::$bytesread += strlen((string) $data);
         return $data;
     }
 
@@ -161,6 +175,7 @@ final class failing_stream {
      * Closes the file.
      */
     public function stream_close(): void {
+        self::$closed++;
         fclose($this->inner);
     }
 }

@@ -102,7 +102,13 @@ final class files_stage {
      */
     public static function run(run_context $context, array $seams): string {
         global $DB;
-        return (new self($context, ($seams['filesource'])($DB)))->go();
+        $stage = new self($context, ($seams['filesource'])($DB));
+        try {
+            return $stage->go();
+        } finally {
+            // The stream of a big file in progress is opened again by the next step.
+            $stage->source->close();
+        }
     }
 
     /**

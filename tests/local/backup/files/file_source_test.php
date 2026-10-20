@@ -398,4 +398,62 @@ final class file_source_test extends \advanced_testcase {
         $this->assertSame([], $this->slept);
         $this->assertFileExists($piece->path);
     }
+
+    /**
+     * A big file of three pieces in the file store, read for its digests by a source whose streams cannot seek.
+     *
+     * @return array [source, content hash, size, digests, packer]
+     */
+    private function three_pieces(): array {
+        global $DB;
+        $content = random_bytes(2 * packer::PIECE + 100);
+        $hash = $this->make($content)->get_contenthash();
+        $source = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
+        $packer = $this->packer(make_request_directory());
+        $digests = $source->big_digests($hash, strlen($content), $packer);
+        failing_stream::$bytesread = 0;
+        failing_stream::$opened = 0;
+        failing_stream::$closed = 0;
+        return [$source, $hash, strlen($content), $digests, $packer];
+    }
+
+    public function test_the_pieces_of_a_big_file_are_read_from_one_stream_once(): void {
+        [$source, $hash, $size, $digests, $packer] = $this->three_pieces();
+        foreach ([0, 1, 2] as $piece) {
+            unlink($source->big_piece($hash, $size, $piece, $digests[$piece], $packer)->path);
+        }
+        $this->assertSame($size, failing_stream::$bytesread, 'Each byte is read once, not again for every piece.');
+        $this->assertSame(1, failing_stream::$opened);
+        $this->assertSame(1, failing_stream::$closed, 'The stream is closed at the end of the file.');
+    }
+
+    public function test_a_step_that_goes_on_from_a_piece_reads_forward_once(): void {
+        global $DB;
+        [, $hash, $size, $digests, $packer] = $this->three_pieces();
+        $resumed = new flaky_file_source($DB, fn(int $seconds) => $this->slept[] = $seconds);
+        foreach ([1, 2] as $piece) {
+            unlink($resumed->big_piece($hash, $size, $piece, $digests[$piece], $packer)->path);
+        }
+        // The first piece is read past once, in the stream that cannot seek; then the pieces are read once.
+        $this->assertSame($size, failing_stream::$bytesread);
+        $this->assertSame(1, failing_stream::$opened);
+        $this->assertSame(1, failing_stream::$closed);
+    }
+
+    public function test_the_stream_of_a_big_file_is_closed_at_the_end_of_the_step_and_after_a_failure(): void {
+        [$source, $hash, $size, $digests, $packer] = $this->three_pieces();
+        unlink($source->big_piece($hash, $size, 0, $digests[0], $packer)->path);
+        $source->close();
+        $this->assertSame(failing_stream::$opened, failing_stream::$closed);
+        try {
+            $source->big_piece($hash, $size, 1, hash('sha256', 'another content'), $packer);
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertSame('tamper_detected', $e->errorcode);
+        }
+        $this->assertSame(failing_stream::$opened, failing_stream::$closed);
+        foreach ($source->handles as $handle) {
+            $this->assertFalse(is_resource($handle));
+        }
+    }
 }

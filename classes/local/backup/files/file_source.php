@@ -23,6 +23,9 @@ use tool_secbackup\local\plugin_exception;
 /**
  * Lists the files of the file store by content hash and opens them for reading.
  *
+ * The pieces of a big file are read from one stream that stays open between them, so that a file is read once in a step
+ * even when its stream cannot seek; the caller closes it at the end of the step (close()).
+ *
  * The file store is only ever read. A file is opened through the file API (get_content_file_handle() of its stored file,
  * after is_file_readable_remotely_by_storedfile() has said yes), which also works with an external file system class; that
  * path never recovers a file from the trash. A file that is not in the file directory but in the trash is read in place.
@@ -43,6 +46,9 @@ class file_source {
 
     /** @var callable Waits some seconds. */
     private $sleep;
+
+    /** @var array|null The content of the big file in progress, open across its pieces: hash, handle and offset. */
+    private ?array $held = null;
 
     /**
      * Constructor.
@@ -145,7 +151,11 @@ class file_source {
     }
 
     /**
-     * Writes one piece of a big file (packer::big_piece()), from the content opened again at the first byte of the piece.
+     * Writes one piece of a big file (packer::big_piece()).
+     *
+     * The content stays open from one piece to the next: the next piece is read where the last one ended. A stream is
+     * opened only for the first piece of a step (or after a failure), and moved to the piece by seeking or, when it cannot
+     * seek, by reading forward. It is closed after the last piece, after any failure, and by close().
      *
      * @param string $contenthash Content hash.
      * @param int $size Size in the files table.
@@ -156,17 +166,88 @@ class file_source {
      * @throws plugin_exception With nfs_slow, tamper_detected or temp_write_failed.
      */
     public function big_piece(string $contenthash, int $size, int $piece, string $digest, packer $packer): ?chunk_info {
-        return $this->with_content($contenthash, static function ($handle) use ($contenthash, $size, $piece, $digest, $packer) {
-            self::skip($handle, $piece * packer::PIECE);
-            return $packer->big_piece($contenthash, $handle, $size, $piece, $digest);
+        $offset = $piece * packer::PIECE;
+        return $this->retrying(function () use ($contenthash, $size, $piece, $digest, $packer, $offset): ?chunk_info {
+            try {
+                $handle = $this->held_at($contenthash, $offset);
+                if ($handle === null) {
+                    return null;
+                }
+                $chunk = $packer->big_piece($contenthash, $handle, $size, $piece, $digest);
+            } catch (\Throwable $e) {
+                $this->close();
+                throw $e;
+            }
+            $this->held['offset'] = min($size, $offset + packer::PIECE);
+            if ($this->held['offset'] >= $size) {
+                $this->close();
+            }
+            return $chunk;
         });
     }
 
     /**
-     * Opens a content and works on it, opening it again after a failed read.
+     * Closes the content of the big file in progress, if one is open. The files stage calls it at the end of every step.
+     */
+    public function close(): void {
+        $handle = $this->held['handle'] ?? null;
+        $this->held = null;
+        if (is_resource($handle)) {
+            error_silencer::run(static fn() => fclose($handle), $warning);
+        }
+    }
+
+    /**
+     * The open content of a big file, at an offset: the one that is open when it is the same content and can get there
+     * (it is there, it can seek, or the offset is ahead), else the content opened again.
      *
-     * After a failed read the content is tried again after 1, 5 and 15 seconds; when the fourth try fails too, the error is
-     * nfs_slow. A content that is not the one that its hash names (tamper_detected) is not tried again.
+     * @param string $contenthash Content hash.
+     * @param int $offset The offset.
+     * @return resource|null Null when the content is neither in the file directory nor in the trash.
+     * @throws plugin_exception With nfs_slow or tamper_detected (see skip()).
+     */
+    private function held_at(string $contenthash, int $offset) {
+        if ($this->held !== null && ($this->held['hash'] !== $contenthash || !self::move($this->held, $offset))) {
+            $this->close();
+        }
+        if ($this->held === null) {
+            $opened = $this->open($contenthash);
+            if ($opened === null) {
+                return null;
+            }
+            $this->held = ['hash' => $contenthash, 'handle' => $opened['handle'], 'offset' => 0];
+            if (!self::move($this->held, $offset)) {
+                throw new \coding_exception('A new stream is always at its start.');
+            }
+        }
+        return $this->held['handle'];
+    }
+
+    /**
+     * Moves an open content to an offset: by seeking, or by reading forward in a stream that cannot seek.
+     *
+     * @param array $held The open content; its offset is updated.
+     * @param int $offset The offset.
+     * @return bool False when the stream cannot seek and the offset is behind it.
+     * @throws plugin_exception With nfs_slow when a read fails, and with tamper_detected when the stream ends before it.
+     */
+    private static function move(array &$held, int $offset): bool {
+        if ($held['offset'] === $offset) {
+            return true;
+        }
+        $handle = $held['handle'];
+        if (error_silencer::run(static fn() => fseek($handle, $offset), $warning) !== 0) {
+            if ($offset < $held['offset']) {
+                return false;
+            }
+            self::skip($handle, $offset - $held['offset']);
+        }
+        $held['offset'] = $offset;
+        return true;
+    }
+
+    /**
+     * Opens a content and works on it, opening it again after a failed read.
      *
      * @param string $contenthash Content hash.
      * @param callable $work Function (resource $handle) that reads the content.
@@ -174,22 +255,38 @@ class file_source {
      * @throws plugin_exception With nfs_slow, and what $work throws.
      */
     private function with_content(string $contenthash, callable $work): mixed {
-        for ($attempt = 0;; $attempt++) {
-            $handle = null;
+        return $this->retrying(function () use ($contenthash, $work): mixed {
+            $opened = $this->open($contenthash);
+            if ($opened === null) {
+                return null;
+            }
             try {
-                $opened = $this->open($contenthash);
-                if ($opened === null) {
-                    return null;
+                return $work($opened['handle']);
+            } finally {
+                if (is_resource($opened['handle'])) {
+                    fclose($opened['handle']);
                 }
-                $handle = $opened['handle'];
-                return $work($handle);
+            }
+        });
+    }
+
+    /**
+     * Tries a read of a content until it works.
+     *
+     * After a failed read the content is tried again after 1, 5 and 15 seconds; when the fourth try fails too, the error is
+     * nfs_slow. A content that is not the one that its hash names (tamper_detected) is not tried again.
+     *
+     * @param callable $try The read; it opens the content itself.
+     * @return mixed What $try gives.
+     * @throws plugin_exception With nfs_slow, and what $try throws.
+     */
+    private function retrying(callable $try): mixed {
+        for ($attempt = 0;; $attempt++) {
+            try {
+                return $try();
             } catch (plugin_exception $e) {
                 if ($e->errorcode !== 'nfs_slow' || !isset(self::WAITS[$attempt])) {
                     throw $e;
-                }
-            } finally {
-                if (is_resource($handle)) {
-                    fclose($handle);
                 }
             }
             ($this->sleep)(self::WAITS[$attempt]);
@@ -197,17 +294,14 @@ class file_source {
     }
 
     /**
-     * Moves a stream to an offset: by seeking, or by reading up to it in a stream that cannot seek.
+     * Reads past some bytes of a stream that cannot seek.
      *
-     * @param resource $handle The stream, at its start.
-     * @param int $offset The offset.
+     * @param resource $handle The stream.
+     * @param int $bytes How many bytes.
      * @throws plugin_exception With nfs_slow when a read fails, and with tamper_detected when the stream ends before it.
      */
-    private static function skip($handle, int $offset): void {
-        if (error_silencer::run(static fn() => fseek($handle, $offset), $warning) === 0) {
-            return;
-        }
-        for ($left = $offset; $left > 0; $left -= strlen($part)) {
+    private static function skip($handle, int $bytes): void {
+        for ($left = $bytes; $left > 0; $left -= strlen($part)) {
             $part = error_silencer::run(static fn() => fread($handle, min(self::SKIP_READ, $left)), $warning);
             if ($part === false || $warning !== '') {
                 throw new plugin_exception('nfs_slow', null, $warning === '' ? null : $warning);

@@ -789,9 +789,12 @@ final class runner_test extends \advanced_testcase {
      * @param string $stage The stage of the file.
      */
     public function test_the_watch_looks_after_every_piece_and_stops_before_the_next(string $stage): void {
-        $this->add_files_of_three_pieces();
+        global $DB;
+        [$hash] = $this->add_files_of_three_pieces();
         if ($stage === 'files') {
             unlink($this->dataroot . '/big.bin');
+            // The file of three pieces is the only content: the looks follow its pieces, whatever the order of the hashes.
+            $DB->delete_records_select('files', 'contenthash <> ?', [$hash]);
         }
         $run = run_record::create('manual', $this->fixture->time);
         $folder = $this->tempdir . '/run-' . $run->id();
@@ -868,6 +871,66 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame($this->stored_chunks(), $sizes);
         $referred = array_unique(array_column($entries, 'chunk'));
         $this->assertCount(1, array_diff(array_keys($sizes), $referred));
+    }
+
+    public function test_a_big_file_in_progress_that_is_small_when_the_run_goes_on_is_taken_whole_once(): void {
+        [, , $path] = $this->add_files_of_three_pieces();
+        $run = run_record::create('manual', $this->fixture->time);
+        $looks = 0;
+        $cut = $this->runner(['sample' => function () use ($run, &$looks): array {
+            if ($run->stage() === 'dataroot' && ++$looks === 2) {
+                throw new \RuntimeException('The process was stopped.');
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('continue', $cut->step($run, 600));
+        $this->assertSame(2, $run->progress()['cursor']['big']['piece']);
+        file_put_contents($path, 'small now');
+        $this->assertSame('done', $this->finish($this->runner(), run_record::active()));
+        $done = run_record::recent(1)[0];
+        [$header, $entries] = $this->manifest($done->run_uuid());
+        $big = array_values(array_filter($entries, fn($e) => $e['t'] === 'dataroot' && $e['path'] === 'big.bin'));
+        $this->assertCount(1, $big);
+        $this->assertSame(strlen('small now'), $big[0]['size']);
+        $this->assertSame([0, 1], [$big[0]['piece'], $big[0]['pieces']]);
+        $this->assertNotContains('dataroot:big.bin', $header['unreadable']);
+        [, $sizes] = $this->index($done->run_uuid());
+        $this->assertSame($this->stored_chunks(), $sizes);
+        $this->assertSame(count($entries), count(array_unique(array_map('json_encode', $entries))));
+    }
+
+    public function test_the_stream_of_a_big_file_does_not_outlive_its_step(): void {
+        \tool_secbackup\tests\failing_stream::register();
+        try {
+            $this->add_files_of_three_pieces();
+            unlink($this->dataroot . '/big.bin');
+            $sources = [];
+            $seams = [
+                'timer' => $this->fast_timer(),
+                'filesource' => function (\moodle_database $db) use (&$sources): file_source {
+                    $sources[] = new \tool_secbackup\tests\flaky_file_source($db, static fn(int $seconds) => null);
+                    return end($sources);
+                },
+            ];
+            $run = run_record::create('manual', $this->fixture->time);
+            $steps = 0;
+            for ($i = 0; $i < 200 && $run->status() !== 'completed'; $i++) {
+                $this->runner($seams)->step($run, 1);
+                if ($run->next_attempt() !== null && $run->next_attempt() > $this->fixture->time) {
+                    $this->fixture->set_time($run->next_attempt());
+                }
+                $steps += $run->stage() === 'files' ? 1 : 0;
+                foreach ($sources as $source) {
+                    foreach ($source->handles as $handle) {
+                        $this->assertFalse(is_resource($handle), 'A stream of the file store is open after the step.');
+                    }
+                }
+            }
+            $this->assertSame('completed', $run->status());
+            $this->assertGreaterThan(1, $steps, 'The big file took more than one step.');
+        } finally {
+            \tool_secbackup\tests\failing_stream::unregister();
+        }
     }
 
     public function test_a_step_cut_after_the_second_piece_goes_on_without_sending_or_numbering_again(): void {
