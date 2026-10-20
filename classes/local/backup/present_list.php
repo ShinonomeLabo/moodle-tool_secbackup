@@ -240,10 +240,14 @@ final class present_list {
             throw self::invalid('end');
         }
         self::write($out, $records);
-        if (!fclose($out)) {
+        // The flush is checked on its own: fclose() says true even when the flush that it makes fails. The file is closed in
+        // either case.
+        $flushed = fflush($out);
+        $closed = fclose($out);
+        $out = null;
+        if (!$flushed || !$closed) {
             throw new plugin_exception('temp_write_failed', null, 'present_close');
         }
-        $out = null;
         $handle = error_silencer::run(static fn() => fopen($path, 'rb'), $warning);
         if ($handle === false) {
             throw new plugin_exception('temp_write_failed', null, 'present_reopen');

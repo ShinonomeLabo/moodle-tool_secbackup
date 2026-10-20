@@ -328,6 +328,7 @@ final class present_list_test extends \advanced_testcase {
             'the fetched file does not open' => ['open:rb', '/present', 'signature_invalid', 'open'],
             'the records cannot be written' => ['write', '.records', 'temp_write_failed', 'present_write'],
             'the records do not open again' => ['open:rb', '.records', 'temp_write_failed', 'present_reopen'],
+            'the records cannot be made safe at their end' => ['flush', '.records', 'temp_write_failed', 'present_close'],
         ];
     }
 
