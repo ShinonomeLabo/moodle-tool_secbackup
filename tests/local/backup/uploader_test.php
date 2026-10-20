@@ -70,6 +70,9 @@ final class uploader_test extends \advanced_testcase {
     /** @var string The folder of the temporary files. */
     private string $tempdir;
 
+    /** @var callable|null Makes another uploader of the run that start() made, as the next step of the run does. */
+    private $another = null;
+
     /** @var string|false The value of zend.exception_ignore_args before the test. */
     private $ignoreargs;
 
@@ -142,7 +145,7 @@ final class uploader_test extends \advanced_testcase {
         $temp = new temp_area($limits, $diskspace);
         $run = run_record::create('manual', self::NOW);
         $run->set_run_uuid($started->run_id());
-        $uploader = new uploader(
+        $this->another = fn(?callable $remove = null): uploader => new uploader(
             $client,
             $objects,
             $temp,
@@ -153,6 +156,7 @@ final class uploader_test extends \advanced_testcase {
             $unmade,
             $remove
         );
+        $uploader = ($this->another)($remove);
         return [$uploader, $run, $temp->for_run($run->id()), $client, $endpoint];
     }
 
@@ -1149,5 +1153,49 @@ final class uploader_test extends \advanced_testcase {
         $this->assertSame(0, $uploader->pending());
         $key = 'sites/' . fake_service::SITE_ID . '/objects/' . $first->name;
         $this->assertSame($content, base64_decode($this->service->state['objects'][$key]));
+    }
+
+    public function test_a_refusal_of_the_new_size_that_is_not_about_waiting_is_thrown_as_it_is(): void {
+        [$uploader, $run, $folder] = $this->start(100);
+        for ($i = 0; $i < 3; $i++) {
+            $uploader->queue(self::chunk($folder, $i), 'object');
+        }
+        $this->intercept = fn(RequestInterface $r): ?Response => str_ends_with($r->getUri()->getPath(), '/capacity')
+            ? new Response(409, [], '{"error":{"code":"run_state_invalid","message":"m","status":"verifying"}}') : null;
+        $e = $this->failure(fn() => $uploader->drain($run, true));
+        $this->assertSame('api_run_state_invalid', $e->errorcode);
+        $this->assertSame(3, $uploader->pending(), 'The queue is kept.');
+        $this->assertNull($uploader->waiting_until());
+    }
+
+    public function test_a_chunk_of_another_folder_is_a_coding_error(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $uploader->queue(self::chunk($folder, 1), 'object');
+        $other = make_request_directory();
+        try {
+            $uploader->queue(self::chunk($other, 2), 'object');
+            $this->fail('No exception');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('An uploader sends the chunks of one run.', $e->getMessage());
+        }
+        $this->assertSame(1, $uploader->pending());
+        $this->assertSame([$folder . '/c1'], array_column($this->saved($folder)['items'], 'path'));
+        $this->assertFileDoesNotExist($other . '/uploads.json');
+    }
+
+    public function test_the_next_step_takes_over_the_files_that_could_not_be_removed(): void {
+        [$uploader, $run, $folder] = $this->start(1000000, 100, null, 0, null, static fn(string $path): bool => false);
+        $chunk = self::chunk($folder, 1);
+        $uploader->queue($chunk, 'object');
+        $uploader->drain($run, true);
+        $this->assertSame([$chunk->path], $uploader->leftovers());
+        // The next step has an uploader of its own, which reads them from the folder and removes them at its drain.
+        $next = ($this->another)();
+        $next->resume($run);
+        $this->assertSame([$chunk->path], $next->leftovers());
+        $next->drain($run, false);
+        $this->assertSame([], $next->leftovers());
+        $this->assertFileDoesNotExist($chunk->path);
+        $this->assertSame([], $this->saved($folder)['leftovers'] ?? []);
     }
 }

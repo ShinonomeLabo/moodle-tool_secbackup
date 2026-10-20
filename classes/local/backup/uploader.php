@@ -557,13 +557,10 @@ final class uploader {
                     $this->bandwidth()
                 );
             } catch (transport_exception $e) {
-                // The exception is made again here, so that nothing of the call with the URL stays in its trace.
+                // Only the code is kept, so that nothing of the call with the URL stays in a trace. The URL was checked when the
+                // service gave it (object_url::parse()), so a failure here is one of the connection or of the storage.
                 $code = $e->errorcode;
-                $info = $e->debuginfo;
                 unset($e);
-                if ($code === 'object_url_invalid') {
-                    throw new transport_exception($code, $info);
-                }
                 return $this->failed($run, $code);
             }
             if ($sent) {
@@ -631,14 +628,21 @@ final class uploader {
     }
 
     /**
-     * Reads the queue of a folder once, and keeps the chunks that were queued before it was read.
+     * Reads the queue of the folder of the run once.
+     *
+     * The uploader sends the chunks of one run: after its queue was read, a chunk of another folder is a coding error (resume()
+     * reads a folder again). So the queue in memory is empty when a folder is read.
      *
      * @param string $folder The folder of the run.
+     * @throws \coding_exception For a folder that is not the one that was read.
      */
     private function load(string $folder): void {
         $folder = rtrim($folder, '/');
         if ($this->loaded && $this->folder === $folder) {
             return;
+        }
+        if ($this->loaded) {
+            throw new \coding_exception('An uploader sends the chunks of one run.');
         }
         $this->folder = $folder;
         $this->loaded = true;
@@ -646,18 +650,11 @@ final class uploader {
         $text = is_file($path) ? error_silencer::run(static fn() => file_get_contents($path), $warning) : false;
         $data = is_string($text) ? json_decode($text, true, 8) : null;
         if (!is_array($data) || !is_array($data['items'] ?? null)) {
-            $this->largest = max([$this->largest, ...array_column($this->queue, 'size')]);
             return;
         }
         $kept = [];
         foreach ($data['items'] as $item) {
             if (self::valid_item($item, $folder) && is_file($item['path'])) {
-                $kept[] = $item;
-            }
-        }
-        $known = array_map(static fn(array $q): string => $q['kind'] . '|' . $q['name'], $kept);
-        foreach ($this->queue as $item) {
-            if (!in_array($item['kind'] . '|' . $item['name'], $known, true)) {
                 $kept[] = $item;
             }
         }
