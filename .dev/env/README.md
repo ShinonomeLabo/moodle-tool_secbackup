@@ -39,6 +39,27 @@ settings` and ends with the comment `End of tool_secbackup development settings.
 comment to the last one. The plugin's pages then show no developer warning, and registration with the fake service no longer
 works. Nothing else of the site is changed.
 
+## Another backup service
+
+`.dev/env/remote-service.sh <ver>` connects the sites of one Moodle version to a backup service other than the fake one, for
+example a copy of the backup service that runs on this machine. It reads two environment variables:
+
+    SECBK_SERVICE_URL=http://host.docker.internal:8080/api/backup/v1 \
+    SECBK_SERVICE_KEY=<standard base64 of the service's Ed25519 public key> \
+    .dev/env/remote-service.sh 503
+
+`SECBK_SERVICE_URL` is the connection URL that the site is registered with, and `SECBK_SERVICE_KEY` the key that the service
+signs its answers with. The script writes a block to the `config.php` of that version (shared by its databases) that defines
+`TOOL_SECBACKUP_DEVELOPER` with that key as the one trusted key. For an `http://` URL the block also accepts http, private hosts
+and other ports, and skips the network checks (a service reached over http runs on this machine or in a private network); for
+an `https://` URL it trusts the key and changes nothing else. Only one block may define the constant, so the block takes the
+place of the development settings of `devconfig.sh`; a second run replaces the block. The block starts with the comment
+`tool_secbackup remote service settings` and ends with `End of tool_secbackup remote service settings.`. While it is there,
+`devconfig.sh` does not add the settings of the fake service. To go back:
+
+    .dev/env/remote-service.sh 503 --off   # removes the block
+    .dev/env/devconfig.sh 503              # adds the settings of the fake service again
+
 ## Behat in other browsers
 
 `.dev/env/devconfig.sh` also adds the Behat profiles `firefox`, `edge` and `safari` to the same `config.php` (a second block,
