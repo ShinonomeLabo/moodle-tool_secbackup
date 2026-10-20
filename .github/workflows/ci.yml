@@ -289,22 +289,28 @@ jobs:
       - name: Command line scripts
         if: ${{ !cancelled() }}
         run: |
-          if [ -d moodle/public ]; then cli=moodle/public/admin/tool/secbackup/cli/diagnose.php; else cli=moodle/admin/tool/secbackup/cli/diagnose.php; fi
+          if [ -d moodle/public ]; then dir=moodle/public/admin/tool/secbackup/cli; else dir=moodle/admin/tool/secbackup/cli; fi
+          cli="$dir/diagnose.php"
           failed=0
+          # check <expected exit code> <script> [argument...]
           check() {
-            local expected="$1" code=0
-            shift
-            SECBK_COVERAGE_CLI=1 php "$cli" "$@" || code=$?
+            local expected="$1" script="$2" code=0
+            shift 2
+            SECBK_COVERAGE_CLI=1 php "$script" "$@" || code=$?
             if [ "$code" != "$expected" ]; then
-              echo "diagnose.php $* ended with exit code $code, expected $expected" >&2
+              echo "$(basename "$script") $* ended with exit code $code, expected $expected" >&2
               failed=1
             fi
           }
-          check 0 --help
-          check 1 --no-such-option
-          check 0 --endpoint=http://localhost:8099/api/lms-backup/v1
-          check 1 --endpoint=ftp://example.org/api
-          check 0
+          check 0 "$cli" --help
+          check 1 "$cli" --no-such-option
+          check 0 "$cli" --endpoint=http://localhost:8099/api/lms-backup/v1
+          check 1 "$cli" --endpoint=ftp://example.org/api
+          check 0 "$cli"
+          # The site of this job has no registration and no running backup, so the plain run runs nothing (2).
+          check 0 "$dir/backup.php" --help
+          check 1 "$dir/backup.php" --no-such-option
+          check 2 "$dir/backup.php"
           bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
           exit "$failed"
 
