@@ -28,6 +28,9 @@ use tool_secbackup\local\diagnostics\system_files;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class monitor {
+    /** @var string[] The reasons that verdict() gives; each is also the code of the error that stops a run. */
+    public const REASONS = ['server_busy', 'disk_low', 'db_slow', 'nfs_slow'];
+
     /** @var int One MiB. */
     private const MIB = 1048576;
 

@@ -19,6 +19,8 @@ namespace tool_secbackup\local\cli;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\Response;
 use tool_secbackup\local\api\enroll_result;
+use tool_secbackup\local\backup\limits;
+use tool_secbackup\local\backup\monitor;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\diagnostics\runner;
 use tool_secbackup\local\diagnostics\system_files;
@@ -62,6 +64,12 @@ final class diagnose_command_test extends \advanced_testcase {
         array $extensions = ['sodium'],
         ?string $root = null
     ): array {
+        $watch = new monitor(
+            new system_files($root ?? make_request_directory()),
+            new limits(2.0, 256, 500, 5.0, make_request_directory() . '/t', 0, 0),
+            static fn(): float => 1000.0,
+            static fn(string $folder): array => [100 * 1073741824, 200 * 1073741824]
+        );
         $settings = developer_settings::from_value(null);
         $guard = network_fakes::passing_guard();
         $runner = new runner(
@@ -69,7 +77,12 @@ final class diagnose_command_test extends \advanced_testcase {
             $guard,
             new transport($settings, $guard, new MockHandler($answers)),
             new system_files($root ?? make_request_directory()),
-            $extensions
+            $extensions,
+            $watch,
+            static fn(): array => [
+                'backup_auto_active' => 0, 'weekdays' => '0000000', 'hour' => 2, 'minute' => 0,
+                'timezone' => 'UTC', 'lastduration' => null,
+            ]
         );
         $lines = [];
         $code = (new diagnose_command($runner))->run($endpoint, static function (string $line) use (&$lines): void {

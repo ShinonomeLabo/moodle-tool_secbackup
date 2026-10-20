@@ -20,6 +20,7 @@ use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\runner;
 use tool_secbackup\local\backup\starter;
+use tool_secbackup\local\enrollment\state;
 
 /**
  * The backup on the command line: it goes on with the running backup, or starts one with --now, until the backup ends.
@@ -172,9 +173,20 @@ final class backup_command {
             return self::EXIT_DONE;
         }
         if ($result === 'aborted') {
-            $write($run->status() === 'refused'
-                ? get_string('cli_backup_refused', 'tool_secbackup', get_string('api_' . $run->abort_code(), 'tool_secbackup'))
-                : get_string('cli_backup_aborted', 'tool_secbackup', abort_reason::text((string) $run->abort_code())));
+            $code = (string) $run->abort_code();
+            if ($run->status() === 'refused') {
+                $platform = state::load()->platform_name();
+                $write(get_string(
+                    'cli_backup_refused',
+                    'tool_secbackup',
+                    abort_reason::refusal_text($code, $run->retry_at(), $platform)
+                ));
+                $advice = abort_reason::refusal_advice($code, $platform);
+            } else {
+                $write(get_string('cli_backup_aborted', 'tool_secbackup', abort_reason::text($code)));
+                $advice = abort_reason::advice($code);
+            }
+            $write(get_string('status_advice', 'tool_secbackup', $advice));
             return self::EXIT_STOPPED;
         }
         if ($result === 'paused') {

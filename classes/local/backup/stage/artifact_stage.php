@@ -227,6 +227,10 @@ final class artifact_stage {
             'count' => $i['count'],
             'signature' => artifact_signature::index($context->pair(), $context->siteid, $runid, $i['sha256'], $i['count']),
         ];
+        // The status page warns about the Moodle program from this flag: it is set when the program differs from the official
+        // files, and also when nothing could be compared, because then the whole program was sent (design 8.3).
+        [$official, $changed] = self::core_state($context);
+        set_config('coremodified', !$official || $changed > 0 ? 1 : 0, 'tool_secbackup');
         $stats = self::stats($context, $seams, $manifest, $index);
         try {
             $context->client->complete($context->endpoint, $context->pair(), $context->siteid, $runid, $manifest, $index, $stats);
@@ -243,6 +247,19 @@ final class artifact_stage {
     }
 
     /**
+     * What the comparison of the Moodle program with the official list found.
+     *
+     * @param run_context $context The step.
+     * @return array [whether an official list was compared with, how many files differ from it]
+     */
+    private static function core_state(run_context $context): array {
+        $official = (bool) $context->get('core', ['official' => false])['official'];
+        $changed = $context->journal('core_modified')->lines() + $context->journal('core_added')->lines()
+            + $context->journal('core_deleted')->lines();
+        return [$official, $changed];
+    }
+
+    /**
      * The statistics of the report, brought inside the size that the service takes.
      *
      * The list of the tables and the authentication methods are never empty: the service refuses an empty one.
@@ -254,12 +271,7 @@ final class artifact_stage {
      * @return array
      */
     private static function stats(run_context $context, array $seams, array $manifest, array $index): array {
-        $official = (bool) $context->get('core', ['official' => false])['official'];
-        $changed = $context->journal('core_modified')->lines() + $context->journal('core_added')->lines()
-            + $context->journal('core_deleted')->lines();
-        // The status page warns about the Moodle program from this flag: it is set when the program differs from the official
-        // files, and also when nothing could be compared, because then the whole program was sent (design 8.3).
-        set_config('coremodified', !$official || $changed > 0 ? 1 : 0, 'tool_secbackup');
+        [$official, $changed] = self::core_state($context);
         $stats = stats::collect(
             $context->get('tablerows', []),
             $context->get('bytes'),
@@ -327,7 +339,9 @@ final class artifact_stage {
             }
             $m = $context->get('manifest');
             $i = $context->get('index');
-            receipt::verify($envelope, $trust, $context->siteid, $runid, $m['sha256'], $i['sha256'], $i['count']);
+            $payload = receipt::verify($envelope, $trust, $context->siteid, $runid, $m['sha256'], $i['sha256'], $i['count']);
+            // The size is verified with the receipt; it is the size of the backup that the status page shows.
+            $context->set('stored_bytes', $payload['stored_bytes']);
             $context->next_stage('done');
             return self::finish($context);
         }

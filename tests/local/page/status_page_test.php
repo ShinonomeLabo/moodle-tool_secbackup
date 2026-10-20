@@ -22,6 +22,7 @@ use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\env\external_storage;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\settings;
+use tool_secbackup\local\backup\starter;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\enrollment\state;
@@ -350,11 +351,15 @@ final class status_page_test extends \advanced_testcase {
      * @param int $end When it ended.
      * @param int $bytes The bytes that were sent.
      * @param int $chunks The chunks that were sent.
+     * @param int|null $stored The size that the receipt named, or null for a run from before it was kept.
      * @return run_record
      */
-    private static function completed(int $start, int $end, int $bytes, int $chunks): run_record {
+    private static function completed(int $start, int $end, int $bytes, int $chunks, ?int $stored = null): run_record {
         $run = run_record::create('schedule', $start);
         $run->add_uploaded($bytes, $chunks);
+        if ($stored !== null) {
+            $run->keep(['stored_bytes' => $stored]);
+        }
         $run->finish($end);
         return $run;
     }
@@ -421,6 +426,24 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringContainsString(format_time(3725), $html);
         $this->assertStringNotContainsString(get_string('status_none_completed', 'tool_secbackup'), $html);
         $this->assertStringNotContainsString(display_size(1000), $html);
+    }
+
+    public function test_the_size_of_the_backup_is_the_one_of_the_receipt_and_the_sent_bytes_come_second(): void {
+        self::register();
+        self::completed(1760100000, 1760100100, 2097152, 3, 7340032);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_last_stored', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(display_size(7340032), $html);
+        $this->assertStringContainsString(get_string('status_last_size', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(display_size(2097152), $html);
+    }
+
+    public function test_a_run_from_before_the_size_was_kept_shows_only_the_sent_bytes(): void {
+        self::register();
+        self::completed(1760100000, 1760100100, 2097152, 3);
+        $html = (new status_page())->render();
+        $this->assertStringNotContainsString(get_string('status_last_stored', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(display_size(2097152), $html);
     }
 
     public function test_a_backup_in_progress_shows_its_stage_and_what_was_sent(): void {
@@ -559,6 +582,15 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString(s(get_string('status_aborted', 'tool_secbackup', userdate(1760000000))), $html);
     }
 
+    public function test_a_refusal_for_the_number_of_backups_says_when_one_can_start_again(): void {
+        self::register();
+        run_record::create('manual', 1760000000)->refuse('run_limit_reached', 1760000001, 3600);
+        $this->assertStringContainsString(
+            s(get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate(1760003601))),
+            (new status_page())->render()
+        );
+    }
+
     public function test_a_backup_that_started_after_a_refusal_hides_it(): void {
         self::register();
         run_record::create('manual', 1760000000)->refuse('contract_inactive', 1760000001);
@@ -622,8 +654,7 @@ final class status_page_test extends \advanced_testcase {
         foreach (['en', 'ja'] as $lang) {
             $string = [];
             include(\core_component::get_component_directory('tool_secbackup') . '/lang/' . $lang . '/tool_secbackup.php');
-            $answers = ['started', 'notregistered', 'notreceived', 'clock', 'memorylimit', 'running', 'autobackup', 'busy'];
-            foreach ($answers as $answer) {
+            foreach (starter::START_NOW_ANSWERS as $answer) {
                 $this->assertNotEmpty($string['start_' . $answer] ?? '', $lang . ' ' . $answer);
             }
         }

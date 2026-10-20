@@ -30,6 +30,9 @@ use tool_secbackup\local\api\client;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class abort_reason {
+    /** @var string[] The answers of the service that refuse to start a run and have a text of their own. */
+    private const REFUSALS = ['run_limit_reached', 'contract_inactive'];
+
     /**
      * Every reason that a run can record.
      *
@@ -63,5 +66,33 @@ final class abort_reason {
     public static function advice(string $code, ?string $lang = null): string {
         $id = in_array($code, self::codes(), true) ? 'abort_' . $code . '_advice' : 'abort_unknown_advice';
         return get_string_manager()->get_string($id, 'tool_secbackup', null, $lang);
+    }
+
+    /**
+     * What happened when the backup service did not start a run.
+     *
+     * @param string $code The answer of the service.
+     * @param int|null $retryat When the service lets a run start again, if it said so.
+     * @param string $platform The name of the platform.
+     * @return string Plain text.
+     */
+    public static function refusal_text(string $code, ?int $retryat, string $platform): string {
+        if ($code === 'run_limit_reached' && $retryat !== null) {
+            return get_string('refused_run_limit_reached_at', 'tool_secbackup', userdate($retryat));
+        }
+        $known = in_array($code, self::REFUSALS, true);
+        return get_string($known ? 'refused_' . $code : 'refused_unknown', 'tool_secbackup', $known ? $platform : $code);
+    }
+
+    /**
+     * What the administrator can do when the backup service did not start a run.
+     *
+     * @param string $code The answer of the service.
+     * @param string $platform The name of the platform.
+     * @return string Plain text.
+     */
+    public static function refusal_advice(string $code, string $platform): string {
+        $known = in_array($code, self::REFUSALS, true);
+        return get_string($known ? 'refused_' . $code . '_advice' : 'refused_unknown_advice', 'tool_secbackup', $platform);
     }
 }

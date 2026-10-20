@@ -29,6 +29,10 @@ use tool_secbackup\local\enrollment\state;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class starter {
+    /** @var string[] Every answer of start_now(): started, or the reason why not. */
+    public const START_NOW_ANSWERS = ['started', 'notregistered', 'notreceived', 'clock', 'memorylimit', 'running', 'autobackup',
+        'busy'];
+
     /** @var int The clock of this server may differ from the service's by less than this many seconds. */
     private const MAX_SKEW = 300;
 

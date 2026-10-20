@@ -386,6 +386,17 @@ final class run_record_test extends \advanced_testcase {
         $this->assertSame($run->id(), run_record::recent(1)[0]->id());
     }
 
+    public function test_the_time_when_a_refused_run_can_start_again_is_kept(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('manual', 1000);
+        $this->assertNull($run->retry_at());
+        $run->refuse('run_limit_reached', 1001, 3600);
+        $this->assertSame(4601, run_record::recent(1)[0]->retry_at());
+        $other = run_record::create('manual', 2000);
+        $other->refuse('contract_inactive', 2001);
+        $this->assertNull(run_record::recent(1)[0]->retry_at());
+    }
+
     public function test_the_note_of_a_stop_is_kept_with_the_progress(): void {
         $this->resetAfterTest();
         $run = run_record::create('cli', 1000);

@@ -479,18 +479,47 @@ final class run_record {
      * The run never started, so it is not an aborted run: it does not count as a stop in a row. It is the latest run of the
      * slot, so the schedule does not start another one in the same slot.
      *
+     * The time when the service lets another run start (the wait it gave) is kept in the progress under "refusal", not in
+     * the column of the next attempt, which belongs to a run that waits.
+     *
      * @param string $code The reason: the error code of the service.
      * @param int $now The current time.
+     * @param int|null $retryafter The seconds after which the service lets a run start again, if it said so.
      * @return bool Whether the run was live, and so was refused.
      */
-    public function refuse(string $code, int $now): bool {
-        return $this->change([
+    public function refuse(string $code, int $now, ?int $retryafter = null): bool {
+        $fields = [
             'status' => 'refused',
             'abortcode' => $code,
             'nextattempt' => null,
             'timefinished' => $now,
             'timemodified' => $now,
-        ], self::LIVE);
+        ];
+        if ($retryafter !== null) {
+            $progress = ['refusal' => ['retry_at' => $now + $retryafter]] + $this->progress();
+            $fields['progress'] = json_encode($progress, JSON_THROW_ON_ERROR);
+        }
+        return $this->change($fields, self::LIVE);
+    }
+
+    /**
+     * When the service lets another run start, after it refused this one for the number of runs of the plan.
+     *
+     * @return int|null UNIX time, or null when the service gave none.
+     */
+    public function retry_at(): ?int {
+        $at = $this->progress()['refusal']['retry_at'] ?? null;
+        return is_int($at) ? $at : null;
+    }
+
+    /**
+     * The size of the stored backup that the receipt of the service named.
+     *
+     * @return int|null Bytes, or null for a run that has no receipt (or from before it was kept).
+     */
+    public function stored_bytes(): ?int {
+        $bytes = $this->progress()['run']['stored_bytes'] ?? null;
+        return is_int($bytes) ? $bytes : null;
     }
 
     /**

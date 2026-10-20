@@ -39,6 +39,7 @@ Feature: See and start the backups of the site
     When I open "Plugins > Admin tools > Shinonome LMS Backup > Status" in site administration
     Then I should see "There is not enough free space in the temporary folder of the plugin, so the backup was stopped."
     And I should see "What to do: Free up space on the disk that holds the temporary folder"
+    And ".alert-danger" "css_element" should exist
 
   Scenario: A backup that the backup service did not start is shown with its own text
     Given the backup service did not start a backup of the site, with the answer "contract_inactive"
@@ -46,6 +47,8 @@ Feature: See and start the backups of the site
     Then I should see "The backup service did not start the latest backup"
     And I should see "The contract for the backup service on Example Platform is not active"
     And I should not see "was stopped."
+    And ".alert-warning" "css_element" should exist
+    And ".alert-danger" "css_element" should not exist
 
   Scenario: The reason and what to do are in Japanese for Japanese users
     Given a backup of the site was stopped with the reason "version_too_old"

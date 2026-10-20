@@ -150,15 +150,18 @@ class renderer extends \plugin_renderer_base {
         }
         // A run that completed has an end.
         $finished = (int) $last->finished_at();
-        $size = get_string('status_size_value', 'tool_secbackup', (object) [
+        $sent = get_string('status_size_value', 'tool_secbackup', (object) [
             'size' => display_size($last->bytes_uploaded()),
             'chunks' => $last->chunks_uploaded(),
         ]);
-        return [
-            [$label, userdate($finished)],
-            [get_string('status_last_size', 'tool_secbackup'), s($size)],
-            [get_string('status_last_duration', 'tool_secbackup'), format_time($finished - $last->started_at())],
-        ];
+        $rows = [[$label, userdate($finished)]];
+        // The size that the receipt named is the size of the backup; a run from before it was kept has only what it sent.
+        if ($last->stored_bytes() !== null) {
+            $rows[] = [get_string('status_last_stored', 'tool_secbackup'), display_size($last->stored_bytes())];
+        }
+        $rows[] = [get_string('status_last_size', 'tool_secbackup'), s($sent)];
+        $rows[] = [get_string('status_last_duration', 'tool_secbackup'), format_time($finished - $last->started_at())];
+        return $rows;
     }
 
     /**
@@ -197,16 +200,16 @@ class renderer extends \plugin_renderer_base {
             return $this->run_notice(
                 get_string('status_aborted', 'tool_secbackup', $when),
                 abort_reason::text($code),
-                abort_reason::advice($code)
+                abort_reason::advice($code),
+                notification::NOTIFY_ERROR
             );
         }
-        $known = in_array($code, ['run_limit_reached', 'contract_inactive'], true);
-        $id = $known ? 'refused_' . $code : 'refused_unknown';
-        $a = $known ? $state->platform_name() : $code;
+        // The service did not start the run: the site did nothing wrong, so this is a warning, not an error.
         return $this->run_notice(
             get_string('status_refused', 'tool_secbackup', $when),
-            get_string($id, 'tool_secbackup', $a),
-            get_string($id . '_advice', 'tool_secbackup', $a)
+            abort_reason::refusal_text($code, $latest->retry_at(), $state->platform_name()),
+            abort_reason::refusal_advice($code, $state->platform_name()),
+            notification::NOTIFY_WARNING
         );
     }
 
@@ -216,14 +219,15 @@ class renderer extends \plugin_renderer_base {
      * @param string $heading What happened to the backup.
      * @param string $reason Why, as plain text.
      * @param string $advice What the administrator can do, as plain text.
+     * @param string $type The type of the notification.
      * @return string
      */
-    private function run_notice(string $heading, string $reason, string $advice): string {
+    private function run_notice(string $heading, string $reason, string $advice, string $type): string {
         return $this->output->notification(
             html_writer::tag('p', s($heading), ['class' => 'font-weight-bold'])
             . html_writer::tag('p', s($reason))
             . html_writer::tag('p', s(get_string('status_advice', 'tool_secbackup', $advice)), ['class' => 'mb-0']),
-            notification::NOTIFY_ERROR,
+            $type,
             false
         );
     }

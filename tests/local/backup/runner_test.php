@@ -1160,6 +1160,7 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('aborted', $this->runner()->step($run, 600));
         $this->assertSame('refused', $run->status());
         $this->assertSame('contract_inactive', $run->abort_code());
+        $this->assertNull($run->retry_at());
         $this->assertSame(0, $this->fixture->count('POST', '/fail'));
         $this->assertSame(0, run_record::consecutive_aborts());
         $this->assertNull(run_record::active());
@@ -1171,6 +1172,8 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('aborted', $this->runner()->step($run, 600));
         $this->assertSame('refused', $run->status());
         $this->assertSame('run_limit_reached', $run->abort_code());
+        // The service answers with a wait of an hour.
+        $this->assertSame($this->fixture->time + 3600, $run->retry_at());
     }
 
     public function test_a_busy_service_at_the_start_makes_the_run_wait(): void {
@@ -1270,6 +1273,14 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('signature_invalid', $run->abort_code());
         // The service, which completed the run, refuses the report of the stop; the stop is recorded all the same.
         $this->assertSame('completed', $this->fixture->service->state['runs'][$run->run_uuid()]['status']);
+    }
+
+    public function test_the_size_that_the_receipt_names_is_kept_with_the_run(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertNull($run->stored_bytes());
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+        $stored = $this->fixture->service->state['runs'][$run->run_uuid()]['storedbytes'];
+        $this->assertSame((int) $stored, run_record::last_completed()->stored_bytes());
     }
 
     public function test_the_report_holds_statistics_that_the_service_takes(): void {

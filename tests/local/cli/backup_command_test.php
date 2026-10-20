@@ -119,6 +119,10 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertSame(1, $code);
         $this->assertSame(
             get_string('cli_backup_aborted', 'tool_secbackup', get_string('abort_server_busy', 'tool_secbackup')),
+            $lines[count($lines) - 2]
+        );
+        $this->assertSame(
+            get_string('status_advice', 'tool_secbackup', get_string('abort_server_busy_advice', 'tool_secbackup')),
             end($lines)
         );
     }
@@ -136,18 +140,31 @@ final class backup_command_test extends \advanced_testcase {
             'cli_backup_aborted',
             'tool_secbackup',
             get_string('abort_unknown', 'tool_secbackup', 'something_new')
-        ), end($lines));
+        ), $lines[count($lines) - 2]);
+        $this->assertSame(
+            get_string('status_advice', 'tool_secbackup', get_string('abort_unknown_advice', 'tool_secbackup')),
+            end($lines)
+        );
     }
 
     public function test_a_backup_that_the_service_refuses_exits_with_1(): void {
         $this->fixture->service->state['contractinactive'] = true;
         [$code, $lines] = $this->run_command(true);
         $this->assertSame(1, $code);
+        $platform = \tool_secbackup\local\enrollment\state::load()->platform_name();
         $this->assertSame(get_string(
             'cli_backup_refused',
             'tool_secbackup',
-            get_string('api_contract_inactive', 'tool_secbackup')
-        ), end($lines));
+            get_string('refused_contract_inactive', 'tool_secbackup', $platform)
+        ), $lines[count($lines) - 2]);
+        $this->assertSame(
+            get_string(
+                'status_advice',
+                'tool_secbackup',
+                get_string('refused_contract_inactive_advice', 'tool_secbackup', $platform)
+            ),
+            end($lines)
+        );
     }
 
     public function test_a_backup_that_cannot_start_exits_with_2(): void {
@@ -170,7 +187,7 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertSame(1, $code);
         $this->assertContains(get_string('cli_backup_failed', 'tool_secbackup', 'RuntimeException'), $lines);
         $expired = get_string('cli_backup_aborted', 'tool_secbackup', get_string('abort_expired', 'tool_secbackup'));
-        $this->assertSame($expired, end($lines));
+        $this->assertSame($expired, $lines[count($lines) - 2]);
         $this->assertGreaterThanOrEqual($started + 86400 + 600, $this->fixture->time);
         $this->assertSame(300, $this->slept[0]);
         foreach ($lines as $line) {

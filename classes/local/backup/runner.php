@@ -478,7 +478,7 @@ final class runner {
                 } catch (api_exception $e) {
                     $refused = in_array($e->errorcode, ['api_run_limit_reached', 'api_contract_inactive'], true);
                     if ($refused) {
-                        $run->refuse($e->servercode, $context->now());
+                        $run->refuse($e->servercode, $context->now(), $e->retryafter);
                         return 'refused';
                     }
                     if (in_array($e->errorcode, ['api_unavailable', 'api_rate_limited'], true)) {
