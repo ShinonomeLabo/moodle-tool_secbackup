@@ -850,8 +850,11 @@ final class series_writer_test extends \advanced_testcase {
         $writer = $this->writer();
         $digests = $writer->big_digests('dataroot', $this->base, 'big.bin');
         $handle = fopen($this->base . '/big.bin', 'r+b');
+        // The content is random, so the bytes are flipped: fixed bytes could be the ones already there.
         fseek($handle, series_writer::PIECE + 2);
-        fwrite($handle, 'xy');
+        $bytes = fread($handle, 2);
+        fseek($handle, series_writer::PIECE + 2);
+        fwrite($handle, ~$bytes);
         fclose($handle);
         $this->assertNull($writer->big_piece('dataroot', $this->base, 'big.bin', $digests, 1));
         $this->assertSame([], $this->files());

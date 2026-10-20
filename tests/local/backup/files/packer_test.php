@@ -542,8 +542,11 @@ final class packer_test extends \advanced_testcase {
     public function test_a_failed_check_leaves_no_file_with_the_name_of_a_chunk(): void {
         [$path, $hash] = $this->big_file(70 * self::MIB);
         $handle = fopen($path, 'r+b');
+        // The content is random, so the byte is flipped: a fixed byte could be the one already there.
         fseek($handle, 5);
-        fwrite($handle, 'X');
+        $byte = fread($handle, 1);
+        fseek($handle, 5);
+        fwrite($handle, ~$byte);
         rewind($handle);
         try {
             $this->packer()->add($hash, $handle, 70 * self::MIB);
