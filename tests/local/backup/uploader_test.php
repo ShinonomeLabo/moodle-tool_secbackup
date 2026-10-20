@@ -1202,4 +1202,33 @@ final class uploader_test extends \advanced_testcase {
         $this->assertFileDoesNotExist($chunk->path);
         $this->assertSame([], $this->saved($folder)['leftovers'] ?? []);
     }
+
+    public function test_an_upload_url_that_is_not_one_of_the_storage_stops_the_drain_without_the_url(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $uploader->queue(self::chunk($folder, 1), 'object');
+        $inner = $this->service->handler();
+        $this->intercept = function (RequestInterface $request) use ($inner): ?Response {
+            if (!str_ends_with($request->getUri()->getPath(), '/upload-urls')) {
+                return null;
+            }
+            // The answer of the service, with the URL of the item somewhere that is not the storage.
+            $answer = $inner($request, [])->wait();
+            $data = json_decode((string) $answer->getBody(), true);
+            $data['items'][0]['url'] = 'http://storage.example.org/_s3/x?X-Amz-Signature=secret5678';
+            return new Response(200, ['Content-Type' => 'application/json'], json_encode($data));
+        };
+        try {
+            $uploader->drain($run, true);
+            $this->fail('No exception');
+        } catch (\tool_secbackup\local\net\transport_exception $e) {
+            $this->assertSame('object_url_invalid', $e->errorcode);
+            $this->assertStringNotContainsString('secret5678', $e->getMessage());
+            $this->assertStringNotContainsString('storage.example.org', $e->getMessage());
+        }
+        // Nothing was sent: the chunk waits as it did, with no failed send counted, and the run does not wait.
+        $this->assertSame(1, $uploader->pending());
+        $this->assertSame(0, $this->saved($folder)['items'][0]['attempts']);
+        $this->assertNull($uploader->waiting_until());
+        $this->assertSame([], array_filter($this->seen, static fn(string $s): bool => str_starts_with($s, 'PUT ')));
+    }
 }

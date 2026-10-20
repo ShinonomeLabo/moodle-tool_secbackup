@@ -459,10 +459,11 @@ final class file_source_test extends \advanced_testcase {
 
     public function test_a_piece_that_the_file_does_not_have_is_a_coding_error_before_anything_is_read(): void {
         [$source, $hash, $size, $digests, $packer] = $this->three_pieces();
-        foreach ([-1, 3] as $piece) {
+        // Pieces before the first and after the last, and a file too small to have pieces at all.
+        foreach ([[$size, -1], [$size, 3], [packer::FILE_LIMIT - 1, 0]] as [$claimed, $piece]) {
             try {
-                $source->big_piece($hash, $size, $piece, $digests[0], $packer);
-                $this->fail('No exception for piece ' . $piece);
+                $source->big_piece($hash, $claimed, $piece, $digests[0], $packer);
+                $this->fail('No exception for piece ' . $piece . ' of ' . $claimed . ' bytes');
             } catch (\coding_exception $e) {
                 $this->assertStringContainsString('A piece of a big file is one that the file has.', $e->getMessage());
             }
@@ -471,7 +472,6 @@ final class file_source_test extends \advanced_testcase {
     }
 
     public function test_an_earlier_piece_or_another_content_opens_the_stream_again(): void {
-        global $DB;
         $other = random_bytes(packer::FILE_LIMIT + 10);
         $otherhash = $this->make($other, 'other.bin')->get_contenthash();
         [$source, $hash, $size, $digests, $packer] = $this->three_pieces();

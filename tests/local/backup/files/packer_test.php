@@ -713,6 +713,45 @@ final class packer_test extends \advanced_testcase {
         $this->assertSame([], $packer->entries());
     }
 
+    /**
+     * The names in the folder of the chunks that look like the name of a chunk.
+     *
+     * @return string[]
+     */
+    private function chunk_named_files(): array {
+        return array_values(array_filter(
+            $this->files(),
+            static fn(string $name): bool => preg_match('/^[0-9a-f]{64}\z/', $name) === 1
+        ));
+    }
+
+    public function test_no_piece_has_the_name_of_its_chunk_before_it_is_checked(): void {
+        [$path, $hash] = $this->big_file(40 * self::MIB);
+        $packer = $this->packer();
+        $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 40 * self::MIB);
+        fclose($handle);
+        $seen = null;
+        $during = null;
+        failing_stream::fail(0);
+        failing_stream::$onread = function (int $given) use (&$seen, &$during): void {
+            // The folder half way through the reading of the piece.
+            if ($given > 16 * self::MIB && $seen === null) {
+                $seen = $this->chunk_named_files();
+                $during = $this->files();
+            }
+        };
+        // The stand-in does not fail, but its hook is called; the piece is read with the hook in place.
+        $handle = fopen(failing_stream::PROTOCOL . '://' . $path, 'rb');
+        $info = $packer->big_piece($hash, $handle, 40 * self::MIB, 0, $digests[0]);
+        fclose($handle);
+        $this->assertSame([], $seen, 'No file has the name of a chunk while the piece is read.');
+        // The piece is written under its provisional name (and the writer's own name for a file that it is still writing).
+        $this->assertCount(1, $during);
+        $this->assertStringStartsWith($info->name . packer::UNVERIFIED, $during[0]);
+        $this->assertSame([$info->name], $this->files(), 'Only the piece with the name of its chunk is left.');
+    }
+
     public function test_a_piece_out_of_the_file_is_refused(): void {
         $this->expectException(\coding_exception::class);
         $this->packer()->big_piece(sha1('x'), self::stream('x'), 5 * self::MIB, 1, hash('sha256', 'x'));

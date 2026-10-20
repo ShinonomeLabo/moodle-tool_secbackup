@@ -2215,20 +2215,32 @@ final class runner_test extends \advanced_testcase {
         global $DB;
         // Without a big file between them in the order of the hashes, which would send a part of the pack first.
         $DB->delete_records('files', ['contenthash' => $this->hashes['big']]);
+        // A pack is written once its files reach 32 MiB. Nine files of almost 4 MiB reach it, whatever the order of the hashes,
+        // so with ten the pack is written while the stage goes on and at least one file comes after it.
         $hashes = [];
-        for ($i = 0; $i < 9; $i++) {
+        for ($i = 0; $i < 10; $i++) {
             $hashes[] = $this->store_file('full' . $i . '.bin', random_bytes(packer::FILE_LIMIT - 1));
         }
         $run = run_record::create('manual', $this->fixture->time);
-        $this->assertSame('done', $this->finish($this->runner(), $run));
+        $sent = [];
+        $this->fixture->intercept = function (RequestInterface $request) use ($run, &$sent) {
+            if ($request->getMethod() === 'PUT') {
+                $sent[] = [$run->stage(), (int) $request->getBody()->getSize()];
+            }
+            return null;
+        };
+        // No room: whatever waits is sent before the next chunk is made, so the full pack goes before the next file.
+        $runner = $this->runner(['limits' => $this->limits(0), 'diskspace' => fn(string $folder): array => [0, 1000]]);
+        $this->assertSame('done', $this->finish($runner, $run));
         $chunks = [];
         foreach ($hashes as $hash) {
             $entries = $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash);
             $this->assertCount(1, $entries, $hash);
             $chunks[$entries[0]['chunk']] = true;
         }
-        // More than 32 MiB of small files do not fit one pack.
         $this->assertGreaterThan(1, count($chunks));
+        $full = array_filter($sent, static fn(array $put): bool => $put[0] === 'files' && $put[1] >= packer::PACK_AT);
+        $this->assertNotEmpty($full, 'The full pack was sent while the run was in the stage of the files.');
         [, $sizes] = $this->index($run->run_uuid());
         $this->assertSame($this->stored_chunks(), $sizes);
     }
