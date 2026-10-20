@@ -291,6 +291,15 @@ final class starter_test extends \advanced_testcase {
         $this->assertSame('started', starter::maybe_start(self::inside(), [self::class, 'calm']));
     }
 
+    #[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+    /**
+     * A small memory limit and a small extra limit of Moodle hold the start back.
+     *
+     * The test runs in a process of its own: PHP does not lower the limit below what is in use, and a long run (with coverage
+     * above all) uses more than the limit of the test.
+     *
+     * @runInSeparateProcess
+     */
     public function test_a_small_ini_value_and_a_small_extra_limit_hold_the_start_back(): void {
         global $CFG;
         $this->ready();
