@@ -216,65 +216,26 @@ final class packer_test extends \advanced_testcase {
         $this->assertSame([], $this->files());
     }
 
-    public function test_a_file_of_5_mib_is_one_piece_at_once(): void {
-        [$path, $hash] = $this->big_file(5 * self::MIB);
-        $packer = $this->packer();
-        $handle = fopen($path, 'rb');
-        $infos = $packer->add($hash, $handle, 5 * self::MIB);
-        fclose($handle);
-        $this->assertCount(1, $infos);
-        $this->assertSame(chunk_name::file(self::key(), $hash, 0), $infos[0]->name);
-        $this->assertSame([$infos[0]->name], $this->files());
-        $this->assertSame([
-            ['t' => 'file', 'contenthash' => $hash, 'size' => 5 * self::MIB, 'chunk' => $infos[0]->name,
-                'offset' => $infos[0]->items[0]['offset'], 'length' => $infos[0]->items[0]['length'], 'piece' => 0,
-                'pieces' => 1],
-        ], $packer->entries());
-        // The entry is enough to read the piece back.
-        $entry = $packer->entries()[0];
-        $this->assertSame(file_get_contents($path), self::reader($infos[0])->read_item($entry['offset']));
-        $this->assertSame([], $packer->flush());
-    }
-
-    public function test_the_limit_of_a_big_file_is_4_mib_of_the_size_in_the_table(): void {
+    public function test_a_file_of_4_mib_or_more_is_not_packed_but_refused(): void {
         [$path, $hash] = $this->big_file(4 * self::MIB - 1);
         $packer = $this->packer();
         $handle = fopen($path, 'rb');
         $this->assertSame([], $packer->add($hash, $handle, 4 * self::MIB - 1));
         fclose($handle);
+        // A big file goes through big_digests() and big_piece(): add() refuses it before it reads anything.
         [$path, $hash] = $this->big_file(4 * self::MIB);
         $handle = fopen($path, 'rb');
-        $this->assertCount(1, $packer->add($hash, $handle, 4 * self::MIB));
-        fclose($handle);
-    }
-
-    public function test_a_file_of_70_mib_is_three_pieces(): void {
-        [$path, $hash] = $this->big_file(70 * self::MIB);
-        $packer = $this->packer();
-        $handle = fopen($path, 'rb');
-        $infos = $packer->add($hash, $handle, 70 * self::MIB);
-        fclose($handle);
-        $this->assertCount(3, $infos);
-        $sizes = [32 * self::MIB, 32 * self::MIB, 6 * self::MIB];
-        $whole = hash_init('sha1');
-        $digests = [];
-        $entries = $packer->entries();
-        $this->assertCount(3, $entries);
-        foreach ($infos as $i => $info) {
-            $this->assertSame(chunk_name::file(self::key(), $hash, $i), $info->name);
-            $this->assertSame([
-                't' => 'file', 'contenthash' => $hash, 'size' => 70 * self::MIB, 'chunk' => $info->name,
-                'offset' => $info->items[0]['offset'], 'length' => $info->items[0]['length'], 'piece' => $i, 'pieces' => 3,
-            ], $entries[$i]);
-            // Every piece is read back through its entry, and the pieces are not alike.
-            $plain = self::reader($info)->read_item($entries[$i]['offset']);
-            $this->assertSame($sizes[$i], strlen($plain));
-            $digests[$i] = md5($plain);
-            hash_update($whole, $plain);
+        try {
+            $packer->add($hash, $handle, 4 * self::MIB);
+            $this->fail('No exception');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('A file of FILE_LIMIT bytes or more is not packed.', $e->getMessage());
         }
-        $this->assertCount(3, array_unique($digests));
-        $this->assertSame($hash, hash_final($whole));
-        $this->assertCount(3, $this->files());
+        $this->assertSame(0, ftell($handle));
+        fclose($handle);
+        $this->assertSame([], $this->files());
+        $this->assertSame([], $packer->entries());
+        $this->assertCount(1, $packer->flush(), 'The small file still waits for its pack.');
     }
 
     public function test_the_small_files_are_packed_when_32_mib_are_pending(): void {
@@ -302,7 +263,9 @@ final class packer_test extends \advanced_testcase {
         $packer->add(sha1($small), self::stream($small), strlen($small));
         [$path, $hash] = $this->big_file(5 * self::MIB);
         $handle = fopen($path, 'rb');
-        $packer->add($hash, $handle, 5 * self::MIB);
+        $digests = $packer->big_digests($hash, $handle, 5 * self::MIB);
+        rewind($handle);
+        $packer->big_piece($hash, $handle, 5 * self::MIB, 0, $digests[0]);
         fclose($handle);
         // The small file is not in a chunk yet, so it has no entry yet.
         $this->assertSame([$hash], array_column($packer->entries(), 'contenthash'));
@@ -335,54 +298,20 @@ final class packer_test extends \advanced_testcase {
         $this->assertCount(1, $infos[0]->items);
     }
 
-    public function test_a_big_file_with_other_content_is_tamper_detected_and_nothing_is_left(): void {
-        [$path, $hash] = $this->big_file(5 * self::MIB);
-        $packer = $this->packer();
-        // The same length, another content: the name is the hash of the original.
-        $other = self::stream(random_bytes(5 * self::MIB));
-        try {
-            $packer->add($hash, $other, 5 * self::MIB);
-            $this->fail('A big file with other content was accepted');
-        } catch (plugin_exception $e) {
-            $this->assertSame('tamper_detected', $e->errorcode);
-        }
-        $this->assertSame([], $this->files());
-        $this->assertSame([], $packer->entries());
-        $this->assertSame([], $packer->flush());
-    }
-
-    public function test_a_change_in_the_last_piece_removes_the_pieces_that_were_finished(): void {
-        [$path, $hash] = $this->big_file(70 * self::MIB);
-        $handle = fopen($path, 'r+b');
-        fseek($handle, -1, SEEK_END);
-        $last = ord(fread($handle, 1));
-        fseek($handle, -1, SEEK_END);
-        fwrite($handle, chr(($last + 1) % 256));
-        rewind($handle);
-        $packer = $this->packer();
-        try {
-            $packer->add($hash, $handle, 70 * self::MIB);
-            $this->fail('A changed file was accepted');
-        } catch (plugin_exception $e) {
-            $this->assertSame('tamper_detected', $e->errorcode);
-        }
-        fclose($handle);
-        $this->assertSame([], $this->files());
-        $this->assertSame([], $packer->entries());
-    }
-
-    public function test_a_big_file_with_more_or_less_than_its_size_is_tamper_detected(): void {
+    public function test_a_piece_that_ends_before_its_length_is_tamper_detected_and_leaves_nothing(): void {
         [$path, $hash] = $this->big_file(5 * self::MIB);
         $content = file_get_contents($path);
-        foreach ([$content . 'x', substr($content, 0, -1)] as $other) {
-            try {
-                $this->packer()->add($hash, self::stream($other), 5 * self::MIB);
-                $this->fail('A big file of another length was accepted');
-            } catch (plugin_exception $e) {
-                $this->assertSame('tamper_detected', $e->errorcode);
-            }
-            $this->assertSame([], $this->files());
+        $packer = $this->packer();
+        // The first read gave the digest of the whole piece; the stream of the second read ends one byte early.
+        $digest = hash('sha256', $content);
+        try {
+            $packer->big_piece($hash, self::stream(substr($content, 0, -1)), 5 * self::MIB, 0, $digest);
+            $this->fail('A piece that ends early was accepted');
+        } catch (plugin_exception $e) {
+            $this->assertSame('tamper_detected', $e->errorcode);
         }
+        $this->assertSame([], $this->files());
+        $this->assertSame([], $packer->entries());
     }
 
     public function test_a_failed_read_of_a_small_file_is_nfs_slow_and_leaves_the_pack_alone(): void {
@@ -405,14 +334,16 @@ final class packer_test extends \advanced_testcase {
         $this->assertSame([sha1($good)], array_column($packer->entries(), 'contenthash'));
     }
 
-    public function test_a_failed_read_of_a_big_file_is_nfs_slow_and_leaves_nothing(): void {
-        [$path, $hash] = $this->big_file(70 * self::MIB);
+    public function test_a_failed_read_of_a_piece_is_nfs_slow_and_leaves_nothing(): void {
+        [$path, $hash] = $this->big_file(5 * self::MIB);
         $packer = $this->packer();
-        // The first piece is written, the second fails.
-        failing_stream::fail(1, 40 * self::MIB);
+        $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 5 * self::MIB);
+        fclose($handle);
+        failing_stream::fail(1, 3 * self::MIB);
         $handle = fopen(failing_stream::PROTOCOL . '://' . $path, 'rb');
         try {
-            $packer->add($hash, $handle, 70 * self::MIB);
+            $packer->big_piece($hash, $handle, 5 * self::MIB, 0, $digests[0]);
             $this->fail('A failed read was accepted');
         } catch (plugin_exception $e) {
             $this->assertSame('nfs_slow', $e->errorcode);
@@ -420,19 +351,21 @@ final class packer_test extends \advanced_testcase {
         fclose($handle);
         $this->assertSame([], $this->files());
         $this->assertSame([], $packer->entries());
-        // The same file is packed from its start when it is read again.
+        // The piece is written when it is read again.
         $handle = fopen($path, 'rb');
-        $this->assertCount(3, $packer->add($hash, $handle, 70 * self::MIB));
+        $packer->big_piece($hash, $handle, 5 * self::MIB, 0, $digests[0]);
         fclose($handle);
-        $this->assertCount(3, $packer->entries());
+        $this->assertCount(1, $packer->entries());
     }
 
-    public function test_a_folder_that_cannot_be_written_is_temp_write_failed_for_a_big_file_and_a_pack(): void {
+    public function test_a_folder_that_cannot_be_written_is_temp_write_failed_for_a_piece_and_a_pack(): void {
         [$path, $hash] = $this->big_file(5 * self::MIB);
         $packer = $this->packer($this->dir . '/no-such-folder');
         $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 5 * self::MIB);
+        rewind($handle);
         try {
-            $packer->add($hash, $handle, 5 * self::MIB);
+            $packer->big_piece($hash, $handle, 5 * self::MIB, 0, $digests[0]);
             $this->fail('A chunk was written to a folder that does not exist');
         } catch (plugin_exception $e) {
             $this->assertSame('temp_write_failed', $e->errorcode);
@@ -475,10 +408,12 @@ final class packer_test extends \advanced_testcase {
         [$path, $hash] = $this->big_file(5 * self::MIB);
         $name = chunk_name::file(self::key(), $hash, 0);
         mkdir($this->dir . '/' . $name);
-        $handle = fopen($path, 'rb');
         $packer = $this->packer();
+        $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 5 * self::MIB);
+        rewind($handle);
         try {
-            $packer->add($hash, $handle, 5 * self::MIB);
+            $packer->big_piece($hash, $handle, 5 * self::MIB, 0, $digests[0]);
             $this->fail('A chunk was written over a folder');
         } catch (plugin_exception $e) {
             $this->assertSame('temp_write_failed', $e->errorcode);
@@ -490,69 +425,14 @@ final class packer_test extends \advanced_testcase {
 
     public function test_a_read_that_fails_after_the_last_byte_is_nfs_slow(): void {
         [$path, $hash] = $this->big_file(5 * self::MIB);
+        // The first read of a big file reads one byte more to see the end, and that read fails.
         failing_stream::fail(1, 5 * self::MIB);
         $handle = fopen(failing_stream::PROTOCOL . '://' . $path, 'rb');
         try {
-            $this->packer()->add($hash, $handle, 5 * self::MIB);
+            $this->packer()->big_digests($hash, $handle, 5 * self::MIB);
             $this->fail('A failed read was accepted');
         } catch (plugin_exception $e) {
             $this->assertSame('nfs_slow', $e->errorcode);
-        }
-        fclose($handle);
-        $this->assertSame([], $this->files());
-    }
-
-    /**
-     * The names in the folder of the chunks that look like the name of a chunk.
-     *
-     * @return string[]
-     */
-    private function chunk_named_files(): array {
-        return array_values(array_filter(
-            $this->files(),
-            static fn(string $name): bool => preg_match('/^[0-9a-f]{64}\z/', $name) === 1
-        ));
-    }
-
-    public function test_no_piece_has_its_final_name_before_the_whole_file_is_checked(): void {
-        [$path, $hash] = $this->big_file(70 * self::MIB);
-        $seen = [];
-        failing_stream::fail(0);
-        failing_stream::$onread = function (int $given) use (&$seen): void {
-            // Snapshot of the folder when the reading of the last piece is under way.
-            if ($given > 40 * self::MIB && $seen === []) {
-                $seen = $this->chunk_named_files();
-            }
-        };
-        $handle = fopen(failing_stream::PROTOCOL . '://' . $path, 'rb');
-        // The stand-in does not fail, but its hook is called; the file is read with the hook in place.
-        $infos = $this->packer()->add($hash, $handle, 70 * self::MIB);
-        fclose($handle);
-        $this->assertSame([], $seen, 'No file with the name of a chunk exists while the file is still being read.');
-        $names = array_map(static fn(chunk_info $info): string => $info->name, $infos);
-        sort($names);
-        $this->assertSame($names, $this->chunk_named_files());
-        foreach ($infos as $info) {
-            $this->assertSame($this->dir . '/' . $info->name, $info->path);
-            $this->assertFileExists($info->path);
-        }
-        $this->assertSame(3, count($this->files()), 'Nothing but the three chunks is left.');
-    }
-
-    public function test_a_failed_check_leaves_no_file_with_the_name_of_a_chunk(): void {
-        [$path, $hash] = $this->big_file(70 * self::MIB);
-        $handle = fopen($path, 'r+b');
-        // The content is random, so the byte is flipped: a fixed byte could be the one already there.
-        fseek($handle, 5);
-        $byte = fread($handle, 1);
-        fseek($handle, 5);
-        fwrite($handle, ~$byte);
-        rewind($handle);
-        try {
-            $this->packer()->add($hash, $handle, 70 * self::MIB);
-            $this->fail('A changed file was accepted');
-        } catch (plugin_exception $e) {
-            $this->assertSame('tamper_detected', $e->errorcode);
         }
         fclose($handle);
         $this->assertSame([], $this->files());
@@ -602,8 +482,9 @@ final class packer_test extends \advanced_testcase {
         $size = strlen($content);
         $this->assertGreaterThanOrEqual(4 * self::MIB, $size);
         $packer = $this->packer(full_disk_stream::PROTOCOL . '://' . $this->dir);
+        $digests = $packer->big_digests(sha1($content), self::stream($content), $size);
         try {
-            $packer->add(sha1($content), self::stream($content), $size);
+            $packer->big_piece(sha1($content), self::stream($content), $size, 0, $digests[0]);
             $this->fail('A chunk was written to a full disk');
         } catch (plugin_exception $e) {
             $this->assertSame('temp_write_failed', $e->errorcode);
@@ -664,15 +545,12 @@ final class packer_test extends \advanced_testcase {
             $this->assertSame(1, substr_count($e->getMessage(), 'Coding error detected'));
             $this->assert_trace_hides_the_key($e);
         }
-        [$path, $hash] = $this->big_file(5 * self::MIB);
-        $handle = fopen($path, 'rb');
         try {
-            $this->packer()->add(strtoupper($hash), $handle, 5 * self::MIB);
+            $this->packer()->add(strtoupper(sha1('x')), self::stream('x'), 1);
             $this->fail('A content hash in capitals was accepted');
         } catch (\coding_exception $e) {
             $this->assert_trace_hides_the_key($e);
         }
-        fclose($handle);
         $this->assertSame([], $this->files());
     }
 

@@ -30,16 +30,17 @@ use tool_secbackup\local\remade_exception;
  *
  * A file of FILE_LIMIT bytes or more (by the size in the files table, never by the size that the file system gives: that
  * can be stale on a network share) is written as pieces of PIECE bytes of content, each in a chunk of its own, named
- * after the content hash and the number of the piece. A smaller file is read into memory, checked, and joins the pending
- * small files; when they have PACK_AT bytes, or at flush(), they are written as one chunk with an item for each file. The
- * pending files and the one being read are in memory together: under PACK_AT + FILE_LIMIT, that is less than 36 MiB.
+ * after the content hash and the number of the piece: big_digests() reads it once and checks it, and big_piece() writes
+ * one piece at a time. A smaller file goes to add(): it is read into memory, checked, and joins the pending small files;
+ * when they have PACK_AT bytes, or at flush(), they are written as one chunk with an item for each file. The pending files
+ * and the one being read are in memory together: under PACK_AT + FILE_LIMIT, that is less than 36 MiB.
  *
- * Nothing of a file leaves add() before its whole content has been read and its SHA-1 equals the content hash: a chunk is
- * named by the hash that the file claims, so a piece of other content under that name would be skipped by later runs as
- * already stored. So add() is all or nothing for a file: when a read fails (nfs_slow), the content is not the one that the
- * hash names, or the length is not the size in the table (tamper_detected), or a chunk cannot be written
- * (temp_write_failed), every chunk file of that file is removed, no entry is recorded, and the pack that is pending is as
- * it was. Reading the file again is for the caller; file_source::pack() does that.
+ * Nothing of a file leaves the packer before its content has been checked against the content hash: a chunk is named by
+ * the hash that the file claims, so a piece of other content under that name would be skipped by later runs as already
+ * stored. When a read fails (nfs_slow), the content is not the one that the hash names, or the length is not the size in
+ * the table (tamper_detected), or a chunk cannot be written (temp_write_failed), no chunk file of that file is left, no
+ * entry is recorded, and the pack that is pending is as it was. Reading the file again is for the caller; file_source
+ * does that.
  *
  * The key for the names of the chunks is kept the way block_writer keeps it.
  *
@@ -78,7 +79,7 @@ final class packer {
     /** @var string Folder of the chunks. */
     private string $tempdir;
 
-    /** @var \HashContext|null SHA-1 of the content of the big file that is being packed. */
+    /** @var \HashContext|null The digest of the big file, or of its piece, that is being read. */
     private ?\HashContext $digest = null;
 
     /** @var array[] The small files that wait for a pack: 'hash', 'data' and 'seq' (their place in the entries). */
@@ -126,23 +127,23 @@ final class packer {
     }
 
     /**
-     * Packs a file.
+     * Packs a small file. A big file (FILE_LIMIT bytes or more) is handed out with big_digests() and big_piece() instead.
      *
      * @param string $contenthash Content hash of the file (SHA-1, lower-case hexadecimal).
      * @param resource $handle An open stream at the first byte of the content; the caller closes it.
-     * @param int $size Size of the file in the files table; it decides how the file is packed and what length it must have.
-     * @return chunk_info[] The chunks that are ready to be sent: the pieces of a big file, or the pack that this file filled.
-     *     Empty when the file waits for a pack.
-     * @throws \coding_exception For a content hash that is not a SHA-1.
+     * @param int $size Size of the file in the files table, below FILE_LIMIT; the length the content must have.
+     * @return chunk_info[] The pack that this file filled, ready to be sent; empty when the file waits for a pack.
+     * @throws \coding_exception For a content hash that is not a SHA-1, or a size of FILE_LIMIT or more; nothing is read then.
      * @throws plugin_exception With nfs_slow when the file cannot be read to its end, with tamper_detected when its content
-     *     or length is not the one that the hash and the size name, and with temp_write_failed when a chunk cannot be written.
+     *     or length is not the one that the hash and the size name, and with temp_write_failed when the pack cannot be written.
      */
     public function add(string $contenthash, $handle, int $size): array {
         // The name of the first piece is made for its check of the content hash only.
         $this->file_name($contenthash, 0);
-        return $size < self::FILE_LIMIT
-            ? $this->add_small($contenthash, $handle, $size)
-            : $this->add_big($contenthash, $handle, $size);
+        if ($size >= self::FILE_LIMIT) {
+            throw new \coding_exception('A file of FILE_LIMIT bytes or more is not packed.');
+        }
+        return $this->add_small($contenthash, $handle, $size);
     }
 
     /**
@@ -165,7 +166,8 @@ final class packer {
         if ($size < self::FILE_LIMIT) {
             throw new \coding_exception('A big file has FILE_LIMIT bytes or more.');
         }
-        // Held here, as in add_big(): a hash context in the arguments of a call is in the trace of an exception.
+        // Held here and not passed on: a hash context in the arguments of a call is in the trace of an exception, and it
+        // serialises the last bytes that were hashed.
         $this->digest = hash_init('sha1');
         try {
             $digests = [];
@@ -213,12 +215,18 @@ final class packer {
         } finally {
             $this->digest = null;
         }
+        $path = $info->path;
         if (!$same) {
-            $path = $info->path;
             error_silencer::run(static fn() => unlink($path), $warning);
             throw new plugin_exception('tamper_detected');
         }
-        $info = $this->publish($info);
+        try {
+            $info = $this->publish($info);
+        } catch (plugin_exception $e) {
+            // The piece that could not get its name is not left with the provisional one either.
+            error_silencer::run(static fn() => unlink($path), $warning);
+            throw $e;
+        }
         $this->entries[$this->sequence++] = [
             't' => 'file',
             'contenthash' => $contenthash,
@@ -361,57 +369,6 @@ final class packer {
         $this->pending = [];
         $this->pendingbytes = 0;
         return $info;
-    }
-
-    /**
-     * Writes a big file as pieces, and keeps them only if its SHA-1 is the content hash.
-     *
-     * @param string $contenthash Content hash.
-     * @param resource $handle The stream.
-     * @param int $size Size in the files table.
-     * @return chunk_info[] The pieces.
-     */
-    private function add_big(string $contenthash, $handle, int $size): array {
-        $pieces = intdiv($size + self::PIECE - 1, self::PIECE);
-        // Held here and not passed to write_piece(): a hash context in the arguments of a call is in the trace of an exception,
-        // and it serialises the last bytes that were hashed.
-        $this->digest = hash_init('sha1');
-        $unverified = [];
-        $infos = [];
-        try {
-            for ($piece = 0; $piece < $pieces; $piece++) {
-                $length = min(self::PIECE, $size - $piece * self::PIECE);
-                $unverified[] = $this->write_piece($contenthash, $piece, $handle, $length);
-            }
-            self::expect_end($handle);
-            if (hash_final($this->digest) !== $contenthash) {
-                throw new plugin_exception('tamper_detected');
-            }
-            // Only now do the pieces get the names that later runs trust.
-            foreach ($unverified as $info) {
-                $infos[] = $this->publish($info);
-            }
-        } catch (\Throwable $e) {
-            foreach (array_merge($unverified, $infos) as $info) {
-                error_silencer::run(static fn() => unlink($info->path), $warning);
-            }
-            throw $e;
-        } finally {
-            $this->digest = null;
-        }
-        foreach ($infos as $piece => $info) {
-            $this->entries[$this->sequence++] = [
-                't' => 'file',
-                'contenthash' => $contenthash,
-                'size' => $size,
-                'chunk' => $info->name,
-                'offset' => $info->items[0]['offset'],
-                'length' => $info->items[0]['length'],
-                'piece' => $piece,
-                'pieces' => $pieces,
-            ];
-        }
-        return $infos;
     }
 
     /**
