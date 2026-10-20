@@ -626,10 +626,14 @@ final class uploader_test extends \advanced_testcase {
     }
 
     public function test_a_run_without_an_id_at_the_service_is_a_coding_error(): void {
-        [$uploader, , $folder] = $this->start();
-        $run = run_record::create('manual', self::NOW);
+        global $DB;
+        [$uploader, $run, $folder] = $this->start();
+        // The run of the folder, without its ID at the service.
+        $DB->set_field('tool_secbackup_runs', 'runuuid', null, ['id' => $run->id()]);
+        $run->reload();
         $uploader->queue(self::chunk($folder, 1), 'object');
         $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage('A run is sent for after the backup service has started it.');
         $uploader->drain($run, true);
     }
 
