@@ -1513,6 +1513,11 @@ final class runner_test extends \advanced_testcase {
     }
 
     public function test_a_send_that_fails_in_any_stage_is_tried_again_in_15_minutes(): void {
+        // The data root sends while the run is in its stage whatever the order of the content hashes: the piece of a big file
+        // (the first in the walk) is queued after its commit and sent before the chunk of the next file is made. Without it,
+        // the stage would send only a chunk that the files stage left in the queue, and the files stage leaves none when
+        // its last content in hash order is one that is in no store ('missing') and the content before it is the big one.
+        file_put_contents($this->dataroot . '/big.bin', random_bytes(series_writer::FILE_LIMIT + 10));
         $failed = [];
         $run = run_record::create('manual', $this->fixture->time);
         $this->fixture->intercept = function (RequestInterface $request) use ($run, &$failed) {
