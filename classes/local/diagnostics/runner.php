@@ -17,6 +17,10 @@
 namespace tool_secbackup\local\diagnostics;
 
 use tool_secbackup\local\api\client;
+use tool_secbackup\local\backup\autobackup_watch;
+use tool_secbackup\local\backup\limits;
+use tool_secbackup\local\backup\monitor;
+use tool_secbackup\local\backup\temp_area;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\state;
 use tool_secbackup\local\net\aws_ranges;
@@ -40,6 +44,9 @@ final class runner {
     /** @var string[] File system types that live on the network. */
     private const NETWORK_FILE_SYSTEMS = ['nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'ceph', 'glusterfs', '9p', 'fuse.s3fs',
         'fuse.sshfs', 'fuse.glusterfs', 'fuse.rclone', 'fuse.goofys', 'fuse.mountpoint-s3'];
+
+    /** @var string[] Language strings of the names of the days of the week, Sunday first as in the settings of Moodle. */
+    private const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
     /** @var string[] Modes of an AppArmor profile in which an access that the profile does not allow is stopped. */
     private const APPARMOR_DENYING_MODES = ['enforce', 'kill', 'prompt', 'user', 'mixed'];
@@ -65,6 +72,12 @@ final class runner {
     /** @var string[] Extensions to check. */
     private array $extensions;
 
+    /** @var monitor|null Watch of the server; null for the one of this site. */
+    private ?monitor $monitor;
+
+    /** @var \Closure|null Gives what is known of the automated backup of Moodle; null for autobackup_watch::describe(). */
+    private ?\Closure $autobackup;
+
     /**
      * Constructor.
      *
@@ -73,19 +86,26 @@ final class runner {
      * @param transport $transport Transport.
      * @param system_files $files Reader of /proc and /sys.
      * @param string[]|null $extensions Extensions to check; null for the ones the plugin needs.
+     * @param monitor|null $monitor Watch of the server; null for one that reads $files with the limits that are set.
+     * @param callable|null $autobackup Gives what is known of the automated backup of Moodle, as
+     *     autobackup_watch::describe() does; null for that function.
      */
     public function __construct(
         developer_settings $settings,
         dns_guard $guard,
         transport $transport,
         system_files $files,
-        ?array $extensions = null
+        ?array $extensions = null,
+        ?monitor $monitor = null,
+        ?callable $autobackup = null
     ) {
         $this->settings = $settings;
         $this->guard = $guard;
         $this->transport = $transport;
         $this->files = $files;
         $this->extensions = $extensions ?? self::REQUIRED_EXTENSIONS;
+        $this->monitor = $monitor;
+        $this->autobackup = $autobackup === null ? null : \Closure::fromCallable($autobackup);
     }
 
     /**
@@ -118,6 +138,7 @@ final class runner {
             $this->selinux($enforce),
             $this->apparmor($profile),
             $this->moodledata(),
+            ...$this->server($this->monitor ?? new monitor($this->files, limits::current())),
         ];
     }
 
@@ -420,6 +441,160 @@ final class runner {
             );
         }
         return new check_result('moodledata', check_result::INFO, $detail);
+    }
+
+    /**
+     * The checks of the server that a backup depends on: the temporary folder, the load, the memory, the database and the
+     * automated backup of Moodle.
+     *
+     * @param monitor $monitor The watch of the server.
+     * @return check_result[]
+     */
+    private function server(monitor $monitor): array {
+        return [
+            $this->tempdir($monitor),
+            $this->load($monitor),
+            $this->memory($monitor),
+            $this->database($monitor),
+            $this->autobackup(),
+        ];
+    }
+
+    /**
+     * The result of a value that cannot be read.
+     *
+     * @param string $check Name of the check.
+     * @return check_result
+     */
+    private static function unreadable(string $check): check_result {
+        return new check_result($check, check_result::UNKNOWN, get_string('diag_unreadable', 'tool_secbackup'));
+    }
+
+    /**
+     * A measured value against its limit: a pass, or a warning with the advice.
+     *
+     * @param string $check Name of the check.
+     * @param bool $beyond Whether the value is beyond the limit.
+     * @param string $detail What was found.
+     * @return check_result
+     */
+    private static function against_limit(string $check, bool $beyond, string $detail): check_result {
+        if (!$beyond) {
+            return new check_result($check, check_result::PASS, $detail);
+        }
+        return new check_result($check, check_result::WARN, $detail, get_string('diag_' . $check . '_advice', 'tool_secbackup'));
+    }
+
+    /**
+     * Free space of the temporary folder and the budget of a backup in it.
+     *
+     * @param monitor $monitor The watch of the server.
+     * @return check_result
+     */
+    private function tempdir(monitor $monitor): check_result {
+        [$free, $total] = $monitor->disk_space();
+        if ($free === null) {
+            return self::unreadable('tempdir');
+        }
+        $budget = (new temp_area($monitor->limits(), static fn(): array => [$free, $total]))->budget_bytes();
+        $detail = get_string('diag_tempdir', 'tool_secbackup', (object) [
+            'free' => display_size($free),
+            'budget' => display_size($budget),
+        ]);
+        $low = monitor::verdict(['disk_free_bytes' => $free, 'disk_total_bytes' => $total], $monitor->limits()) !== null;
+        return self::against_limit('tempdir', $low, $detail);
+    }
+
+    /**
+     * Load of the server.
+     *
+     * @param monitor $monitor The watch of the server.
+     * @return check_result
+     */
+    private function load(monitor $monitor): check_result {
+        $load = $monitor->load_per_core();
+        if ($load === null) {
+            return self::unreadable('load');
+        }
+        $limit = $monitor->limits()->loadpercore;
+        $detail = get_string('diag_load', 'tool_secbackup', (object) [
+            'load' => format_float($load, 2),
+            'limit' => format_float($limit, 1, true, true),
+        ]);
+        return self::against_limit('load', $load > $limit, $detail);
+    }
+
+    /**
+     * Memory that the server can still give.
+     *
+     * @param monitor $monitor The watch of the server.
+     * @return check_result
+     */
+    private function memory(monitor $monitor): check_result {
+        $memory = $monitor->memory_available_bytes();
+        if ($memory === null) {
+            return self::unreadable('memory');
+        }
+        $least = $monitor->limits()->minmemorymb * 1048576;
+        $detail = get_string('diag_memory', 'tool_secbackup', (object) [
+            'memory' => display_size($memory),
+            'limit' => display_size($least),
+        ]);
+        return self::against_limit('memory', $memory < $least, $detail);
+    }
+
+    /**
+     * Response of the database.
+     *
+     * @param monitor $monitor The watch of the server.
+     * @return check_result
+     */
+    private function database(monitor $monitor): check_result {
+        $milliseconds = $monitor->measure_db();
+        $limit = $monitor->limits()->maxdbms;
+        $detail = get_string('diag_database', 'tool_secbackup', (object) [
+            'ms' => format_float($milliseconds, 1),
+            'limit' => $limit,
+        ]);
+        return self::against_limit('database', $milliseconds > $limit, $detail);
+    }
+
+    /**
+     * The schedule of the automated backup of Moodle and the time its last round took.
+     *
+     * The plugin does not start a backup while that backup works, so the administrator is told when it runs.
+     *
+     * @return check_result
+     */
+    private function autobackup(): check_result {
+        $known = $this->autobackup === null ? autobackup_watch::describe() : ($this->autobackup)();
+        $valid = preg_match('/^[01]{7}$/', (string) $known['weekdays']) === 1
+            && $known['hour'] >= 0 && $known['hour'] <= 23 && $known['minute'] >= 0 && $known['minute'] <= 59;
+        if (!$valid) {
+            return self::unreadable('autobackup');
+        }
+        $days = [];
+        foreach (str_split($known['weekdays']) as $number => $on) {
+            if ($on === '1') {
+                $days[] = get_string(self::DAYS[$number], 'calendar');
+            }
+        }
+        if ($known['backup_auto_active'] !== 1 || $days === []) {
+            return new check_result('autobackup', check_result::INFO, get_string('diag_autobackup_off', 'tool_secbackup'));
+        }
+        return new check_result(
+            'autobackup',
+            check_result::INFO,
+            get_string('diag_autobackup_on', 'tool_secbackup', (object) [
+                'days' => implode(', ', $days),
+                'time' => sprintf('%02d:%02d', $known['hour'], $known['minute']),
+                'zone' => $known['timezone'],
+                'duration' => $known['lastduration'] === null
+                    ? get_string('diag_autobackup_noround', 'tool_secbackup')
+                    : format_time($known['lastduration']),
+            ]),
+            get_string('diag_autobackup_advice', 'tool_secbackup')
+        );
     }
 
     /**

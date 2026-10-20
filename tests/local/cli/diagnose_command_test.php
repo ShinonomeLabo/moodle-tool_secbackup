@@ -146,7 +146,7 @@ final class diagnose_command_test extends \advanced_testcase {
 
     public function test_a_check_without_advice_has_no_advice_line(): void {
         [, $lines] = self::run_command(self::API, [new Response(401, [], '{"error":{"code":"signature_required"}}')]);
-        $this->assertCount(3 + 9, $lines, 'The heading, the trademark notice, the connection URL and one line for each check.');
+        $this->assertCount(3 + 14, $lines, 'The heading, the trademark notice, the connection URL and one line for each check.');
         foreach ($lines as $line) {
             $this->assertStringStartsNotWith('    ', $line);
         }

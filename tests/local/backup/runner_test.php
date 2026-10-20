@@ -1292,6 +1292,8 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(strlen('lang') + strlen('key'), $stats['bytes']['dataroot']);
         $this->assertFalse($stats['core_modified']);
         $this->assertFalse($stats['external_storage']);
+        // Without an official list nothing was compared: the whole program was sent, and the status page warns as for a change.
+        $this->assertSame('1', get_config('tool_secbackup', 'coremodified'));
         $this->assertSame('20250113', $stats['moodle']['build']);
     }
 
@@ -1323,8 +1325,28 @@ final class runner_test extends \advanced_testcase {
             $header['core_diff']
         );
         $this->assertSame(['core:locked'], $header['unreadable']);
+        $this->assertSame('1', get_config('tool_secbackup', 'coremodified'));
         $core = array_values(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'core'));
         $this->assertEqualsCanonicalizing(['index.php', 'lib/new.php'], array_column($core, 'path'));
+    }
+
+    public function test_a_flag_of_a_change_is_taken_back_by_a_run_that_finds_the_program_as_it_is_officially(): void {
+        set_config('coremodified', 1, 'tool_secbackup');
+        $official = [];
+        foreach (['index.php', 'lib/a.php', 'version.php'] as $path) {
+            $official[$path] = hash_file('sha256', $this->core . '/' . $path);
+        }
+        $text = json_encode(['v' => 1, 'version' => '2024100703.10', 'build' => '20250113',
+            'release' => '4.5.3+ (Build: 20250113)', 'count' => count($official)], JSON_UNESCAPED_SLASHES) . "\n";
+        foreach ($official as $path => $hash) {
+            $text .= $path . "\t" . $hash . "\n";
+        }
+        $this->fixture->service->publish_core_manifest('2024100703.10', '20250113', gzencode($text), ['count' => 3]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', ($this->finish($this->runner(), $run)));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertSame(['official' => true, 'modified' => [], 'added' => [], 'deleted' => []], $header['core_diff']);
+        $this->assertSame('0', get_config('tool_secbackup', 'coremodified'));
     }
 
     public function test_an_official_list_for_another_build_sends_the_whole_program(): void {

@@ -197,6 +197,15 @@ final class run_record {
     }
 
     /**
+     * When the run ended: completed, aborted or refused.
+     *
+     * @return int|null UNIX time, or null while the run goes on.
+     */
+    public function finished_at(): ?int {
+        return $this->row->timefinished === null ? null : (int) $this->row->timefinished;
+    }
+
+    /**
      * What started the run.
      *
      * @return string

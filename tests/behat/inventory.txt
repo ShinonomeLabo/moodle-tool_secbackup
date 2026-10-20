@@ -8,6 +8,7 @@
 # Status page.
 index.php | Connection settings | status.feature: The status page links to the connection settings
 index.php | Connection diagnostics | status.feature: The status page links to the connection diagnostics
+index.php | Back up now | backup_status.feature: The button queues a backup and cannot be pressed again
 
 # Connection settings page: the first step, the second step, the registered site.
 connect.php | Next | registration.feature: Register the site

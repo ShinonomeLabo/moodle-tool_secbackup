@@ -19,6 +19,7 @@ namespace tool_secbackup\output;
 use core\output\notification;
 use html_writer;
 use tool_secbackup\local\api\client;
+use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\enrollment\state;
@@ -103,24 +104,147 @@ class renderer extends \plugin_renderer_base {
             [get_string('status_service_status', 'tool_secbackup'), $this->service_status($state->last_poll_status())],
         ];
         return html_writer::table($table) . $this->clock_warning($state->clock_skew()) . $this->poll_error($state)
-            . $this->start_refusal() . $this->links();
+            . $this->backups($state) . $this->links();
     }
 
     /**
-     * The refusal of the service to start the latest backup (the number of backups of the plan, or a contract that is not
-     * active), if it was refused.
+     * Shows a warning in the dialog of Moodle, without JavaScript of this plugin.
      *
+     * The dialog shows its body as HTML, so the plain text is escaped here, once.
+     *
+     * @param string $title The title.
+     * @param string $message The message, as plain text.
+     */
+    public function warning_dialog(string $title, string $message): void {
+        $this->page->requires->js_call_amd('core/notification', 'alert', [$title, s($message), get_string('ok')]);
+    }
+
+    /**
+     * The backups: the last one that completed, the one in progress, what became of the latest one, and the button.
+     *
+     * @param state $state The registration.
      * @return string
      */
-    private function start_refusal(): string {
-        $latest = run_record::recent(1);
-        if ($latest === [] || $latest[0]->status() !== 'refused') {
+    private function backups(state $state): string {
+        $active = run_record::active();
+        $table = new \html_table();
+        $table->attributes['class'] = 'generaltable';
+        $table->data = $this->completed_rows(run_record::last_completed());
+        if ($active !== null) {
+            $table->data[] = [get_string('status_running', 'tool_secbackup'), s($this->progress($active))];
+        }
+        return $this->output->heading(get_string('status_backups_heading', 'tool_secbackup'), 3) . html_writer::table($table)
+            . $this->latest_run_notice(run_record::recent(1)[0] ?? null, $state) . $this->backup_button($active !== null);
+    }
+
+    /**
+     * The rows about the last backup that completed.
+     *
+     * @param run_record|null $last The run, or null when none completed.
+     * @return array[]
+     */
+    private function completed_rows(?run_record $last): array {
+        $label = get_string('status_last_completed', 'tool_secbackup');
+        if ($last === null) {
+            return [[$label, get_string('status_none_completed', 'tool_secbackup')]];
+        }
+        // A run that completed has an end.
+        $finished = (int) $last->finished_at();
+        $size = get_string('status_size_value', 'tool_secbackup', (object) [
+            'size' => display_size($last->bytes_uploaded()),
+            'chunks' => $last->chunks_uploaded(),
+        ]);
+        return [
+            [$label, userdate($finished)],
+            [get_string('status_last_size', 'tool_secbackup'), s($size)],
+            [get_string('status_last_duration', 'tool_secbackup'), format_time($finished - $last->started_at())],
+        ];
+    }
+
+    /**
+     * The stage and the progress of the backup in progress, as plain text.
+     *
+     * @param run_record $run The run.
+     * @return string
+     */
+    private function progress(run_record $run): string {
+        $a = (object) [
+            'stage' => get_string('stage_' . $run->stage(), 'tool_secbackup'),
+            'started' => userdate($run->started_at()),
+            'size' => display_size($run->bytes_uploaded()),
+            'chunks' => $run->chunks_uploaded(),
+            'next' => $run->next_attempt() === null ? '' : userdate($run->next_attempt()),
+        ];
+        return get_string($run->status() === 'paused' ? 'status_paused_value' : 'status_running_value', 'tool_secbackup', $a);
+    }
+
+    /**
+     * What became of the latest backup, when it was stopped or the service did not start it.
+     *
+     * Once a newer backup has begun or completed, the older stop is not the latest run any more and is not shown.
+     *
+     * @param run_record|null $latest The latest run.
+     * @param state $state The registration, which has the name of the platform.
+     * @return string
+     */
+    private function latest_run_notice(?run_record $latest, state $state): string {
+        if ($latest === null || !in_array($latest->status(), ['aborted', 'refused'], true)) {
             return '';
         }
-        return $this->error_message(
-            get_string('status_start_refused', 'tool_secbackup') . ' '
-                . get_string('api_' . $latest[0]->abort_code(), 'tool_secbackup')
+        $code = (string) $latest->abort_code();
+        $when = userdate($latest->started_at());
+        if ($latest->status() === 'aborted') {
+            return $this->run_notice(
+                get_string('status_aborted', 'tool_secbackup', $when),
+                abort_reason::text($code),
+                abort_reason::advice($code)
+            );
+        }
+        $known = in_array($code, ['run_limit_reached', 'contract_inactive'], true);
+        $id = $known ? 'refused_' . $code : 'refused_unknown';
+        $a = $known ? $state->platform_name() : $code;
+        return $this->run_notice(
+            get_string('status_refused', 'tool_secbackup', $when),
+            get_string($id, 'tool_secbackup', $a),
+            get_string($id . '_advice', 'tool_secbackup', $a)
         );
+    }
+
+    /**
+     * A notice about a backup that did not go through: what happened, the reason and what to do.
+     *
+     * @param string $heading What happened to the backup.
+     * @param string $reason Why, as plain text.
+     * @param string $advice What the administrator can do, as plain text.
+     * @return string
+     */
+    private function run_notice(string $heading, string $reason, string $advice): string {
+        return $this->output->notification(
+            html_writer::tag('p', s($heading), ['class' => 'font-weight-bold'])
+            . html_writer::tag('p', s($reason))
+            . html_writer::tag('p', s(get_string('status_advice', 'tool_secbackup', $advice)), ['class' => 'mb-0']),
+            notification::NOTIFY_ERROR,
+            false
+        );
+    }
+
+    /**
+     * The button that starts a backup without waiting for the schedule; off while a backup is in progress.
+     *
+     * @param bool $running Whether a backup is in progress.
+     * @return string
+     */
+    private function backup_button(bool $running): string {
+        $button = $this->output->single_button(
+            new \moodle_url('/admin/tool/secbackup/index.php', ['action' => 'start']),
+            get_string('status_backup_now', 'tool_secbackup'),
+            'post',
+            ['disabled' => $running]
+        );
+        if (!$running) {
+            return $button;
+        }
+        return $button . html_writer::tag('p', get_string('status_backup_running', 'tool_secbackup'), ['class' => 'small']);
     }
 
     /**

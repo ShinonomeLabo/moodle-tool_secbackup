@@ -257,6 +257,9 @@ final class artifact_stage {
         $official = (bool) $context->get('core', ['official' => false])['official'];
         $changed = $context->journal('core_modified')->lines() + $context->journal('core_added')->lines()
             + $context->journal('core_deleted')->lines();
+        // The status page warns about the Moodle program from this flag: it is set when the program differs from the official
+        // files, and also when nothing could be compared, because then the whole program was sent (design 8.3).
+        set_config('coremodified', !$official || $changed > 0 ? 1 : 0, 'tool_secbackup');
         $stats = stats::collect(
             $context->get('tablerows', []),
             $context->get('bytes'),

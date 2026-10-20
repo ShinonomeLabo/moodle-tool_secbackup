@@ -16,6 +16,7 @@
 
 namespace tool_secbackup\local\cli;
 
+use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\runner;
 use tool_secbackup\local\backup\starter;
@@ -173,7 +174,7 @@ final class backup_command {
         if ($result === 'aborted') {
             $write($run->status() === 'refused'
                 ? get_string('cli_backup_refused', 'tool_secbackup', get_string('api_' . $run->abort_code(), 'tool_secbackup'))
-                : get_string('cli_backup_aborted', 'tool_secbackup', self::reason((string) $run->abort_code())));
+                : get_string('cli_backup_aborted', 'tool_secbackup', abort_reason::text((string) $run->abort_code())));
             return self::EXIT_STOPPED;
         }
         if ($result === 'paused') {
@@ -182,17 +183,6 @@ final class backup_command {
             return self::EXIT_NOT_RUN;
         }
         return null;
-    }
-
-    /**
-     * The text of a reason to stop a run.
-     *
-     * @param string $code The reason.
-     * @return string
-     */
-    private static function reason(string $code): string {
-        return get_string_manager()->string_exists($code, 'tool_secbackup') ? get_string($code, 'tool_secbackup')
-            : get_string('abort_unknown', 'tool_secbackup', $code);
     }
 
     /**

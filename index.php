@@ -27,6 +27,10 @@ require_once($CFG->libdir . '/adminlib.php');
 
 admin_externalpage_setup('tool_secbackup_status');
 $page = new \tool_secbackup\local\page\status_page();
+$redirection = $page->handle();
+if ($redirection !== null) {
+    redirect($redirection->url, $redirection->message, null, $redirection->type);
+}
 echo $OUTPUT->header();
 echo $OUTPUT->heading(get_string('pluginname', 'tool_secbackup'));
 echo $page->render();

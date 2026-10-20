@@ -136,7 +136,11 @@ final class declarations_test extends \advanced_testcase {
         // The plugin has one name in the Japanese strings. Written as escapes to keep this file ASCII.
         $strings = self::strings('ja');
         foreach ($strings as $id => $text) {
-            $this->assertStringNotContainsString("\u{30D7}\u{30E9}\u{30B0}\u{30A4}\u{30F3}", $text, $id);
+            // The warning about files in an external cloud service is the sentence of the design, which speaks of the plugin
+            // of the site that keeps the files there, not of this one.
+            if ($id !== 'modal_external') {
+                $this->assertStringNotContainsString("\u{30D7}\u{30E9}\u{30B0}\u{30A4}\u{30F3}", $text, $id);
+            }
         }
         $this->assertStringContainsString("\u{9023}\u{643A}\u{30C4}\u{30FC}\u{30EB}", $strings['privacy:metadata:service']);
         $this->assertStringContainsString("\u{9023}\u{643A}\u{30C4}\u{30FC}\u{30EB}", $strings['envelope_untrusted']);

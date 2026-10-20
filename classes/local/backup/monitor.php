@@ -97,6 +97,24 @@ final class monitor {
     }
 
     /**
+     * The limits that this watch keeps to.
+     *
+     * @return limits
+     */
+    public function limits(): limits {
+        return $this->limits;
+    }
+
+    /**
+     * The free and the total space of the disk that holds the temporary folder.
+     *
+     * @return array{0: ?int, 1: ?int} Free and total bytes; null for what cannot be read.
+     */
+    public function disk_space(): array {
+        return ($this->diskspace)($this->limits->tempdir);
+    }
+
+    /**
      * Reads everything.
      *
      * disk_total_bytes is the total size of the disk of the temporary folder: verdict() needs it for the floor of the free
@@ -109,7 +127,7 @@ final class monitor {
      *     disk_total_bytes: ?int, nfs_mbps: ?float, not_applicable: string[]}
      */
     public function sample(): array {
-        [$free, $total] = ($this->diskspace)($this->limits->tempdir);
+        [$free, $total] = $this->disk_space();
         [$nfs, $nfsapplies] = $this->probe_nfs();
         return [
             'load_per_core' => $this->load_per_core(),
@@ -249,7 +267,7 @@ final class monitor {
      *
      * @return float|null Null when either cannot be read.
      */
-    private function load_per_core(): ?float {
+    public function load_per_core(): ?float {
         $loadavg = $this->files->read('/proc/loadavg');
         $cores = $this->cores();
         if ($loadavg === null || $cores === null || preg_match('/^(\d+(?:\.\d+)?)\s/', $loadavg, $m) !== 1) {
@@ -284,7 +302,7 @@ final class monitor {
      *
      * @return int|null Bytes; null when it cannot be read.
      */
-    private function memory_available_bytes(): ?int {
+    public function memory_available_bytes(): ?int {
         $meminfo = $this->files->read('/proc/meminfo');
         if ($meminfo === null || preg_match('/^MemAvailable:\s+(\d{1,15}) kB$/m', $meminfo, $m) !== 1) {
             return null;

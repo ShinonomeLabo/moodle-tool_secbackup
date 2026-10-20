@@ -22,6 +22,8 @@ use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
+use tool_secbackup\local\backup\limits;
+use tool_secbackup\local\backup\monitor;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\state;
@@ -90,6 +92,8 @@ final class runner_test extends \advanced_testcase {
      * @param array $settings Developer settings.
      * @param dns_guard|null $guard Name check; null for one that passes.
      * @param array|null $extensions Required extensions.
+     * @param monitor|null $monitor The watch of the server; null for one that reads the files of the root.
+     * @param callable|null $autobackup Gives what is known of the automated backup of Moodle; null for the real one.
      * @return runner
      */
     private static function runner(
@@ -97,7 +101,9 @@ final class runner_test extends \advanced_testcase {
         string $root,
         array $settings = [],
         ?dns_guard $guard = null,
-        ?array $extensions = null
+        ?array $extensions = null,
+        ?monitor $monitor = null,
+        ?callable $autobackup = null
     ): runner {
         $developer = developer_settings::from_value($settings === [] ? null : $settings);
         $guard = $guard ?? network_fakes::passing_guard();
@@ -106,7 +112,9 @@ final class runner_test extends \advanced_testcase {
             $guard,
             new transport($developer, $guard, new MockHandler($answers)),
             new system_files($root),
-            $extensions
+            $extensions,
+            $monitor,
+            $autobackup
         );
     }
 
@@ -127,7 +135,8 @@ final class runner_test extends \advanced_testcase {
     public function test_all_checks_in_order(): void {
         $results = self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint());
         $this->assertSame(
-            ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'],
+            ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata',
+                'tempdir', 'load', 'memory', 'database', 'autobackup'],
             array_map(static fn(check_result $result): string => $result->check, $results)
         );
         $named = self::by_name($results);
@@ -142,6 +151,9 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(check_result::UNKNOWN, $named['clock']->result);
         $this->assertSame(check_result::UNKNOWN, $named['selinux']->result, 'Unreadable files read as unknown.');
         $this->assertSame(check_result::UNKNOWN, $named['moodledata']->result);
+        $this->assertSame(check_result::UNKNOWN, $named['load']->result, 'Unreadable files read as unknown.');
+        $this->assertSame(check_result::UNKNOWN, $named['memory']->result);
+        $this->assertSame(check_result::INFO, $named['autobackup']->result, 'The automated backup is off by default.');
     }
 
     public function test_the_network_checks_carry_the_code_of_their_outcome(): void {
@@ -325,7 +337,7 @@ final class runner_test extends \advanced_testcase {
         $CFG->proxyuser = 'proxyuser-7f3a';
         $CFG->proxypassword = 'proxypass-91bc';
         $results = self::runner([self::unsigned_answer()], make_request_directory())->run(self::endpoint());
-        $this->assertCount(9, $results);
+        $this->assertCount(14, $results);
         foreach ($results as $result) {
             foreach ([$result->detail, $result->advice] as $text) {
                 $this->assertStringNotContainsString('proxyuser-7f3a', $text, $result->check);
@@ -1291,5 +1303,191 @@ final class runner_test extends \advanced_testcase {
         );
         $this->assertStringContainsString('<u>C&D</u>', $named['moodledata']->detail);
         $this->assertStringContainsString('<b>A&B</b>', $named['moodledata']->detail);
+    }
+
+    /**
+     * A watch of a server whose files are these.
+     *
+     * @param string|null $loadavg Content of /proc/loadavg.
+     * @param string|null $meminfo Content of /proc/meminfo.
+     * @param string|null $online Content of /sys/devices/system/cpu/online.
+     * @param array $space [free bytes, total bytes] of the disk of the temporary folder.
+     * @param float $step Seconds that the clock moves at each call, which is the time of the database read.
+     * @param int $tempbudgetmb Budget of the temporary files in MB.
+     * @return monitor
+     */
+    private static function watch(
+        ?string $loadavg = "0.52 0.40 0.30 1/200 1234\n",
+        ?string $meminfo = "MemTotal: 8000000 kB\nMemAvailable:    2048000 kB\n",
+        ?string $online = "0-3\n",
+        array $space = [100 * 1073741824, 200 * 1073741824],
+        float $step = 0.001,
+        int $tempbudgetmb = 0
+    ): monitor {
+        $root = make_request_directory();
+        $contents = ['/proc/loadavg' => $loadavg, '/proc/meminfo' => $meminfo, '/sys/devices/system/cpu/online' => $online];
+        system_roots::with_files(array_filter($contents, static fn(?string $text): bool => $text !== null), $root);
+        $now = 1000.0;
+        return new monitor(
+            new system_files($root),
+            new limits(2.0, 256, 500, 5.0, make_request_directory() . '/t', $tempbudgetmb, 0),
+            static function () use (&$now, $step): float {
+                $now += $step;
+                return $now;
+            },
+            static fn(string $folder): array => $space
+        );
+    }
+
+    /**
+     * The five checks of the server after the checks of the connection, by name.
+     *
+     * @param monitor $monitor The watch.
+     * @param callable|null $autobackup What is known of the automated backup of Moodle.
+     * @return check_result[]
+     */
+    private static function server_checks(monitor $monitor, ?callable $autobackup = null): array {
+        return self::by_name(self::runner([], make_request_directory(), [], null, null, $monitor, $autobackup)->run(null));
+    }
+
+    public function test_a_healthy_server_passes_the_four_checks_of_the_watch(): void {
+        $named = self::server_checks(self::watch());
+        foreach (['tempdir', 'load', 'memory', 'database'] as $check) {
+            $this->assertSame(check_result::PASS, $named[$check]->result, $check);
+            $this->assertSame('', $named[$check]->advice, $check);
+        }
+        $this->assertSame(
+            get_string('diag_tempdir', 'tool_secbackup', (object) [
+                'free' => display_size(100 * 1073741824),
+                'budget' => display_size(2 * 1073741824),
+            ]),
+            $named['tempdir']->detail
+        );
+        $this->assertSame(
+            get_string('diag_load', 'tool_secbackup', (object) ['load' => '0.13', 'limit' => '2']),
+            $named['load']->detail
+        );
+        $this->assertSame(
+            get_string('diag_memory', 'tool_secbackup', (object) [
+                'memory' => display_size(2048000 * 1024),
+                'limit' => display_size(256 * 1048576),
+            ]),
+            $named['memory']->detail
+        );
+        $this->assertSame(
+            get_string('diag_database', 'tool_secbackup', (object) ['ms' => '1.0', 'limit' => '500']),
+            $named['database']->detail
+        );
+    }
+
+    public function test_a_busy_server_is_a_warning_with_advice(): void {
+        $named = self::server_checks(self::watch("9.00 8.00 7.00 1/200 1234\n"));
+        $this->assertSame(check_result::WARN, $named['load']->result);
+        $this->assertSame(get_string('diag_load_advice', 'tool_secbackup'), $named['load']->advice);
+        $this->assertSame(check_result::PASS, $named['memory']->result);
+    }
+
+    public function test_little_memory_is_a_warning_with_advice(): void {
+        $named = self::server_checks(self::watch(meminfo: "MemAvailable:    102400 kB\n"));
+        $this->assertSame(check_result::WARN, $named['memory']->result);
+        $this->assertSame(get_string('diag_memory_advice', 'tool_secbackup'), $named['memory']->advice);
+    }
+
+    public function test_a_slow_database_is_a_warning_with_advice(): void {
+        $named = self::server_checks(self::watch(step: 1.0));
+        $this->assertSame(check_result::WARN, $named['database']->result);
+        $this->assertSame(get_string('diag_database_advice', 'tool_secbackup'), $named['database']->advice);
+    }
+
+    public function test_little_free_space_is_a_warning_with_advice(): void {
+        $named = self::server_checks(self::watch(space: [1073741824, 200 * 1073741824]));
+        $this->assertSame(check_result::WARN, $named['tempdir']->result);
+        $this->assertSame(get_string('diag_tempdir_advice', 'tool_secbackup'), $named['tempdir']->advice);
+    }
+
+    public function test_the_budget_that_is_set_is_the_one_shown(): void {
+        $named = self::server_checks(self::watch(tempbudgetmb: 512));
+        $this->assertStringContainsString(display_size(512 * 1048576), $named['tempdir']->detail);
+    }
+
+    public function test_what_cannot_be_read_is_unknown(): void {
+        $named = self::server_checks(self::watch(null, null, null, [null, null]));
+        foreach (['tempdir', 'load', 'memory'] as $check) {
+            $this->assertSame(check_result::UNKNOWN, $named[$check]->result, $check);
+            $this->assertSame(get_string('diag_unreadable', 'tool_secbackup'), $named[$check]->detail, $check);
+            $this->assertSame('', $named[$check]->advice, $check);
+        }
+        // The load is unknown with the file of the load and without the list of the CPUs, too.
+        $named = self::server_checks(self::watch(online: null));
+        $this->assertSame(check_result::UNKNOWN, $named['load']->result);
+    }
+
+    public function test_the_automated_backup_when_it_is_off(): void {
+        foreach ([0, 2] as $active) {
+            $named = self::server_checks(self::watch(), static fn(): array => [
+                'backup_auto_active' => $active, 'weekdays' => '0111110', 'hour' => 2, 'minute' => 30,
+                'timezone' => 'Asia/Tokyo', 'lastduration' => null,
+            ]);
+            $this->assertSame(check_result::INFO, $named['autobackup']->result);
+            $this->assertSame(get_string('diag_autobackup_off', 'tool_secbackup'), $named['autobackup']->detail);
+        }
+        // No day chosen is off, too.
+        $named = self::server_checks(self::watch(), static fn(): array => [
+            'backup_auto_active' => 1, 'weekdays' => '0000000', 'hour' => 2, 'minute' => 30,
+            'timezone' => 'Asia/Tokyo', 'lastduration' => null,
+        ]);
+        $this->assertSame(get_string('diag_autobackup_off', 'tool_secbackup'), $named['autobackup']->detail);
+    }
+
+    public function test_the_automated_backup_names_its_days_its_time_and_its_last_duration(): void {
+        $named = self::server_checks(self::watch(), static fn(): array => [
+            'backup_auto_active' => 1, 'weekdays' => '1000001', 'hour' => 2, 'minute' => 5,
+            'timezone' => 'Asia/Tokyo', 'lastduration' => 3725,
+        ]);
+        $this->assertSame(check_result::INFO, $named['autobackup']->result);
+        $this->assertSame(
+            get_string('diag_autobackup_on', 'tool_secbackup', (object) [
+                'days' => get_string('sunday', 'calendar') . ', ' . get_string('saturday', 'calendar'),
+                'time' => '02:05',
+                'zone' => 'Asia/Tokyo',
+                'duration' => format_time(3725),
+            ]),
+            $named['autobackup']->detail
+        );
+        $this->assertSame(get_string('diag_autobackup_advice', 'tool_secbackup'), $named['autobackup']->advice);
+    }
+
+    public function test_the_automated_backup_without_a_round_on_record(): void {
+        $named = self::server_checks(self::watch(), static fn(): array => [
+            'backup_auto_active' => 1, 'weekdays' => '0111110', 'hour' => 23, 'minute' => 0,
+            'timezone' => 'UTC', 'lastduration' => null,
+        ]);
+        $this->assertStringContainsString(get_string('diag_autobackup_noround', 'tool_secbackup'), $named['autobackup']->detail);
+        $this->assertStringContainsString('23:00', $named['autobackup']->detail);
+    }
+
+    public function test_a_setting_of_the_automated_backup_that_cannot_be_read_is_unknown(): void {
+        $broken = [
+            ['weekdays' => '1111'], ['weekdays' => 'abcdefg'], ['hour' => 24], ['hour' => -1], ['minute' => 60], ['minute' => -1],
+        ];
+        foreach ($broken as $change) {
+            $named = self::server_checks(self::watch(), static fn(): array => $change + [
+                'backup_auto_active' => 1, 'weekdays' => '0111110', 'hour' => 2, 'minute' => 30,
+                'timezone' => 'UTC', 'lastduration' => null,
+            ]);
+            $this->assertSame(check_result::UNKNOWN, $named['autobackup']->result, json_encode($change));
+            $this->assertSame(get_string('diag_unreadable', 'tool_secbackup'), $named['autobackup']->detail);
+        }
+    }
+
+    public function test_the_automated_backup_is_read_from_the_settings_of_moodle(): void {
+        set_config('backup_auto_active', 1, 'backup');
+        set_config('backup_auto_weekdays', '0100000', 'backup');
+        set_config('backup_auto_hour', 4, 'backup');
+        set_config('backup_auto_minute', 15, 'backup');
+        $named = self::by_name(self::runner([], make_request_directory())->run(null));
+        $this->assertSame(check_result::INFO, $named['autobackup']->result);
+        $this->assertStringContainsString(get_string('monday', 'calendar'), $named['autobackup']->detail);
+        $this->assertStringContainsString('04:15', $named['autobackup']->detail);
     }
 }

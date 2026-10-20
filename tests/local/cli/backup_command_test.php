@@ -118,7 +118,7 @@ final class backup_command_test extends \advanced_testcase {
         [$code, $lines] = $this->run_command(true, false, ['sample' => static fn(): array => ['load_per_core' => 9.0]]);
         $this->assertSame(1, $code);
         $this->assertSame(
-            get_string('cli_backup_aborted', 'tool_secbackup', get_string('server_busy', 'tool_secbackup')),
+            get_string('cli_backup_aborted', 'tool_secbackup', get_string('abort_server_busy', 'tool_secbackup')),
             end($lines)
         );
     }
@@ -169,7 +169,7 @@ final class backup_command_test extends \advanced_testcase {
         [$code, $lines] = $this->run_command(true, false, ['corediff' => $broken]);
         $this->assertSame(1, $code);
         $this->assertContains(get_string('cli_backup_failed', 'tool_secbackup', 'RuntimeException'), $lines);
-        $expired = get_string('cli_backup_aborted', 'tool_secbackup', get_string('expired', 'tool_secbackup'));
+        $expired = get_string('cli_backup_aborted', 'tool_secbackup', get_string('abort_expired', 'tool_secbackup'));
         $this->assertSame($expired, end($lines));
         $this->assertGreaterThanOrEqual($started + 86400 + 600, $this->fixture->time);
         $this->assertSame(300, $this->slept[0]);

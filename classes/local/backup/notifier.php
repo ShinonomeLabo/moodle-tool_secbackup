@@ -39,10 +39,12 @@ final class notifier {
         foreach (get_admins() as $admin) {
             try {
                 $lang = $admin->lang;
-                $reason = $strings->string_exists($code, 'tool_secbackup')
-                    ? $strings->get_string($code, 'tool_secbackup', null, $lang)
-                    : $strings->get_string('abort_unknown', 'tool_secbackup', $code, $lang);
-                $a = (object) ['count' => $count, 'reason' => $reason, 'url' => $url];
+                $a = (object) [
+                    'count' => $count,
+                    'reason' => abort_reason::text($code, $lang),
+                    'advice' => abort_reason::advice($code, $lang),
+                    'url' => $url,
+                ];
                 $message = new \core\message\message();
                 $message->component = 'tool_secbackup';
                 $message->name = 'backupfailure';

@@ -18,13 +18,20 @@ namespace tool_secbackup\local\page;
 
 use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
+use tool_secbackup\local\backup\abort_reason;
+use tool_secbackup\local\backup\env\external_storage;
+use tool_secbackup\local\backup\run_record;
+use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 use tool_secbackup\local\enrollment\state;
+use tool_secbackup\tests\fake_service;
+use tool_secbackup\tests\instruction_factory;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\page\status_page::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\page\access::class)]
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\output\renderer::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\page\redirection::class)]
 /**
  * Tests for the status page.
  *
@@ -316,6 +323,206 @@ final class status_page_test extends \advanced_testcase {
         new status_page();
     }
 
+    /** @var string The sentence of the design of the plugin (7.1) in English, with the name of the platform filled in. */
+    private const EXTERNAL_EN = 'A plugin that keeps moodledata files in an external cloud service such as AWS S3 was detected. '
+        . 'Running a backup may incur charges on that cloud service. '
+        . '(We cannot provide support for charges incurred outside Example Platform.)';
+
+    /** @var string The sentence of the design of the plugin (7.1) in Japanese, with the name of the platform filled in. */
+    private const EXTERNAL_JA = 'AWS S3等外部クラウドサービスでmoodledata内のデータを管理しているプラグインを検知しました。'
+        . 'バックアップ実行時、クラウドサービス側で課金が発生する可能性があります。'
+        . '(Example Platform以外での課金発生については、弊社ではサポートしておりません)';
+
+    /** @var string The sentence of the design of the plugin (8.2) in English. */
+    private const CORE_EN = 'The core source code of the LMS being backed up (Moodle™) may have been modified. '
+        . 'Backups can still be made, but restoring to a temporary site may fail. '
+        . 'After each backup, always use the Preview feature to confirm that the backup can be restored.';
+
+    /** @var string The sentence of the design of the plugin (8.2) in Japanese. */
+    private const CORE_JA = 'バックアップ対象LMS (Moodle™) は、LMS本体のソースコードに変更が加えられている可能性があります。'
+        . 'バックアップ自体は可能ですが、一時サイトへのリストアに失敗する可能性があります。'
+        . 'バックアップ後に必ず「プレビュー」機能を利用し、リストア出来ることを確認して下さい。';
+
+    /**
+     * Makes a run that completed.
+     *
+     * @param int $start When it started.
+     * @param int $end When it ended.
+     * @param int $bytes The bytes that were sent.
+     * @param int $chunks The chunks that were sent.
+     * @return run_record
+     */
+    private static function completed(int $start, int $end, int $bytes, int $chunks): run_record {
+        $run = run_record::create('schedule', $start);
+        $run->add_uploaded($bytes, $chunks);
+        $run->finish($end);
+        return $run;
+    }
+
+    /**
+     * The settings that the service sends, so that a backup can start.
+     */
+    private static function received(): void {
+        set_config('siteid', fake_service::SITE_ID, 'tool_secbackup');
+        settings::apply(instruction_factory::make('settings', 1, instruction_factory::settings_body()));
+    }
+
+    /**
+     * Presses the button, as the page is asked for it.
+     *
+     * @param status_page $page The page.
+     * @return redirection|null
+     */
+    private static function press(status_page $page): ?redirection {
+        $_POST['action'] = 'start';
+        $_POST['sesskey'] = sesskey();
+        return $page->handle();
+    }
+
+    /**
+     * A watch that finds nothing wrong.
+     *
+     * @return null
+     */
+    public static function calm() {
+        return null;
+    }
+
+    /**
+     * Whether the button of the page is switched off.
+     *
+     * @param string $html The page.
+     * @return bool
+     */
+    private static function button_disabled(string $html): bool {
+        return preg_match('~<button[^>]*\sdisabled[^>]*>\s*' . preg_quote(get_string('status_backup_now', 'tool_secbackup'), '~')
+            . '~', $html) === 1;
+    }
+
+    public function test_without_a_completed_backup_the_page_says_so(): void {
+        self::register();
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_none_completed', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('status_last_size', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(get_string('status_running', 'tool_secbackup'), $html);
+    }
+
+    public function test_the_last_completed_backup_shows_its_date_its_size_and_its_duration(): void {
+        self::register();
+        self::completed(1760000000, 1760000100, 1000, 1);
+        self::completed(1760100000, 1760100000 + 3725, 5368709120, 40);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_last_completed', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(userdate(1760100000 + 3725), $html);
+        $this->assertStringContainsString(
+            s(get_string('status_size_value', 'tool_secbackup', (object) ['size' => display_size(5368709120), 'chunks' => 40])),
+            $html
+        );
+        $this->assertStringContainsString(format_time(3725), $html);
+        $this->assertStringNotContainsString(get_string('status_none_completed', 'tool_secbackup'), $html);
+        $this->assertStringNotContainsString(display_size(1000), $html);
+    }
+
+    public function test_a_backup_in_progress_shows_its_stage_and_what_was_sent(): void {
+        self::register();
+        $run = run_record::create('manual', 1760000000);
+        $run->set_stage('files', ['cursor' => 1], 1760000050);
+        $run->add_uploaded(3145728, 7);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_running', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(s(get_string('status_running_value', 'tool_secbackup', (object) [
+            'stage' => get_string('stage_files', 'tool_secbackup'),
+            'started' => userdate(1760000000),
+            'size' => display_size(3145728),
+            'chunks' => 7,
+        ])), $html);
+        $this->assertTrue(self::button_disabled($html));
+        $this->assertStringContainsString(get_string('status_backup_running', 'tool_secbackup'), $html);
+    }
+
+    public function test_a_waiting_backup_shows_when_it_is_tried_again(): void {
+        self::register();
+        $run = run_record::create('schedule', 1760000000);
+        $run->set_stage('db', [], 1760000050);
+        $run->pause(1760000060, 1760003600);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(s(get_string('status_paused_value', 'tool_secbackup', (object) [
+            'stage' => get_string('stage_db', 'tool_secbackup'),
+            'started' => userdate(1760000000),
+            'size' => display_size(0),
+            'chunks' => 0,
+            'next' => userdate(1760003600),
+        ])), $html);
+        $this->assertTrue(self::button_disabled($html));
+    }
+
+    public function test_every_stage_of_a_run_has_a_name(): void {
+        foreach (run_record::STAGES as $stage) {
+            $this->assertTrue(get_string_manager()->string_exists('stage_' . $stage, 'tool_secbackup'), $stage);
+        }
+    }
+
+    public function test_the_button_is_on_when_no_backup_is_in_progress(): void {
+        self::register();
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_backup_now', 'tool_secbackup'), $html);
+        $this->assertFalse(self::button_disabled($html));
+        $this->assertStringContainsString('name="sesskey" value="' . sesskey() . '"', $html);
+        $this->assertStringContainsString('name="action" value="start"', $html);
+        $this->assertStringNotContainsString(get_string('status_backup_running', 'tool_secbackup'), $html);
+    }
+
+    public function test_a_site_that_is_not_registered_has_no_button(): void {
+        $this->assertStringNotContainsString(get_string('status_backup_now', 'tool_secbackup'), (new status_page())->render());
+    }
+
+    public function test_an_aborted_backup_gives_every_reason_and_what_to_do(): void {
+        global $DB;
+        self::register();
+        $run = run_record::create('manual', 1760000000);
+        $run->abort('disk_low', 1760000100);
+        foreach (abort_reason::codes() as $code) {
+            $DB->set_field('tool_secbackup_runs', 'abortcode', $code, ['id' => $run->id()]);
+            $html = (new status_page())->render();
+            // The notice goes through the cleaning of HTML, which leaves quotation marks as they are.
+            $this->assertStringContainsString(
+                htmlspecialchars(get_string('status_aborted', 'tool_secbackup', userdate(1760000000)), ENT_NOQUOTES),
+                $html,
+                $code
+            );
+            $this->assertStringContainsString(
+                htmlspecialchars(get_string('abort_' . $code, 'tool_secbackup'), ENT_NOQUOTES),
+                $html,
+                $code
+            );
+            $this->assertStringContainsString(
+                htmlspecialchars(
+                    get_string('status_advice', 'tool_secbackup', get_string('abort_' . $code . '_advice', 'tool_secbackup')),
+                    ENT_NOQUOTES
+                ),
+                $html,
+                $code
+            );
+        }
+    }
+
+    public function test_a_reason_without_a_text_of_its_own_is_named_and_escaped_once(): void {
+        self::register();
+        run_record::create('manual', 1760000000)->abort('<u>x</u>', 1760000100);
+        $html = (new status_page())->render();
+        $this->assert_escaped_once($html, '<u>x</u>', '&lt;u&gt;x&lt;/u&gt;');
+        $this->assertStringContainsString(s(get_string('abort_unknown_advice', 'tool_secbackup')), $html);
+    }
+
+    public function test_an_aborted_backup_is_hidden_by_a_newer_one(): void {
+        self::register();
+        run_record::create('manual', 1760000000)->abort('disk_low', 1760000100);
+        self::completed(1760000200, 1760000300, 10, 1);
+        $this->assertStringNotContainsString(s(get_string('abort_disk_low', 'tool_secbackup')), (new status_page())->render());
+        run_record::create('manual', 1760000400);
+        $this->assertStringNotContainsString(s(get_string('abort_disk_low', 'tool_secbackup')), (new status_page())->render());
+    }
+
     /**
      * The refusals of the service that stop a backup before it starts.
      *
@@ -325,31 +532,205 @@ final class status_page_test extends \advanced_testcase {
         return [
             'the number of backups of the plan' => ['run_limit_reached'],
             'a contract that is not active' => ['contract_inactive'],
+            'a refusal this plugin does not know' => ['something_new'],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('refusal_provider')]
     /**
-     * A backup that the service did not start is shown with the reason.
+     * A backup that the service did not start is shown with its own text and advice, not as a stop.
      *
      * @dataProvider refusal_provider
      * @param string $code The error code of the service.
      */
     public function test_a_backup_that_the_service_did_not_start_is_shown(string $code): void {
-        $this->resetAfterTest();
         self::register();
-        \tool_secbackup\local\backup\run_record::create('manual', 1760000000)->refuse($code, 1760000001);
+        run_record::create('manual', 1760000000)->refuse($code, 1760000001);
         $html = (new status_page())->render();
-        $this->assertStringContainsString(get_string('status_start_refused', 'tool_secbackup'), $html);
-        $this->assertStringContainsString(s(get_string('api_' . $code, 'tool_secbackup')), $html);
+        $known = $code !== 'something_new';
+        $a = $known ? 'Example Platform' : $code;
+        $id = $known ? 'refused_' . $code : 'refused_unknown';
+        $this->assertStringContainsString(s(get_string('status_refused', 'tool_secbackup', userdate(1760000000))), $html);
+        $this->assertStringContainsString(s(get_string($id, 'tool_secbackup', $a)), $html);
+        $this->assertStringContainsString(
+            s(get_string('status_advice', 'tool_secbackup', get_string($id . '_advice', 'tool_secbackup', $a))),
+            $html
+        );
+        $this->assertStringNotContainsString(s(get_string('status_aborted', 'tool_secbackup', userdate(1760000000))), $html);
     }
 
     public function test_a_backup_that_started_after_a_refusal_hides_it(): void {
-        $this->resetAfterTest();
         self::register();
-        \tool_secbackup\local\backup\run_record::create('manual', 1760000000)->refuse('contract_inactive', 1760000001);
-        \tool_secbackup\local\backup\run_record::create('manual', 1760000100);
-        $html = (new status_page())->render();
-        $this->assertStringNotContainsString(get_string('status_start_refused', 'tool_secbackup'), $html);
+        run_record::create('manual', 1760000000)->refuse('contract_inactive', 1760000001);
+        run_record::create('manual', 1760000100);
+        $this->assertStringNotContainsString(
+            s(get_string('status_refused', 'tool_secbackup', userdate(1760000000))),
+            (new status_page())->render()
+        );
+    }
+
+    public function test_nothing_happens_without_the_button(): void {
+        self::register();
+        self::received();
+        $this->assertNull((new status_page([self::class, 'calm']))->handle());
+        $this->assertSame([], run_record::recent(1));
+    }
+
+    public function test_the_button_queues_a_backup_and_cannot_be_pressed_again(): void {
+        self::register();
+        self::received();
+        $page = new status_page([self::class, 'calm']);
+        $redirection = self::press($page);
+        $this->assertSame('manual', run_record::active()->trigger());
+        $this->assertSame(get_string('start_started', 'tool_secbackup'), $redirection->message);
+        $this->assertSame(\core\output\notification::NOTIFY_SUCCESS, $redirection->type);
+        $this->assertSame('/admin/tool/secbackup/index.php', $redirection->url->out_as_local_url(false));
+        // The page now shows the button off, and a second press starts nothing.
+        $this->assertTrue(self::button_disabled((new status_page())->render()));
+        $again = self::press($page);
+        $this->assertSame(get_string('start_running', 'tool_secbackup'), $again->message);
+        $this->assertSame(\core\output\notification::NOTIFY_INFO, $again->type);
+        $this->assertCount(1, run_record::recent(5));
+    }
+
+    public function test_the_reasons_for_not_starting_are_told(): void {
+        self::register();
+        $reasons = [];
+        // The settings have not come from the service.
+        $reasons['notreceived'] = self::press(new status_page([self::class, 'calm']))->message;
+        self::received();
+        // The server is too busy.
+        $reasons['busy'] = self::press(new status_page(static fn(): string => 'server_busy'))->message;
+        // The clocks differ.
+        state::record_poll(1760000300, null, 'api_timestamp_out_of_range_minutes', '9', 540);
+        $reasons['clock'] = self::press(new status_page([self::class, 'calm']))->message;
+        foreach ($reasons as $reason => $message) {
+            $this->assertSame(get_string('start_' . $reason, 'tool_secbackup'), $message, $reason);
+        }
+        $this->assertSame([], run_record::recent(1));
+        $this->assertSame(\core\output\notification::NOTIFY_WARNING, self::press(new status_page([self::class, 'calm']))->type);
+    }
+
+    public function test_a_site_that_is_not_registered_is_told_so(): void {
+        $this->assertSame(
+            get_string('start_notregistered', 'tool_secbackup'),
+            self::press(new status_page([self::class, 'calm']))->message
+        );
+    }
+
+    public function test_every_answer_of_the_starter_has_a_message_in_both_languages(): void {
+        foreach (['en', 'ja'] as $lang) {
+            $string = [];
+            include(\core_component::get_component_directory('tool_secbackup') . '/lang/' . $lang . '/tool_secbackup.php');
+            $answers = ['started', 'notregistered', 'notreceived', 'clock', 'memorylimit', 'running', 'autobackup', 'busy'];
+            foreach ($answers as $answer) {
+                $this->assertNotEmpty($string['start_' . $answer] ?? '', $lang . ' ' . $answer);
+            }
+        }
+    }
+
+    public function test_the_button_needs_the_session_key(): void {
+        self::register();
+        self::received();
+        $_POST['action'] = 'start';
+        $this->expectException(\moodle_exception::class);
+        try {
+            (new status_page([self::class, 'calm']))->handle();
+        } finally {
+            $this->assertSame([], run_record::recent(1));
+        }
+    }
+
+    /**
+     * What the page asks the dialog of Moodle to show.
+     *
+     * @return string The code that the page adds at its end.
+     */
+    private static function dialogs(): string {
+        global $PAGE;
+        return $PAGE->requires->get_end_code();
+    }
+
+    /**
+     * The dialogs of a page, as the texts that they show.
+     *
+     * @param string $code The code that the page adds at its end.
+     * @return string[]
+     */
+    private static function dialog_texts(string $code): array {
+        preg_match_all('~core/notification.{0,40}?alert\((.*?)\);~s', $code, $matches);
+        $texts = [];
+        foreach ($matches[1] as $arguments) {
+            $texts[] = json_decode('[' . $arguments . ']', true)[1];
+        }
+        return $texts;
+    }
+
+    public function test_no_dialog_is_shown_for_a_site_that_needs_none(): void {
+        self::register();
+        (new status_page(null, new external_storage(static fn() => null)))->render();
+        $this->assertSame([], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_external_storage_is_warned_about_with_the_sentence_of_the_design(): void {
+        global $CFG;
+        self::register();
+        $CFG->alternative_file_system_class = '\file_system_filedir';
+        (new status_page())->render();
+        $this->assertSame([self::EXTERNAL_EN], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_a_modified_program_is_warned_about_with_the_sentence_of_the_design(): void {
+        self::register();
+        set_config('coremodified', 1, 'tool_secbackup');
+        (new status_page(null, new external_storage(static fn() => null)))->render();
+        $this->assertSame([self::CORE_EN], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_both_warnings_are_shown_when_both_apply(): void {
+        global $CFG;
+        self::register();
+        $CFG->alternative_file_system_class = '\file_system_filedir';
+        set_config('coremodified', 1, 'tool_secbackup');
+        (new status_page())->render();
+        $this->assertSame([self::EXTERNAL_EN, self::CORE_EN], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_a_program_that_is_not_modified_is_not_warned_about(): void {
+        self::register();
+        set_config('coremodified', 0, 'tool_secbackup');
+        (new status_page(null, new external_storage(static fn() => null)))->render();
+        $this->assertSame([], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_the_warnings_are_not_shown_before_the_registration(): void {
+        global $CFG;
+        $CFG->alternative_file_system_class = '\file_system_filedir';
+        set_config('coremodified', 1, 'tool_secbackup');
+        (new status_page())->render();
+        $this->assertSame([], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_the_warnings_are_the_sentences_of_the_design_in_both_languages(): void {
+        $string = [];
+        include(\core_component::get_component_directory('tool_secbackup') . '/lang/ja/tool_secbackup.php');
+        $this->assertSame(self::CORE_JA, $string['modal_core']);
+        $this->assertSame(self::EXTERNAL_JA, str_replace('{$a}', 'Example Platform', $string['modal_external']));
+        $string = [];
+        include(\core_component::get_component_directory('tool_secbackup') . '/lang/en/tool_secbackup.php');
+        $this->assertSame(self::CORE_EN, $string['modal_core']);
+        $this->assertSame(self::EXTERNAL_EN, str_replace('{$a}', 'Example Platform', $string['modal_external']));
+    }
+
+    public function test_the_name_of_the_platform_in_the_warning_is_the_one_received_at_the_registration(): void {
+        global $CFG;
+        self::register();
+        set_config('platformname', 'Other Platform', 'tool_secbackup');
+        $CFG->alternative_file_system_class = '\file_system_filedir';
+        (new status_page())->render();
+        $this->assertSame(
+            [str_replace('Example Platform', 'Other Platform', self::EXTERNAL_EN)],
+            self::dialog_texts(self::dialogs())
+        );
     }
 }

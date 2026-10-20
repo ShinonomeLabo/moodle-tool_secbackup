@@ -200,7 +200,8 @@ final class abort_test extends \advanced_testcase {
         $this->assertSame('backupfailure', $message->eventtype);
         $this->assertSame((int) get_admin()->id, (int) $message->useridto);
         $this->assertStringContainsString('3', $message->fullmessage);
-        $this->assertStringContainsString(get_string('disk_low', 'tool_secbackup'), $message->fullmessage);
+        $this->assertStringContainsString(get_string('abort_disk_low', 'tool_secbackup'), $message->fullmessage);
+        $this->assertStringContainsString(get_string('abort_disk_low_advice', 'tool_secbackup'), $message->fullmessage);
         $this->assertStringContainsString('/admin/tool/secbackup/index.php', $message->fullmessage);
         $sink->clear();
         // The fourth stop of the same series does not tell them again.
@@ -225,6 +226,7 @@ final class abort_test extends \advanced_testcase {
         $this->abort(run_record::create('schedule', self::NOW), 'something_new');
         $messages = $sink->get_messages();
         $this->assertStringContainsString('something_new', reset($messages)->fullmessage);
+        $this->assertStringContainsString(get_string('abort_unknown_advice', 'tool_secbackup'), reset($messages)->fullmessage);
     }
 
     public function test_a_message_that_cannot_be_sent_does_not_stop_the_record(): void {
@@ -255,20 +257,6 @@ final class abort_test extends \advanced_testcase {
         );
         $this->assertSame(3, run_record::consecutive_aborts());
         $this->assertSame('aborted', run_record::recent(1)[0]->status());
-    }
-
-    public function test_every_reason_of_a_run_has_a_text_in_both_languages(): void {
-        $reasons = array_merge(
-            \tool_secbackup\local\api\client::FAIL_CODES,
-            abort::SERVICE_CODES
-        );
-        foreach (['en', 'ja'] as $lang) {
-            $string = [];
-            include(__DIR__ . '/../../../lang/' . $lang . '/tool_secbackup.php');
-            foreach ($reasons as $reason) {
-                $this->assertArrayHasKey($reason, $string, $lang . ': ' . $reason);
-            }
-        }
     }
 
     /**

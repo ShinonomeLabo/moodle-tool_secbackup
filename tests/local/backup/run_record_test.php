@@ -226,6 +226,15 @@ final class run_record_test extends \advanced_testcase {
         $this->assertSame($run->id(), run_record::last_completed()->id());
     }
 
+    public function test_the_end_of_a_run_is_known_only_when_it_has_ended(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        $this->assertNull($run->finished_at());
+        $run->finish(1200);
+        $this->assertSame(1200, $run->finished_at());
+        $this->assertSame(1200, run_record::last_completed()->finished_at());
+    }
+
     public function test_aborting_stores_the_code(): void {
         global $DB;
         $this->resetAfterTest();

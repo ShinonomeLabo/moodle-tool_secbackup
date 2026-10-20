@@ -28,6 +28,7 @@
 require_once(__DIR__ . '/../../../../../lib/behat/behat_base.php');
 
 use Behat\Mink\Exception\ExpectationException;
+use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\enroller;
@@ -272,13 +273,76 @@ class behat_tool_secbackup extends behat_base {
     }
 
     /**
+     * Makes the fake backup service send the settings of the backup (a window of three hours in the night, once a day), so that
+     * a backup can be started after the next status request.
+     *
+     * @Given /^the fake backup service gives the settings of the backup$/
+     */
+    public function the_fake_backup_service_gives_the_settings_of_the_backup(): void {
+        $this->control('instruction/settings', [
+            'seq' => 1,
+            'body' => [
+                'timezone' => 'Asia/Tokyo',
+                'window_start' => '02:00',
+                'window_end' => '05:00',
+                'runs_per_day' => 1,
+                'full_interval' => 'weekly',
+                'bandwidth_mbps' => 0,
+                'include_logs' => false,
+            ],
+        ]);
+    }
+
+    /**
+     * Puts a backup in the record that completed a short time ago.
+     *
+     * @Given /^a backup of the site completed in (\d+) seconds after sending (\d+) chunks of (\d+) bytes$/
+     * @param string $seconds How long the backup took.
+     * @param string $chunks The chunks that were sent.
+     * @param string $bytes The bytes that were sent.
+     */
+    public function a_backup_of_the_site_completed(string $seconds, string $chunks, string $bytes): void {
+        $start = time() - (int) $seconds - 60;
+        $run = run_record::create('schedule', $start);
+        $run->add_uploaded((int) $bytes, (int) $chunks);
+        $run->finish($start + (int) $seconds);
+    }
+
+    /**
+     * Puts a backup in the record that was stopped a short time ago.
+     *
+     * @Given /^a backup of the site was stopped with the reason "(?P<code_string>[a-z_]+)"$/
+     * @param string $code The reason.
+     */
+    public function a_backup_of_the_site_was_stopped(string $code): void {
+        $start = time() - 300;
+        run_record::create('schedule', $start)->abort($code, $start + 100);
+    }
+
+    /**
+     * Puts a backup in the record that the backup service did not start.
+     *
+     * @Given /^the backup service did not start a backup of the site, with the answer "(?P<code_string>[a-z_]+)"$/
+     * @param string $code The answer of the service.
+     */
+    public function the_backup_service_did_not_start_a_backup(string $code): void {
+        $start = time() - 300;
+        run_record::create('manual', $start)->refuse($code, $start + 1);
+    }
+
+    /**
      * Sends a control request to the fake backup service.
      *
      * @param string $action Control action.
+     * @param array|null $body A body to send as JSON, or null for none.
      */
-    private function control(string $action): void {
+    private function control(string $action, ?array $body = null): void {
         $client = new \core\http_client(['ignoresecurity' => true]);
-        $response = $client->post(self::FAKE . '/_fake/' . $action, ['http_errors' => false, 'timeout' => 10]);
+        $options = ['http_errors' => false, 'timeout' => 10];
+        if ($body !== null) {
+            $options['json'] = $body;
+        }
+        $response = $client->post(self::FAKE . '/_fake/' . $action, $options);
         if ($response->getStatusCode() !== 204) {
             throw new \Exception(
                 'The fake backup service did not accept "' . $action . '". Start it with .dev/fakesec/start.sh.'
