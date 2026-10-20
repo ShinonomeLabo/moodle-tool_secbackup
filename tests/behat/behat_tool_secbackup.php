@@ -273,18 +273,32 @@ class behat_tool_secbackup extends behat_base {
     }
 
     /**
-     * Makes the fake backup service send the settings of the backup (a window of three hours in the night, once a day), so that
-     * a backup can be started after the next status request.
+     * Makes the fake backup service send the settings of the backup, with a window of one hour that starts twelve hours from
+     * now (in UTC), so that the scheduled start never falls in the time that a scenario runs, whatever the time of day is.
+     * A backup is then started only by the button.
      *
      * @Given /^the fake backup service gives the settings of the backup$/
      */
     public function the_fake_backup_service_gives_the_settings_of_the_backup(): void {
+        $this->give_settings(12 * HOURSECS);
+    }
+
+    /**
+     * Sends settings whose window of one hour starts some seconds from now.
+     *
+     * @param int $offset Seconds from now to the start of the window; negative to make it contain now.
+     */
+    private function give_settings(int $offset): void {
+        // The service sends times on the hour or the half hour.
+        $from = intdiv(time() + $offset, 1800) * 1800;
+        $start = gmdate('H:i', $from);
+        $end = gmdate('H:i', $from + HOURSECS);
         $this->control('instruction/settings', [
             'seq' => 1,
             'body' => [
-                'timezone' => 'Asia/Tokyo',
-                'window_start' => '02:00',
-                'window_end' => '05:00',
+                'timezone' => 'UTC',
+                'window_start' => $start,
+                'window_end' => $end,
                 'runs_per_day' => 1,
                 'full_interval' => 'weekly',
                 'bandwidth_mbps' => 0,
