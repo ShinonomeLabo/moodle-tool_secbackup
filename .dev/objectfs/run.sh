@@ -92,6 +92,10 @@ result "tool_objectfs locations: $locations"
 result "files of the site: $(storage_php -r 'define("CLI_SCRIPT", true); require "config.php";
     echo $DB->count_records_sql("SELECT COUNT(DISTINCT contenthash) FROM {files} WHERE filesize > 0");') contents"
 result "filedir: $(find "$dataroot/filedir" -type f ! -name warning.txt | wc -l) files"
+# What is left there, by content hash and size (tool_objectfs moves only files of more than sizethreshold bytes, here 0).
+while read -r left; do
+    result "filedir keeps: $left"
+done < <(find "$dataroot/filedir" -type f ! -name warning.txt -printf '%f %s bytes\n')
 result "bucket: $(aws --endpoint-url http://127.0.0.1:9000 s3 ls --recursive "s3://$bucket" | wc -l) objects"
 
 echo "== The status page, and the backup started with its button"
