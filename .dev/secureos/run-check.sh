@@ -17,7 +17,7 @@
 #                mode with the local rules of check.sh and "audit deny network inet stream," (and inet6).
 #   run-allowed  SELinux: httpd_can_network_connect on. AppArmor: the same profile with the local rules only.
 # Each case logs in as admin with curl, presses "Back up now", requests /admin/cron.php until the run has ended (completed,
-# aborted or refused) or 30 minutes have passed, and opens the status page again. Its checks:
+# aborted or refused) or 15 minutes have passed, and opens the status page again. Its checks:
 #   start        the answer of the button (started, busy, ...: the key of the start_* string the page shows)
 #   status       the status of the run in the table of the plugin
 #   reason       its reason (abortcode), or none
@@ -71,6 +71,8 @@ rm -f /etc/httpd/conf.d/secbk-run.conf /etc/apache2/conf-enabled/secbk-run.conf 
 systemctl stop secbk-fakesec > /dev/null 2>&1
 if [ "$what" = on ]; then
     block='// tool_secbackup run-check settings (added by .dev/secureos/run-check.sh).
+$CFG->noemailever = true;
+$CFG->noreplyaddress = "noreply@example.com";
 define("TOOL_SECBACKUP_DEVELOPER", ["trustedkeys" => ["PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="],
     "allowhttp" => true, "allowprivatehosts" => true, "skipnetworkchecks" => true]);
 // End of tool_secbackup run-check settings.'
@@ -221,7 +223,7 @@ case_run() {
         echo "--- web cron"
         status=
         attempt=0
-        while [ $(( $(date +%s) - started )) -lt 1800 ]; do
+        while [ $(( $(date +%s) - started )) -lt 900 ]; do
             echo "== request $((++attempt)), $(date -u +%T)"
             vm curl -s -m 1700 -H "$host" http://127.0.0.1/admin/cron.php | tail -n 60
             status="$(run_status)"
@@ -275,8 +277,10 @@ case_run() {
 # --- the cases -------------------------------------------------------------------------------------------------------------
 
 # The local rules of check.sh: read the code, write the data directory; Ubuntu also needs to tell systemd that php-fpm has
-# started, and to reach the PostgreSQL socket.
-base=("$root/** r," '/var/moodledata/** rwk,')
+# started, and to reach the PostgreSQL socket. The cron of Moodle needs one more place, which no page of check.sh uses: the
+# folder of each request ($CFG->localrequestdir, by default /tmp/requestdir). Without it Moodle stops every request of the cron
+# with invaliddatarootpermissions (the profile denies the mkdir of /tmp/requestdir/), and the run never moves.
+base=("$root/** r," '/var/moodledata/** rwk,' '/tmp/requestdir/ rw,' '/tmp/requestdir/** rwk,')
 case "$template" in
     ubuntu*) base+=('/run/systemd/notify w,' '/run/postgresql/.s.PGSQL.* rw,') ;;
 esac

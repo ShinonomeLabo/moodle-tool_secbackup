@@ -114,9 +114,10 @@ every template is `ok`.
 ## In GitHub Actions
 
 The job `secureos` of `.github/workflows/ci.yml` runs on every push to `main`, every pull request and every manual run with
-the scope `all`, like the other jobs (so the CI badge covers it). It is a matrix of twelve jobs: the four SELinux templates
-(`rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10`, state `selinux`) and the four AppArmor templates (`debian-12`,
-`debian-13`, `ubuntu-22.04`, `ubuntu-24.04`), each in the states `standard` and `confined`; `fail-fast` is off. Each job
+the scope `all`, like the other jobs (so the CI badge covers it). It is a matrix of fourteen jobs: the four SELinux templates
+(`rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10`, state `selinux`), the four AppArmor templates (`debian-12`,
+`debian-13`, `ubuntu-22.04`, `ubuntu-24.04`), each in the states `standard` and `confined`, and the state `run` (a whole backup
+run, below) in `rocky-9` and `ubuntu-24.04`; `fail-fast` is off. Each job
 installs QEMU and Lima with `lima-vm/lima-actions/setup` (pinned by commit, Lima `v2.2.1`, the version the scripts were run
 with on the Mac), builds one machine from the distribution's own packages and runs `run-template.sh -s <state> <template>`.
 It has the workflow's read-only permissions, `timeout-minutes: 45`, and uploads nothing.
@@ -243,6 +244,53 @@ diagnosis says nothing about the web server.
 | Ubuntu 22.04 | pass / pass | fail / fail, no log | pass / pass | fail / fail, logged | fail / fail, logged | fail / fail (`dns_os_failed`), logged | pass / pass, **logged** (IPv6 UDP socket) |
 | Ubuntu 24.04 | pass / pass | fail / fail, no log | pass / pass | fail / fail, logged | fail / fail, logged | fail / fail (`dns_os_failed`), logged | pass / pass |
 
+## A whole backup run (state `run`)
+
+    .dev/secureos/run-template.sh -s run rocky-9          # or ubuntu-24.04, or any other template
+
+The state `run` is not part of `all`: instead of the connection diagnostics, `run-check.sh` makes whole backup runs as a site
+does that runs the cron of Moodle from its web server. The run is started with the button "Back up now" of the status page and
+moved on by requests of `/admin/cron.php`, so it runs in php-fpm: as `httpd_t` under SELinux, under the `php-fpm` profile under
+AppArmor. Its connections to the service and to the storage, and its temporary files, are then those of the web server. (A
+site whose cron runs from the command line runs as `unconfined_t` or `unconfined`, which the cases of `check.sh` show.)
+
+Before the cases, from the command line (which no access control confines): `config.php` gets developer settings that trust
+the fake backup service, the cron is allowed from the web (`cronclionly` off), the time limits of Apache are raised for the long
+requests of that cron, the fake service is started as a service of systemd on `127.0.0.1:8099` (it keeps the backup in its own
+storage on the same port), and `.dev/fakesec/prepare.php` registers the site, receives the settings and publishes the list of
+the official files. All of it is put back at the end. Then two cases, each a new run:
+
+| Case | SELinux (Rocky Linux, AlmaLinux) | AppArmor (Debian, Ubuntu) |
+|---|---|---|
+| `run-denied` | `httpd_can_network_connect` and `httpd_can_network_relay` off | the `php-fpm` profile in enforce mode, with the local rules of `check.sh` and of the request folder (below) and `audit deny network inet stream,` (and `inet6`) |
+| `run-allowed` | `httpd_can_network_connect` on | the same profile with the local rules only |
+
+**The cron of Moodle under the `php-fpm` profile needs one more local rule than the pages.** Each request of the cron makes
+a folder in `$CFG->localrequestdir` (by default `/tmp/requestdir`), which no page of `check.sh` does. With only the rules of the
+table "A sufficient set of local rules for Moodle" below, the profile denies `mkdir` of `/tmp/requestdir/` (`operation="mkdir"
+class="file" ... denied_mask="c"`), Moodle ends every request of the cron with `invaliddatarootpermissions`, and a run that the
+button started never moves (seen on Ubuntu 24.04 with Moodle 5.2 in run 39548264878). `run-check.sh` adds
+`/tmp/requestdir/ rw,` and `/tmp/requestdir/** rwk,`. The profile also denies `/proc/loadavg` and `/proc/<pid>/mountinfo` to
+php-fpm: the watch of the plugin then reads the load as unknown and pauses the run for 30 seconds at most once in five minutes.
+
+Each case logs in with curl, presses the button, requests the cron until the run has ended (or 15 minutes have passed) and
+opens the status page again. The checks of its summary (compared with the rows `run-*` of `expect.txt`): `start` (the answer of
+the button), `status` and `reason` (the run in the table of the plugin), `page` (the reason whose text and advice the status
+page shows, or `completed` for the last completed backup), `mac` (the label of php-fpm), `netdenials` and `phpwarnings` (as in
+`check.sh`, for php-fpm). The fake service listens on a port of no special SELinux type, which `httpd_t` may connect to only with
+`httpd_can_network_connect`; the real service and its storage are on port 443, where `httpd_can_network_relay` is enough (the
+cases of `check.sh` above).
+
+The job `secureos` of `ci.yml` has two rows of this state, `rocky-9` and `ubuntu-24.04` (60 minutes each); the job `secureos` of
+the manual workflow `.github/workflows/storage.yml` runs the same two alone.
+
+### Results of the state `run`
+
+| Template | CI run | `run-denied` | `run-allowed` |
+|---|---|---|---|
+| Rocky Linux 9 | | | |
+| Ubuntu 24.04 | | | |
+
 ## AppArmor facts (the base of the AppArmor check of the plugin)
 
 Observed on 2026-10-15 on aarch64 machines under Lima 2.2.1 (vz driver), with the packages of that day: Debian 12 (kernel
@@ -323,6 +371,7 @@ not from a page.
 | `check.sh`, `assert.sh`, `expect.txt` | the states, the summary, and what it must say |
 | `control-warning.php` | raises one PHP warning from the plugin's directory, for the positive control of the warning count |
 | `run-template.sh` | one template from the creation of the machine to its deletion; used by `matrix.sh` and by the CI job |
+| `run-check.sh` | the state `run`: whole backup runs started with the button and moved on by the cron from the web server |
 | `matrix.sh`, `lib.sh` | the eight templates in turn; shared functions (`vm`, `start_vm`, `free_port`, `vm_exists`) |
 
 A machine sometimes does not come up in time (its image boots slowly while another VM starts): `matrix.sh` tries a failed
