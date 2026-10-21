@@ -107,18 +107,22 @@ final class chunk_name_test extends \basic_testcase {
         $this->assertSame(self::expected('code|' . self::RUN . '|0'), $code);
     }
 
-    public function test_the_manifest(): void {
-        $name = chunk_name::manifest(self::key(), self::RUN);
-        $this->assertSame('dbe3b0f6e07e1302ef2e5200a94eb3e65d3e211c71cb4560c6bf05f5ead08c0b', $name);
-        $this->assertSame(self::expected('manifest|' . self::RUN), $name);
+    public function test_the_manifest_is_named_without_the_key(): void {
+        // BLAKE2b-256 of "manifest|" + run UUID without a key, computed with another implementation (hashlib.blake2b of
+        // Python, digest_size=32): a restore has the site's secret key but not the key for names, and must open the manifest.
+        $name = chunk_name::manifest(self::RUN);
+        $this->assertSame('d427ee36fcbbd3ca43108a5718a9f5d6d16594bcbdd3eab60318adc8cc5b4bc9', $name);
+        $this->assertSame(bin2hex(sodium_crypto_generichash('manifest|' . self::RUN, '', 32)), $name);
+        $this->assertNotSame(self::expected('manifest|' . self::RUN), $name);
     }
 
     public function test_another_key_gives_another_name(): void {
         $other = str_repeat("\x01", 32);
         $this->assertSame(
-            bin2hex(sodium_crypto_generichash('manifest|' . self::RUN, $other, 32)),
-            chunk_name::manifest($other, self::RUN)
+            bin2hex(sodium_crypto_generichash('file|' . self::HASH . '|0', $other, 32)),
+            chunk_name::file($other, self::HASH, 0)
         );
+        $this->assertNotSame(chunk_name::file(self::key(), self::HASH, 0), chunk_name::file($other, self::HASH, 0));
     }
 
     /**
@@ -132,8 +136,8 @@ final class chunk_name_test extends \basic_testcase {
         $run = self::RUN;
         $hash = self::HASH;
         return [
-            'short key' => [fn() => chunk_name::manifest(str_repeat("\x02", 31), $run)],
-            'long key' => [fn() => chunk_name::manifest(str_repeat("\x02", 33), $run)],
+            'short key' => [fn() => chunk_name::file(str_repeat("\x02", 31), $hash, 0)],
+            'long key' => [fn() => chunk_name::file(str_repeat("\x02", 33), $hash, 0)],
             'upper-case content hash' => [fn() => chunk_name::file($key, strtoupper($hash), 0)],
             'short content hash' => [fn() => chunk_name::file($key, substr($hash, 1), 0)],
             'content hash after another character' => [fn() => chunk_name::file($key, 'x' . $hash, 0)],
@@ -143,10 +147,10 @@ final class chunk_name_test extends \basic_testcase {
             'empty pack' => [fn() => chunk_name::pack($key, [])],
             'pack with a hash that is not text' => [fn() => chunk_name::pack($key, [$hash, null])],
             'pack with a wrong hash' => [fn() => chunk_name::pack($key, [$hash, 'abc'])],
-            'upper-case run' => [fn() => chunk_name::manifest($key, strtoupper($run))],
-            'run without dashes' => [fn() => chunk_name::manifest($key, str_replace('-', '', $run))],
-            'run before a line feed' => [fn() => chunk_name::manifest($key, $run . "\n")],
-            'run after another character' => [fn() => chunk_name::manifest($key, 'x' . $run)],
+            'upper-case run' => [fn() => chunk_name::manifest(strtoupper($run))],
+            'run without dashes' => [fn() => chunk_name::manifest(str_replace('-', '', $run))],
+            'run before a line feed' => [fn() => chunk_name::manifest($run . "\n")],
+            'run after another character' => [fn() => chunk_name::manifest('x' . $run)],
             'db with a wrong run' => [fn() => chunk_name::db($key, 'run', 'user', 0, 1, $sha)],
             'empty table' => [fn() => chunk_name::db($key, $run, '', 0, 1, $sha)],
             'table with a separator' => [fn() => chunk_name::db($key, $run, 'user|1-2', 0, 1, $sha)],
@@ -195,10 +199,13 @@ final class chunk_name_test extends \basic_testcase {
     }
 
     public function test_the_key_parameters_are_marked_sensitive(): void {
-        foreach (['file', 'pack', 'db', 'series', 'manifest'] as $method) {
+        foreach (['file', 'pack', 'db', 'series'] as $method) {
             $parameter = (new \ReflectionMethod(chunk_name::class, $method))->getParameters()[0];
             $this->assertSame('key', $parameter->getName(), $method);
             $this->assertCount(1, $parameter->getAttributes(\SensitiveParameter::class), $method);
         }
+        // The manifest has no key: its only parameter is the run.
+        $parameters = (new \ReflectionMethod(chunk_name::class, 'manifest'))->getParameters();
+        $this->assertSame(['runuuid'], array_map(static fn(\ReflectionParameter $p): string => $p->getName(), $parameters));
     }
 }

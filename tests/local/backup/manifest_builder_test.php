@@ -21,7 +21,6 @@ use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\tests\faulty_stream;
-use tool_secbackup\tests\trace_strings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\manifest_builder::class)]
 /**
@@ -95,7 +94,7 @@ final class manifest_builder_test extends \advanced_testcase {
      * @return \tool_secbackup\local\crypto\chunk_info
      */
     private static function build(manifest_builder $builder): \tool_secbackup\local\crypto\chunk_info {
-        return $builder->build(['v' => 1], str_repeat('k', 32), self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
+        return $builder->build(['v' => 1], self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
     }
 
     /**
@@ -111,10 +110,9 @@ final class manifest_builder_test extends \advanced_testcase {
      * Opens the chunk that build() wrote and gives the lines of the list.
      *
      * @param \tool_secbackup\local\crypto\chunk_info $chunk The chunk.
-     * @param string $dedupkey Key for names.
      * @return string[] The lines, without their line feeds.
      */
-    private static function lines(\tool_secbackup\local\crypto\chunk_info $chunk, string $dedupkey): array {
+    private static function lines(\tool_secbackup\local\crypto\chunk_info $chunk): array {
         $reader = new chunk_reader(
             $chunk->path,
             sodium_crypto_box_secretkey(self::pair()),
@@ -123,7 +121,8 @@ final class manifest_builder_test extends \advanced_testcase {
             $chunk->name
         );
         self::assertSame(chunk_writer::TYPE_MANIFEST, $reader->type());
-        self::assertSame(chunk_name::manifest($dedupkey, self::RUN), $chunk->name);
+        // The name is made without the key for names: a restore opens the manifest with the site's secret key alone.
+        self::assertSame(chunk_name::manifest(self::RUN), $chunk->name);
         $text = gzdecode($reader->read_item($chunk->items[0]['offset']));
         self::assertSame("\n", substr($text, -1));
         return explode("\n", substr($text, 0, -1));
@@ -144,10 +143,9 @@ final class manifest_builder_test extends \advanced_testcase {
         $builder->append(['t' => 'db', 'chunk' => 'a']);
         $builder->append(['t' => 'file', 'path' => 'a/b.txt', 'note' => "line\nfeed \u{3042}"]);
         $this->assertSame(2, $builder->commit());
-        $key = str_repeat('k', 32);
         $header = ['v' => 1, 'site_id' => self::SITE, 'run_id' => self::RUN, 'kind' => 'full'];
-        $chunk = $builder->build($header, $key, self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
-        $lines = self::lines($chunk, $key);
+        $chunk = $builder->build($header, self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
+        $lines = self::lines($chunk);
         $this->assertCount(4, $lines);
         $this->assertSame($header, json_decode($lines[0], true));
         $this->assertSame(['t' => 'db', 'chunk' => 'a'], json_decode($lines[1], true));
@@ -161,9 +159,8 @@ final class manifest_builder_test extends \advanced_testcase {
 
     public function test_a_list_without_entries_has_a_header_and_an_end_line(): void {
         [$builder] = $this->builder();
-        $key = str_repeat('k', 32);
-        $chunk = $builder->build(['v' => 1], $key, self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
-        $this->assertSame(['{"v":1}', '{"end":true,"entries":0}'], self::lines($chunk, $key));
+        $chunk = $builder->build(['v' => 1], self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
+        $this->assertSame(['{"v":1}', '{"end":true,"entries":0}'], self::lines($chunk));
     }
 
     public function test_commit_counts_the_complete_lines_and_truncate_drops_the_rest(): void {
@@ -246,7 +243,7 @@ final class manifest_builder_test extends \advanced_testcase {
     public function test_a_header_that_cannot_be_written_is_a_coding_error(): void {
         [$builder] = $this->builder();
         $this->expectException(\coding_exception::class);
-        $builder->build(['x' => INF], str_repeat('k', 32), self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
+        $builder->build(['x' => INF], self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
     }
 
     public function test_a_large_list_is_written_without_holding_it_in_memory(): void {
@@ -262,8 +259,7 @@ final class manifest_builder_test extends \advanced_testcase {
             memory_reset_peak_usage();
         }
         $before = memory_get_usage();
-        $key = str_repeat('k', 32);
-        $chunk = $builder->build(['v' => 1], $key, self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
+        $chunk = $builder->build(['v' => 1], self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE);
         // The list is 2.8 MB of text: it is read and compressed in pieces.
         if ($resettable) {
             $this->assertLessThan(2000000, memory_get_peak_usage() - $before);
@@ -305,56 +301,16 @@ final class manifest_builder_test extends \advanced_testcase {
         $this->assertSame("{\"n\":1}\n{\"n\":3}\n", file_get_contents($folder . '/entries.jsonl'));
     }
 
-    public function test_the_key_for_names_is_not_in_the_trace_of_a_failed_build(): void {
-        [$builder] = $this->builder();
+    public function test_a_run_that_is_not_a_uuid_is_refused_before_anything_is_written(): void {
+        [$builder, $folder] = $this->builder();
         $builder->append(['n' => 1]);
-        $key = 'secret-key-for-the-names-1234567';
         try {
-            // A public key of the wrong length: the chunk cannot be written.
-            $builder->build(['v' => 1], $key, self::RUN, 'short', self::SITE);
-            $this->fail('No exception');
-        } catch (\Throwable $e) {
-            foreach (trace_strings::of($e) as $string) {
-                $this->assertStringNotContainsString($key, $string);
-            }
-            $this->assertSame([], trace_strings::objects_in_plugin_frames($e));
-        }
-    }
-
-    /**
-     * What chunk_name refuses, by name (the test builds the key itself: a frame of the test would hold it otherwise).
-     *
-     * @return array
-     */
-    public static function refused_by_the_name_provider(): array {
-        return ['a key of 31 bytes' => ['key'], 'a run that is not a UUID' => ['run']];
-    }
-
-    #[\PHPUnit\Framework\Attributes\DataProvider('refused_by_the_name_provider')]
-    /**
-     * A key or a run that the naming refuses does not put the key into the trace of the exception.
-     *
-     * @dataProvider refused_by_the_name_provider
-     * @param string $case What is wrong.
-     */
-    public function test_the_key_is_not_in_the_trace_when_the_name_is_refused(string $case): void {
-        [$builder] = $this->builder();
-        $builder->append(['n' => 1]);
-        $key = $case === 'key' ? 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk' : 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk';
-        try {
-            $builder->build(
-                ['v' => 1],
-                $key,
-                $case === 'run' ? 'not-a-uuid' : self::RUN,
-                sodium_crypto_box_publickey(self::pair()),
-                self::SITE
-            );
+            $builder->build(['v' => 1], 'not-a-uuid', sodium_crypto_box_publickey(self::pair()), self::SITE);
             $this->fail('No exception');
         } catch (\coding_exception $e) {
-            foreach (trace_strings::of($e) as $string) {
-                $this->assertStringNotContainsString('kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk', $string);
-            }
+            $this->assertStringContainsString('run UUID', $e->getMessage());
         }
+        $this->assertSame([], glob($folder . '/manifest*'));
     }
 
     public function test_a_line_that_cannot_be_written_is_a_failure_and_is_not_counted(): void {

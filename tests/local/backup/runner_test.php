@@ -317,7 +317,7 @@ final class runner_test extends \advanced_testcase {
             sodium_crypto_box_secretkey($this->fixture->boxpair),
             sodium_crypto_box_publickey($this->fixture->boxpair),
             self::SITE,
-            chunk_name::manifest(dedup_key::load_or_create(), $runid)
+            chunk_name::manifest($runid)
         );
         $this->assertSame(chunk_writer::TYPE_MANIFEST, $reader->type());
         $lines = explode("\n", rtrim(gzdecode($reader->read_item(chunk_writer::HEADER)), "\n"));

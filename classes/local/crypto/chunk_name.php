@@ -17,17 +17,18 @@
 namespace tool_secbackup\local\crypto;
 
 /**
- * The names of the chunks at the storage: keyed BLAKE2b-256 of a text that says what the chunk holds, as 64 lower-case
- * hexadecimal digits.
+ * The names of the chunks at the storage: BLAKE2b-256 of a text that says what the chunk holds, as 64 lower-case hexadecimal
+ * digits.
  *
  * The key is the site's key for names (dedup_key). Without it, the storage cannot tell what a chunk holds, for example
- * whether the site has a well-known file; it can only tell whether two chunks have the same name. The texts are:
+ * whether the site has a well-known file; it can only tell whether two chunks have the same name. Only the name of the manifest
+ * is made without the key (see manifest()). The texts are:
  *
  * - a piece of a file: "file|" + content hash + "|" + number of the piece (from 0);
  * - a chunk of small files: "pack|" + SHA-256 in hexadecimal of the content hashes in ascending order, joined by commas;
  * - a block of a table: "db|" + run UUID + "|" + table + "|" + first id + "-" + last id + "|" + SHA-256 of the block;
  * - a chunk of the rest of the data root, or of code: "dataroot|" or "code|", then run UUID + "|" + number (from 0);
- * - the manifest of a run: "manifest|" + run UUID.
+ * - the manifest of a run: "manifest|" + run UUID, without the key.
  *
  * The storage keeps chunks under these names, so the texts must not change.
  *
@@ -142,16 +143,19 @@ final class chunk_name {
     }
 
     /**
-     * The name of the manifest of a run.
+     * The name of the manifest of a run: BLAKE2b-256 of the text without a key.
      *
-     * @param #[|\SensitiveParameter|]|string $key The key for names (32 bytes).
+     * A restore opens the manifest first, with nothing but the site's secret key: the key for names lives only in Moodle, and a
+     * restore after the loss of the server does not have it. The storage keeps the manifest under the run UUID anyway, so a
+     * keyed name would hide nothing.
+     *
      * @param string $runuuid UUID of the run.
      * @return string
      * @throws \coding_exception For a wrong argument.
      */
-    public static function manifest(#[\SensitiveParameter] string $key, string $runuuid): string {
+    public static function manifest(string $runuuid): string {
         self::check(self::UUID, $runuuid, 'run UUID');
-        return self::name($key, 'manifest|' . $runuuid);
+        return bin2hex(sodium_crypto_generichash('manifest|' . $runuuid, '', SODIUM_CRYPTO_GENERICHASH_BYTES));
     }
 
     /**

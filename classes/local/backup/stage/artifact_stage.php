@@ -74,7 +74,6 @@ final class artifact_stage {
         $context->set('bytes', self::bytes($entriesfile));
         $chunk = $context->entries->build(
             self::header($context, $seams),
-            $context->dedup_key(),
             $context->run_uuid(),
             $context->site_public_key(),
             $context->siteid

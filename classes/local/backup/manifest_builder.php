@@ -136,33 +136,15 @@ final class manifest_builder {
      * Writes the list as a chunk.
      *
      * @param array $header The first line: an object.
-     * @param #[|\SensitiveParameter|]|string $dedupkey The key for names (32 bytes).
      * @param string $runuuid UUID of the run.
      * @param string $sitepublickey The X25519 public key of the site (32 bytes).
      * @param string $siteid Site ID at the backup service.
      * @return chunk_info The chunk, in the folder of the run.
-     * @throws \coding_exception When the header is not an object of JSON.
+     * @throws \coding_exception When the header is not an object of JSON, or the run UUID is not valid.
      * @throws plugin_exception With temp_write_failed when a file cannot be written.
      */
-    public function build(
-        array $header,
-        #[\SensitiveParameter] string $dedupkey,
-        string $runuuid,
-        string $sitepublickey,
-        string $siteid
-    ): chunk_info {
-        // The key is a secret: it moves to a variable and the parameter is unset before anything can throw, as the trace of an
-        // exception shows the parameters (and hides them only from PHP 8.2 on).
-        $key = $dedupkey;
-        unset($dedupkey);
-        try {
-            $name = chunk_name::manifest($key, $runuuid);
-        } catch (\coding_exception $e) {
-            // Made again from the hint: the trace of the exception from chunk_name holds the key as an argument on PHP before
-            // 8.2, and its message is not made into a hint again with its prefix.
-            throw new \coding_exception($e->a);
-        }
-        unset($key);
+    public function build(array $header, string $runuuid, string $sitepublickey, string $siteid): chunk_info {
+        $name = chunk_name::manifest($runuuid);
         $headerline = self::encode($header) . "\n";
         $this->commit();
         $gzip = $this->tempdir . '/manifest.jsonl.gz';
