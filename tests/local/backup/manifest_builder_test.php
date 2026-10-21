@@ -19,8 +19,10 @@ namespace tool_secbackup\local\backup;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
+use tool_secbackup\local\crypto\key_exception;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\tests\faulty_stream;
+use tool_secbackup\tests\trace_strings;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\backup\manifest_builder::class)]
 /**
@@ -311,6 +313,57 @@ final class manifest_builder_test extends \advanced_testcase {
             $this->assertStringContainsString('run UUID', $e->getMessage());
         }
         $this->assertSame([], glob($folder . '/manifest*'));
+    }
+
+    /**
+     * Site public keys that the writer of the chunk refuses, and what build() throws for each.
+     *
+     * @return array
+     */
+    public static function refused_public_key_provider(): array {
+        return [
+            'a key of the wrong length' => ['short', \coding_exception::class, null],
+            'a key that cannot encrypt' => [str_repeat("\0", 32), key_exception::class, 'publickey_invalid'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('refused_public_key_provider')]
+    /**
+     * A chunk that cannot be written is a failure made again without the trace of the writer, and leaves no compressed copy.
+     *
+     * @dataProvider refused_public_key_provider
+     * @param string $publickey The site public key.
+     * @param string $class The class of the exception.
+     * @param string|null $errorcode Its error code, for an exception of the plugin.
+     */
+    public function test_a_chunk_that_cannot_be_written_is_remade_and_leaves_no_copy(
+        string $publickey,
+        string $class,
+        ?string $errorcode
+    ): void {
+        [$builder, $folder] = $this->builder();
+        $builder->append(['t' => 'file', 'path' => 'marker-of-the-entries']);
+        try {
+            $builder->build(['v' => 1], self::RUN, $publickey, self::SITE);
+            $this->fail('No exception');
+        } catch (\Throwable $e) {
+            $this->assertInstanceOf($class, $e);
+            if ($errorcode !== null) {
+                $this->assertSame($errorcode, $e->errorcode);
+            } else {
+                // Made again: it names the class of the writer's exception, not its message.
+                $this->assertStringContainsString('The chunk could not be written: ', $e->getMessage());
+                $this->assertStringNotContainsString('32 bytes', $e->getMessage());
+            }
+            $this->assertNull($e->getPrevious());
+            // Nothing of what the writer read is in the trace of the new exception.
+            foreach (trace_strings::of($e) as $string) {
+                $this->assertStringNotContainsString('marker-of-the-entries', $string);
+            }
+            $this->assertSame([], trace_strings::objects_in_plugin_frames($e));
+        }
+        $this->assertSame([], glob($folder . '/manifest*'), 'Neither the compressed copy nor a part of the chunk is left.');
+        $this->assertFileExists($folder . '/entries.jsonl');
     }
 
     public function test_a_line_that_cannot_be_written_is_a_failure_and_is_not_counted(): void {
