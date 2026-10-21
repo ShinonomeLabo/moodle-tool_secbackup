@@ -620,7 +620,7 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('completed', $run->status());
     }
 
-    public function test_a_run_whose_next_window_starts_too_late_to_finish_before_it_expires_stops_at_the_end_of_its_window(): void {
+    public function test_a_run_whose_next_window_starts_too_late_to_finish_before_expiry_stops_at_the_end_of_its_window(): void {
         // Once a day: the next window starts at 02:14, less than an hour before the 24 hours and 10 minutes after 03:00.
         $run = run_record::create('schedule', $this->fixture->time);
         $runner = $this->runner(['timer' => $this->fast_timer()]);

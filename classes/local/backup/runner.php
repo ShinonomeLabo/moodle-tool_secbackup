@@ -102,13 +102,14 @@ final class runner {
      * @param object_transport $objects The transport of the storage.
      * @param callable|null $clock Gives the current UNIX time; null for time().
      * @param array $seams Seams for tests, by name: limits (limits), diskspace (callable for temp_area), sample (callable(bool
-     *     $probe) that gives a sample of the watch, with or without the probe of the file storage), sleep (callable(int)), timer (callable that gives seconds as a float, for the budget),
-     *     hostname (callable), link (callable that gives [endpoint, signing_keypair, site ID]), trust (sec_trust of the
-     *     receipts), files (system_files for SELinux), windows (bool: false for the command line), log (callable(string)),
-     *     tables (callable(bool $logs) as table_list::build), datarootroots (callable as dataroot_source::roots), coderoots
-     *     (callable as code_source::roots), corediff (callable that gives a core_diff), external (callable that gives a bool),
-     *     opendb (callable that gives the export connection), filesource (callable(\moodle_database) that gives a
-     *     file_source) and estimate (callable(\xmldb_table[]) that gives the expected bytes of the export).
+     *     $probe) that gives a sample of the watch, with or without the probe of the file storage), sleep (callable(int)),
+     *     timer (callable that gives seconds as a float, for the budget), hostname (callable), link (callable that gives
+     *     [endpoint, signing_keypair, site ID]), trust (sec_trust of the receipts), files (system_files for SELinux), windows
+     *     (bool: false for the command line), log (callable(string)), tables (callable(bool $logs) as table_list::build),
+     *     datarootroots (callable as dataroot_source::roots), coderoots (callable as code_source::roots), corediff (callable
+     *     that gives a core_diff), external (callable that gives a bool), opendb (callable that gives the export connection),
+     *     filesource (callable(\moodle_database) that gives a file_source) and estimate (callable(\xmldb_table[]) that gives
+     *     the expected bytes of the export).
      */
     public function __construct(client $client, object_transport $objects, ?callable $clock = null, array $seams = []) {
         global $DB;
