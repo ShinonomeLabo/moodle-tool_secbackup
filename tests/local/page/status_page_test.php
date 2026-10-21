@@ -471,6 +471,24 @@ final class status_page_test extends \advanced_testcase {
         $this->assertSame(['missing' => 0, 'unreadable' => 0, 'skippedlinks' => 0, 'secret' => 0], $run->not_backed_up());
     }
 
+    public function test_the_next_scheduled_backup_is_shown_with_its_window(): void {
+        self::register();
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_next_backup', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(get_string('status_next_backup_none', 'tool_secbackup'), $html);
+        self::received();
+        $settings = settings::current();
+        $html = (new status_page())->render();
+        $next = \tool_secbackup\local\backup\schedule::next_slot($settings, fake_service::SITE_ID, time());
+        $this->assertStringContainsString(s(get_string('status_next_backup_value', 'tool_secbackup', (object) [
+            'time' => userdate($next['start']),
+            'window' => get_string('schedule_window', 'tool_secbackup', (object) [
+                'from' => '02:00', 'to' => '05:00', 'timezone' => 'Asia/Tokyo',
+            ]),
+        ])), $html);
+        $this->assertStringNotContainsString(get_string('status_next_backup_none', 'tool_secbackup'), $html);
+    }
+
     public function test_the_size_of_the_backup_is_the_one_of_the_receipt_and_the_sent_bytes_come_second(): void {
         self::register();
         self::completed(1760100000, 1760100100, 2097152, 3, 7340032);

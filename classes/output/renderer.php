@@ -21,6 +21,8 @@ use html_writer;
 use tool_secbackup\local\api\client;
 use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\run_record;
+use tool_secbackup\local\backup\schedule;
+use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\backup\starter;
 use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\enrollment\state;
@@ -130,7 +132,11 @@ class renderer extends \plugin_renderer_base {
         $active = run_record::active();
         $table = new \html_table();
         $table->attributes['class'] = 'generaltable';
-        $table->data = $this->completed_rows(run_record::last_completed());
+        $table->data = array_merge(
+            $this->completed_rows(run_record::last_completed()),
+            [$this->next_row($state)],
+            $this->schedule_rows()
+        );
         if ($active !== null) {
             $table->data[] = [get_string('status_running', 'tool_secbackup'), s($this->progress($active))];
         }
@@ -166,7 +172,7 @@ class renderer extends \plugin_renderer_base {
     private function completed_rows(?run_record $last): array {
         $label = get_string('status_last_completed', 'tool_secbackup');
         if ($last === null) {
-            return array_merge([[$label, get_string('status_none_completed', 'tool_secbackup')]], $this->schedule_rows());
+            return [[$label, get_string('status_none_completed', 'tool_secbackup')]];
         }
         // A run that completed has an end.
         $finished = (int) $last->finished_at();
@@ -185,7 +191,26 @@ class renderer extends \plugin_renderer_base {
         if ($missing !== null && $missing['missing'] + $missing['unreadable'] + $missing['skippedlinks'] > 0) {
             $rows[] = [get_string('status_notbackedup', 'tool_secbackup'), s(self::not_backed_up_text($missing))];
         }
-        return array_merge($rows, $this->schedule_rows());
+        return $rows;
+    }
+
+    /**
+     * The row about the next scheduled backup: when it starts, in which window; or that the settings have not arrived.
+     *
+     * @param state $state The registration, which has the site ID that the delay of the start comes from.
+     * @return array
+     */
+    private function next_row(state $state): array {
+        $label = get_string('status_next_backup', 'tool_secbackup');
+        $settings = settings::current();
+        if (!$settings->is_received()) {
+            return [$label, get_string('status_next_backup_none', 'tool_secbackup')];
+        }
+        $next = schedule::next_slot($settings, $state->site_id(), time());
+        return [$label, s(get_string('status_next_backup_value', 'tool_secbackup', (object) [
+            'time' => userdate($next['start']),
+            'window' => schedule::window_text($settings),
+        ]))];
     }
 
     /**

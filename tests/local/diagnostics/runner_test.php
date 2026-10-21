@@ -1488,7 +1488,26 @@ final class runner_test extends \advanced_testcase {
             ]),
             $named['autobackup']->detail
         );
-        $this->assertSame(get_string('diag_autobackup_advice', 'tool_secbackup'), $named['autobackup']->advice);
+        // The window of the plugin is named beside it, so that the two can be told apart.
+        $this->assertSame(
+            get_string('diag_autobackup_advice', 'tool_secbackup', get_string('schedule_window_none', 'tool_secbackup')),
+            $named['autobackup']->advice
+        );
+        set_config('siteid', '11111111-2222-4333-8444-555555555555', 'tool_secbackup');
+        $body = \tool_secbackup\tests\instruction_factory::settings_body(['runs_per_day' => 2]);
+        \tool_secbackup\local\backup\settings::apply(\tool_secbackup\tests\instruction_factory::make('settings', 1, $body));
+        $named = self::server_checks(self::watch(), static fn(): array => [
+            'backup_auto_active' => 1, 'weekdays' => '1000001', 'hour' => 2, 'minute' => 5,
+            'timezone' => 'Asia/Tokyo', 'lastduration' => 3725,
+        ]);
+        $this->assertSame(
+            get_string('diag_autobackup_advice', 'tool_secbackup', get_string(
+                'schedule_window_runs',
+                'tool_secbackup',
+                (object) ['from' => '02:00', 'to' => '05:00', 'timezone' => 'Asia/Tokyo', 'runs' => 2]
+            )),
+            $named['autobackup']->advice
+        );
     }
 
     public function test_the_automated_backup_without_a_round_on_record(): void {

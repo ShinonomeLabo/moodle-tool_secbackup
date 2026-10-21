@@ -20,6 +20,8 @@ use tool_secbackup\local\api\client;
 use tool_secbackup\local\backup\autobackup_watch;
 use tool_secbackup\local\backup\limits;
 use tool_secbackup\local\backup\monitor;
+use tool_secbackup\local\backup\schedule;
+use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\backup\temp_area;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\state;
@@ -612,7 +614,7 @@ final class runner {
                     ? get_string('diag_autobackup_noround', 'tool_secbackup')
                     : format_time($known['lastduration']),
             ]),
-            get_string('diag_autobackup_advice', 'tool_secbackup')
+            get_string('diag_autobackup_advice', 'tool_secbackup', schedule::window_text(settings::current()))
         );
     }
 

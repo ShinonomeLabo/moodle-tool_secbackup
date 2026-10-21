@@ -57,6 +57,17 @@ final class schedule_test extends \advanced_testcase {
         return (new \DateTimeImmutable($local, new \DateTimeZone($zone)))->getTimestamp();
     }
 
+    public function test_the_window_is_told_with_its_zone_and_its_number_of_runs(): void {
+        $this->assertSame(get_string('schedule_window_none', 'tool_secbackup'), schedule::window_text(settings::current()));
+        $window = (object) ['from' => '02:00', 'to' => '05:00', 'timezone' => 'Asia/Tokyo'];
+        $this->assertSame(get_string('schedule_window', 'tool_secbackup', $window), schedule::window_text($this->settings()));
+        settings::apply(instruction_factory::make('settings', 2, instruction_factory::settings_body(['window_start' => '23:30',
+            'window_end' => '01:00', 'runs_per_day' => 3, 'timezone' => 'Europe/Berlin'])));
+        $settings = settings::current();
+        $this->assertSame(get_string('schedule_window_runs', 'tool_secbackup', (object) ['from' => '23:30', 'to' => '01:00',
+            'timezone' => 'Europe/Berlin', 'runs' => 3]), schedule::window_text($settings));
+    }
+
     public function test_the_jitter_comes_from_the_site_id(): void {
         // Window of 180 minutes: the divisor is 30. The numbers are the first 4 bytes of the SHA-256 of the ID.
         $this->assertSame(4110802125 % 30, schedule::jitter('site-1', 180));

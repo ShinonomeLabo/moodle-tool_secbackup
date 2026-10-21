@@ -108,6 +108,26 @@ final class schedule {
     }
 
     /**
+     * The window of the settings as the administrator reads it: its start, its end, its time zone and how many times a day it
+     * comes.
+     *
+     * @param settings $s The settings.
+     * @return string Plain text; "not received yet" before the settings arrive.
+     */
+    public static function window_text(settings $s): string {
+        if (!$s->is_received()) {
+            return get_string('schedule_window_none', 'tool_secbackup');
+        }
+        $a = (object) [
+            'from' => sprintf('%02d:%02d', intdiv($s->window_start(), 60), $s->window_start() % 60),
+            'to' => sprintf('%02d:%02d', intdiv($s->window_end(), 60), $s->window_end() % 60),
+            'timezone' => $s->timezone()->getName(),
+            'runs' => $s->runs_per_day(),
+        ];
+        return get_string($a->runs > 1 ? 'schedule_window_runs' : 'schedule_window', 'tool_secbackup', $a);
+    }
+
+    /**
      * The delay of the start of a slot.
      *
      * The first 4 bytes of the SHA-256 of the site ID, as an unsigned big-endian number, modulo the smaller of a quarter of
