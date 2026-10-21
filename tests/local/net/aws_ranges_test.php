@@ -268,6 +268,7 @@ final class aws_ranges_test extends \advanced_testcase {
             'no number' => ['ap-northeast-'],
             'two digits' => ['ap-northeast-12'],
             'capitals' => ['AP-NORTHEAST-1'],
+            'a digit before the region' => ['1ap-northeast-1'],
             'a final line feed' => ["ap-northeast-1\n"],
             'a list' => [['ap-northeast-1']],
         ];
@@ -377,8 +378,10 @@ final class aws_ranges_test extends \advanced_testcase {
             'a long token' => [array_merge($good, ['sync_token' => str_repeat('1', 65)])],
             'a date of another form' => [array_merge($good, ['create_date' => '2026-10-18'])],
             'a date with a final line feed' => [array_merge($good, ['create_date' => "2026-10-18-00-00-00\n"])],
+            'a date after other text' => [array_merge($good, ['create_date' => 'x2026-10-18-00-00-00'])],
             'a hash in capitals' => [array_merge($good, ['sha256' => str_repeat('A', 64)])],
             'a short hash' => [array_merge($good, ['sha256' => str_repeat('a', 63)])],
+            'a long hash' => [array_merge($good, ['sha256' => str_repeat('a', 65)])],
             'a hash with a final line feed' => [array_merge($good, ['sha256' => str_repeat('a', 64) . "\n"])],
             'a size of zero' => [array_merge($good, ['size' => 0])],
             'a size larger than a response' => [array_merge($good, ['size' => 1048577])],
@@ -406,6 +409,32 @@ final class aws_ranges_test extends \advanced_testcase {
         aws_ranges::apply($i, 'x');
     }
 
+    /**
+     * Bodies at the limits of the rules, which are read.
+     *
+     * @return array[]
+     */
+    public static function limit_bodies(): array {
+        $good = ['sync_token' => '1791766626', 'create_date' => '2026-10-18-00-00-00', 'sha256' => str_repeat('a', 64),
+            'size' => 100];
+        return [
+            'a token of 64 characters' => [array_merge($good, ['sync_token' => str_repeat('1', 64)])],
+            'a size of one byte' => [array_merge($good, ['size' => 1])],
+            'the size of the largest response' => [array_merge($good, ['size' => 1048576])],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('limit_bodies')]
+    /**
+     * A body at the limits of the rules is read.
+     *
+     * @dataProvider limit_bodies
+     * @param array $body Body.
+     */
+    public function test_bodies_at_the_limits_are_read(array $body): void {
+        $this->assertTrue(aws_ranges::is_newer(instruction_factory::make('aws_ranges', 3, $body)));
+    }
+
     public function test_an_instruction_of_another_kind_is_a_coding_error(): void {
         $i = instruction_factory::make('settings', 3, instruction_factory::settings_body());
         $this->expectException(\coding_exception::class);
@@ -413,12 +442,37 @@ final class aws_ranges_test extends \advanced_testcase {
     }
 
     public function test_a_stored_list_that_cannot_be_read_is_dropped_and_the_bundled_list_is_used(): void {
+        set_config('endpoint', 'https://app.example.test/api/lms-backup/v1', 'tool_secbackup');
         set_config('awsranges', 'garbage', 'tool_secbackup');
         set_config('awsrangesseq', '7', 'tool_secbackup');
+        set_config('awsrangesendpoint', 'https://app.example.test/api/lms-backup/v1', 'tool_secbackup');
         $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
-        $this->assertFalse(get_config('tool_secbackup', 'awsranges'));
         $this->assertSame(0, aws_ranges::stored_seq());
-        $this->assertFalse(get_config('tool_secbackup', 'awsrangesseq'));
+        foreach (['awsranges', 'awsrangesseq', 'awsrangesendpoint'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
+    }
+
+    public function test_the_sequence_number_of_a_stored_list_that_cannot_be_read_is_0_before_the_list_is_used(): void {
+        set_config('awsranges', 'garbage', 'tool_secbackup');
+        set_config('awsrangesseq', '7', 'tool_secbackup');
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    public function test_a_stored_sequence_number_that_is_not_a_plain_number_is_0(): void {
+        $content = self::sample();
+        aws_ranges::apply(self::instruction(3, $content), $content);
+        set_config('awsrangesseq', '07', 'tool_secbackup');
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    public function test_an_empty_stored_list_is_dropped_with_its_sequence_number(): void {
+        set_config('awsranges', '', 'tool_secbackup');
+        set_config('awsrangesseq', '7', 'tool_secbackup');
+        $this->assertSame(0, aws_ranges::stored_seq());
+        foreach (['awsranges', 'awsrangesseq', 'awsrangesendpoint'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
     }
 
     public function test_a_stored_list_belongs_to_the_connection_url_it_came_from(): void {

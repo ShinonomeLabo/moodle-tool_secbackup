@@ -91,8 +91,9 @@ final class aws_ranges {
      */
     public static function current(): self {
         $stored = get_config('tool_secbackup', 'awsranges');
-        // A list belongs to the connection URL it came from; the numbering of another service starts again from 1.
-        if (is_string($stored) && $stored !== '' && self::stored_endpoint() === self::endpoint()) {
+        // A list belongs to the connection URL it came from; the numbering of another service starts again from 1. An empty
+        // value is not a list either, so it is dropped like any other that cannot be read.
+        if (is_string($stored) && self::stored_endpoint() === self::endpoint()) {
             try {
                 return self::from_json($stored);
             } catch (\coding_exception $e) {
