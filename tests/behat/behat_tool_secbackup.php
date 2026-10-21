@@ -223,7 +223,8 @@ class behat_tool_secbackup extends behat_base {
      * i_open_in_site_administration() is Moodle's step, which checks after the click; trying it again is harmless there.)
      *
      * While the old page is replaced, safaridriver can answer a command with "no such window" (the NoSuchWindowException of
-     * php-webdriver) for a moment; the same window then shows the new page. So such an answer during the wait means that the
+     * php-webdriver): WebKit gives up a script that runs when the old page unloads ("WindowNotFound;Callback was not called
+     * before the unload event."), and the same window then shows the new page. So such an answer during the wait means that the
      * new page has not come yet. (Moodle's own wait for pending JavaScript catches this answer as the NoSuchWindowException of
      * Mink, which the php-webdriver driver does not throw.) The checks that Moodle makes after the actions of a step run once
      * the new page is there.

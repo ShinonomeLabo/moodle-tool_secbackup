@@ -514,7 +514,10 @@ jobs:
   # A known failure of the browser: safaridriver can answer a command that is sent while a page is being replaced with "no
   # such window" (php-webdriver's NoSuchWindowException). It failed 4 of 188 Safari jobs from 2026-10-19 to 2026-10-21 (runs
   # 39237210576, 39447699406, 39543279659, 39554958383), each time in a command right after a click that loads a page; in the
-  # faildumps the new page is there in the same window, and the next scenarios ran in it. Three were in the step "I open ... in site administration"
+  # faildumps the new page is there in the same window, and the next scenarios ran in it. The log of safaridriver
+  # (--diagnose) of run 39598980228 shows why: a script that the plugin's wait sent while "Site administration" was loading
+  # got "WindowNotFound;Callback was not called before the unload event." from WebKit, which safaridriver answered as "no
+  # such window"; the wait went on and the job passed. Three were in the step "I open ... in site administration"
   # of the plugin, which now waits through the answer (click_and_wait_for_new_page() in tests/behat/behat_tool_secbackup.php).
   # The fourth was in a step of Moodle ("I follow "Preferences" in the user menu"): Moodle's wait for pending JavaScript
   # catches the answer as Mink's NoSuchWindowException, which the php-webdriver driver does not throw, so the steps of Moodle
