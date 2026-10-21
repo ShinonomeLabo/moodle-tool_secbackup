@@ -14,20 +14,36 @@ The default branch of the repository is `main`.
 
 | Job | What it does |
 |---|---|
-| `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the files of every commit, their names and the tags (`.dev/hooks/check-contents.sh`), the check that no development script can be run from the web, and the tests of the coverage tools and of the badge. |
+| `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the files of every commit, their names and the tags (`.dev/hooks/check-contents.sh`), the check that no development script can be run from the web, the tests of the coverage tools and of the badge, and the tests of the tools of the mutation testing with the check of its shards (below). |
 | `inventory` | `tests/behat/inventory.txt` against the code (below), and the tests of that check. It needs no secret, so a pull request from a fork gets it. |
-| `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination. Nothing in it is optional: Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
+| `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination; then the command line scripts once more with developer debugging, after a registration with the fake service, with a whole run of `cli/backup.php --now` (`.dev/ci/backup-developer-debug.sh`: a PHP message or a `debugging()` message in the output fails it). Nothing in it is optional: Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
 | `behat` | Behat in Firefox and in Edge on Moodle 4.5, 5.0, 5.1, 5.2 and 5.3, each with PostgreSQL and MariaDB: 20 jobs, with the newest PHP of the Moodle version. The same install as `test`, without the coverage; `moodle-plugin-ci behat --profile <browser> --selenium selenium/standalone-<browser>:4 --auto-rerun 0`. The Edge profile is added to `config.php` by the job (moodle-plugin-ci knows only chrome and firefox). On failure the Behat dump is uploaded (`Behat Faildump <browser> ...`; no artifact name but the coverage ones starts with `coverage-run-`). |
 | `behat-safari` | Behat in Safari on a macOS runner (below): the same ten Moodle and database pairs, 10 jobs. |
 | `secureos` | Twelve jobs: the access control that the operating system ships, in real virtual machines (Lima with QEMU and KVM). `rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10` (SELinux), and `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04` (AppArmor) in the states `standard` and `confined`. Each runs `.dev/secureos/run-template.sh -s <state> <template>`; the secret `SECBK_SECUREOS_ENDPOINT` (the connection URL of a real service) selects the real expectations, and without it the stand-in's are checked. See `.dev/secureos/README.md`. |
 | `coverage` | Checks that one artifact `coverage-run-<Moodle>-<PHP>-<database>` arrived for each row of the matrix of `test`, with its PHPUnit report, and no other (`.dev/ci/check-coverage-runs.sh`; no other artifact name may start with `coverage-run-`), merges the coverage of all combinations, writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
 
-Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 40, `test` 60,
-`behat-safari` 60, `secureos` 45 and the badge job 10. They sit above the longest time measured under act, which is slower than a GitHub runner
-(amd64 emulated on Apple silicon): the `test` job took 44 minutes (the install 7 minutes, PHPUnit 14, Behat 12), a `behat` job 22 minutes
-(Firefox) or 26 (Edge, with Behat 14 of them), `inventory` 2 minutes. `rules` and `coverage` take a few minutes at most. A hung
-job is stopped, and a slow day does not fail a job. `behat-safari` has no measurement (it cannot run here), so its limit is a
-guess: the Homebrew install of a database and the Moodle install come before Behat.
+Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 40, `test` 110,
+`behat-safari` 60, `secureos` 45 (60 for the state `run`) and the badge job 10. The long steps have limits of their own:
+PHPUnit 40 minutes, Behat 25 (Chrome, Firefox, Edge) or 35 (Safari), the backup with developer debugging 20. When GitHub
+stops a job at its own limit, the log of the step that was running is lost (a PHPUnit step that stalled in run 39493954359
+left no log), so the limits of the steps of `test` add up to less than the limit of the job, and a step that stalls fails
+with its log. On GitHub (2026-10-20) the `test` jobs took 19 to 41 minutes (PHPUnit 11 to 24, Behat 5 to 11), a `behat` job 6
+to 10 minutes, a `behat-safari` job 7 to 16. Under act, which is slower than a GitHub runner (amd64 emulated on Apple
+silicon), the `test` job took 44 minutes (the install 7 minutes, PHPUnit 14, Behat 12), a `behat` job 22 minutes (Firefox) or
+26 (Edge, with Behat 14 of them), `inventory` 2 minutes. `rules` and `coverage` take a few minutes at most. A hung job is
+stopped, and a slow day does not fail a job.
+
+**Known failures of a browser or a runner.** Two failures that are not the plugin's were seen on GitHub, and the comments of
+the jobs `behat` and `behat-safari` in `ci.yml` have the evidence: safaridriver answering "no such window" while a page is
+being replaced (4 of 188 Safari jobs from 2026-10-19 to 2026-10-21; the steps of the plugin now wait through it), and a front
+page that did not finish its JavaScript in 10 seconds before the first step of a scenario (1 of 190 Edge jobs). When the Behat
+step of a job fails, the next step (`.dev/ci/behat-known-failures.sh`) names either of them in the summary of the run. The job
+fails all the same: a scenario is never run again to make a run green.
+
+**Mutation testing** runs in its own manual workflow, `.github/workflows/infection.yml`: Infection with the configuration of
+`.dev/infection/run.sh`, split into the shards of `.dev/infection/shards.txt`, one job each, and a last job that adds them up
+into one covered code MSI and checks it against `minCoveredMsi` (`.dev/infection/merge.php`). `.dev/infection/REVIEW.md` has the
+result and the review of every escaped mutant.
 
 The workflow `.github/workflows/badges.yml` (`Badges`) turns the summary of a push to `main` into the coverage badge of the README.
 
@@ -48,7 +64,7 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 
 | Workflow step | Local step (`.dev/ci/run.sh` and friends) |
 |---|---|
-| Commit rules and development tools | `bash .dev/hooks/tests/run.sh`, `bash .dev/hooks/check-history.sh`, `bash .dev/hooks/check-contents.sh`, `bash .dev/hooks/check-dev-guards.sh`, `php .dev/coverage/tests/run.php`, `php .dev/coverage/tests/badge.php` |
+| Commit rules and development tools | `bash .dev/hooks/tests/run.sh`, `bash .dev/hooks/check-history.sh`, `bash .dev/hooks/check-contents.sh`, `bash .dev/hooks/check-dev-guards.sh`, `php .dev/coverage/tests/run.php`, `php .dev/coverage/tests/badge.php`, `php .dev/infection/tests/run.php`, `php .dev/infection/shards.php check` |
 | Install Moodle with the plugin | `.dev/env/setup.sh`, `up.sh`, `install.sh`, `devconfig.sh` |
 | PHP Lint, Mess Detector, Code Checker, PHPDoc, Validating, Savepoints, Mustache, Grunt | moodle-plugin-ci in the web server container |
 | UI inventory | `php .dev/ci/check-ui-inventory.php` (inside `run.sh`, in the web server container) |
@@ -68,6 +84,8 @@ lowest ones that the Moodle version supports; `.dev/env/env.sh` holds the same v
 | Upload the coverage, Upload Behat Faildump | No counterpart: the results stay in `.dev/coverage/out/<ver>-<db>/` and `.dev/ci/out/<ver>-<db>/`. |
 | `coverage` job (merge of all combinations, summary, 100% gate) | Not part of `run.sh`: one environment is one combination. `.dev/coverage/run.sh` merges the combination alone, and the merge of several is `php .dev/coverage/merge.php`. |
 | `Badges` workflow | Cannot run outside GitHub (`workflow_run`, Pages). `badge.php` and its tests run locally. |
+| The backup on the command line with developer debugging | Not run: it registers the site with the fake service, which would replace a registration made by hand on the development site. `bash .dev/ci/backup-developer-debug.sh <Moodle folder>` runs it on a site that may be changed and runs with developer debugging. |
+| Name a known failure of the browser or the runner | Not run: `bash .dev/ci/behat-known-failures.sh <output of Behat>` names them in any saved output. |
 
 ## Behat in four browsers
 

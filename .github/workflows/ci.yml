@@ -131,7 +131,11 @@ jobs:
   test:
     name: Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The long steps (PHPUnit, Behat, the backup with developer debugging) have limits of their own, which add up to less than
+    # this one: a step that stalls fails with its log kept. When GitHub stops the job itself, the log of the running step is
+    # lost (run 39493954359: PHPUnit of Moodle 5.1 PHP 8.4 MariaDB stalled until the limit of 60 minutes of the job, and its
+    # log was gone).
+    timeout-minutes: 110
 
     strategy:
       fail-fast: false
@@ -270,8 +274,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci grunt --max-lint-warnings 0
 
+      # 10 to 25 minutes on GitHub.
       - name: PHPUnit tests
         if: ${{ !cancelled() }}
+        timeout-minutes: 40
         run: moodle-plugin-ci phpunit --fail-on-warning --coverage-pcov --coverage-clover
 
       # The trace tests of the chunk reader once more, with OPcache, whose optimiser the run above lacks
@@ -282,13 +288,22 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/plugin/.dev/ci/phpunit-opcache.sh" "$RUNNER_TEMP/opcache"
 
       # The Behat site is served by the web server of PHP, which has one worker unless it is told otherwise, and a page of
-      # Moodle asks for many files and AJAX calls at once, so the server gets several workers.
+      # Moodle asks for many files and AJAX calls at once, so the server gets several workers. 5 to 11 minutes on GitHub.
+      # Moodle runs its Behat site with developer debugging, and Behat fails a step when the page shows a PHP message or a
+      # debugging() message, so every page of the plugin is checked for them in every browser.
       - name: Behat features
         id: behat
         if: ${{ !cancelled() && inputs.scope != 'phpunit' }}
+        timeout-minutes: 25
+        shell: bash
         env:
           PHP_CLI_SERVER_WORKERS: '4'
-        run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
+        run: moodle-plugin-ci behat --profile chrome --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
+
+      # See the comment of the job behat.
+      - name: Name a known failure of the browser or the runner
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
 
       # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL, 2: the backup ran
       # nothing). Any other code, 255 above all, is a PHP fatal error, and it fails the step even when the lines were covered
@@ -323,6 +338,15 @@ jobs:
           bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
           exit "$failed"
 
+      # The command line scripts once more on the site itself, registered with the fake service, so that cli/backup.php --now
+      # makes a whole run. The config.php of moodle-plugin-ci gives the site developer debugging (debug E_ALL, debugdisplay),
+      # and a PHP message or a debugging() message in the output fails the step (.dev/ci/backup-developer-debug.sh, whose
+      # canary shows that it would see one). It leaves the site registered, so it comes after the other runs of the scripts.
+      - name: The backup on the command line with developer debugging
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: bash plugin/.dev/ci/backup-developer-debug.sh "$GITHUB_WORKSPACE/moodle"
+
       - name: Keep the coverage of this combination
         if: ${{ !cancelled() }}
         run: |
@@ -354,6 +378,13 @@ jobs:
 
   # Behat in Firefox and Edge, in every Moodle version with both databases. The Chrome run, with the coverage, is in the
   # test job. A scenario has to pass the first time (--auto-rerun 0). No secret and no coverage here.
+  #
+  # A known failure of the runner, seen in 1 of 190 Edge jobs from 2026-10-19 to 2026-10-21 (run 39543279659, Edge Moodle 5.3
+  # MariaDB), never in Firefox (188 jobs): in the hook before the first step of a scenario, the front page that Moodle opens
+  # (behat_hooks::before_step(), "I visit /") did not finish its JavaScript in the 10 seconds of Behat ("not ready after 10
+  # seconds (theme_boost/loader)"). The plugin has no code on that page and no JavaScript of its own, so the time limits are
+  # not raised for it. When the Behat step fails, the next step names this failure and the one of Safari (job behat-safari) in
+  # the summary of the run (.dev/ci/behat-known-failures.sh); the job fails all the same.
   behat:
     name: Behat ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     if: inputs.scope != 'phpunit'
@@ -451,11 +482,21 @@ jobs:
           if [ -d moodle/public ]; then cli=moodle/public/admin/tool/behat/cli; else cli=moodle/admin/tool/behat/cli; fi
           php "$cli/util_single_run.php" --enable --add-core-features-to-theme
 
+      # 4 to 8 minutes on GitHub.
       - name: Behat features
         id: behat
+        timeout-minutes: 25
+        shell: bash
         env:
           PHP_CLI_SERVER_WORKERS: '4'
-        run: moodle-plugin-ci behat --profile ${{ matrix.browser }} --selenium selenium/standalone-${{ matrix.browser }}:4 --auto-rerun 0
+          BROWSER: ${{ matrix.browser }}
+        run: |
+          moodle-plugin-ci behat --profile "$BROWSER" --selenium "selenium/standalone-$BROWSER:4" --auto-rerun 0 2>&1 \
+            | tee "$RUNNER_TEMP/behat.log"
+
+      - name: Name a known failure of the browser or the runner
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
 
       - name: Upload Behat Faildump
         if: ${{ failure() && steps.behat.outcome == 'failure' }}
@@ -469,6 +510,16 @@ jobs:
   # Behat in Safari, on a macOS runner (the newest image GitHub lists: macos-26, Apple silicon, Safari 26). There is no
   # Docker on it, so the databases come from Homebrew, at the lowest version that Homebrew still has and that the Moodle
   # version supports; the web server is the one of PHP, and safaridriver is the one of macOS.
+  #
+  # A known failure of the browser: safaridriver can answer a command that is sent while a page is being replaced with "no
+  # such window" (php-webdriver's NoSuchWindowException). It failed 4 of 188 Safari jobs from 2026-10-19 to 2026-10-21 (runs
+  # 39237210576, 39447699406, 39543279659, 39554958383), each time in a command right after a click that loads a page; in the
+  # faildumps the new page is there in the same window, and the next scenarios ran in it. Three were in the step "I open ... in site administration"
+  # of the plugin, which now waits through the answer (click_and_wait_for_new_page() in tests/behat/behat_tool_secbackup.php).
+  # The fourth was in a step of Moodle ("I follow "Preferences" in the user menu"): Moodle's wait for pending JavaScript
+  # catches the answer as Mink's NoSuchWindowException, which the php-webdriver driver does not throw, so the steps of Moodle
+  # can still fail this way. safaridriver runs with --diagnose, and when Behat fails, the job shows the commands that got
+  # this answer and names the failure in the summary of the run (.dev/ci/behat-known-failures.sh); the job fails all the same.
   behat-safari:
     name: Behat safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     if: inputs.scope != 'phpunit'
@@ -583,7 +634,8 @@ jobs:
       - name: Start safaridriver and the web server of the Behat site
         run: |
           sudo safaridriver --enable
-          nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
+          # --diagnose logs every command and answer in ~/Library/Logs/com.apple.WebDriver.
+          nohup safaridriver -p 4444 --diagnose > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
           if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
           nohup php -S localhost:8000 -t "$root" > "$RUNNER_TEMP/web.log" 2>&1 &
           ready=no
@@ -630,11 +682,18 @@ jobs:
             exit 1
           fi
 
+      # 4 to 9 minutes on GitHub.
       - name: Behat features
         id: behat
+        timeout-minutes: 35
+        shell: bash
         env:
           MOODLE_START_BEHAT_SERVERS: 'NO'
-        run: moodle-plugin-ci behat --profile safari --auto-rerun 0
+        run: moodle-plugin-ci behat --profile safari --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
+
+      - name: Name a known failure of the browser or the runner
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
 
       - name: Show the logs of the servers
         if: ${{ failure() && steps.behat.outcome == 'failure' }}
@@ -650,6 +709,9 @@ jobs:
             tail -n 100 "$RUNNER_TEMP/$name.log" || true
             echo '::endgroup::'
           done
+          echo '::group::The answers "no such window" of safaridriver (--diagnose), with the lines before them'
+          grep -h -i -B 6 -A 2 'no such window' "$HOME"/Library/Logs/com.apple.WebDriver/* 2> /dev/null | tail -n 200 || true
+          echo '::endgroup::'
           echo '::group::Crash reports of PHP'
           for dir in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
             for report in "$dir"/php*; do
