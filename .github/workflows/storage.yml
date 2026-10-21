@@ -6,6 +6,10 @@ name: Storage
 # to check its files. Manual only: the runs take long, and the job secureos of ci.yml has the same run of the secure machines
 # with every other check. The input selects one kind, for a quicker answer while one of them is changed.
 on:
+  # Only so that GitHub registers the workflow before it is on the default branch; every job is skipped on a push.
+  push:
+    branches:
+      - p2-storage-checks
   workflow_dispatch:
     inputs:
       job:
