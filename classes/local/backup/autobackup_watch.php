@@ -31,16 +31,19 @@ final class autobackup_watch {
     /**
      * Whether the automated backup is working or about to work.
      *
-     * @return bool True when a course backup task is queued or running, or the automated backup task is running.
+     * @param int|null $now The current time; null for time().
+     * @return bool True when a course backup task is due (queued for now or earlier) or running, or the automated backup task
+     *     is running.
      */
-    public static function busy(): bool {
+    public static function busy(?int $now = null): bool {
         global $DB;
-        // Moodle keeps a task that has no attempts left for four weeks but never runs it again, so it does not count.
+        // Moodle keeps a task that has no attempts left for four weeks but never runs it again, so it does not count. A task
+        // that failed waits for its next try, longer each time (days in all): until then it does not work.
         if (
             $DB->record_exists_select(
                 'task_adhoc',
-                'classname = ? AND (attemptsavailable IS NULL OR attemptsavailable > 0)',
-                ['\\' . course_backup_task::class]
+                'classname = ? AND (attemptsavailable IS NULL OR attemptsavailable > 0) AND nextruntime <= ?',
+                ['\\' . course_backup_task::class, $now ?? time()]
             )
         ) {
             return true;

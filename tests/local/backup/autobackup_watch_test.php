@@ -73,6 +73,19 @@ final class autobackup_watch_test extends \advanced_testcase {
         $this->assertTrue(autobackup_watch::busy());
     }
 
+    public function test_a_course_backup_that_waits_after_a_failure_does_not_until_it_is_due_again(): void {
+        global $DB;
+        $task = new course_backup_task();
+        $task->set_custom_data(['courseid' => 2]);
+        \core\task\manager::queue_adhoc_task($task);
+        // Moodle tries a failed task again later, longer each time: in between the automated backup does not work.
+        $where = ['classname' => '\\' . course_backup_task::class];
+        $DB->set_field('task_adhoc', 'faildelay', 3600, $where);
+        $DB->set_field('task_adhoc', 'nextruntime', time() + 3600, $where);
+        $this->assertFalse(autobackup_watch::busy());
+        $this->assertTrue(autobackup_watch::busy(time() + 3600));
+    }
+
     public function test_another_queued_task_does_not(): void {
         $task = new \core\task\asynchronous_backup_task();
         $task->set_custom_data(['backupid' => 'abc']);
