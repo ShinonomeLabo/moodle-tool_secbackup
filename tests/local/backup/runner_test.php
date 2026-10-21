@@ -2192,22 +2192,37 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash));
     }
 
-    public function test_a_big_content_that_goes_between_two_pieces_is_withdrawn(): void {
-        $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
-        $source = function (\moodle_database $db) use ($hash): file_source {
-            return new class ($db, self::filedir($hash)) extends file_source {
+    /**
+     * The seam filesource of a file store whose content goes after its first piece, as if it was deleted meanwhile.
+     *
+     * @param string $hash The content that goes.
+     * @param bool $failnext Whether the first file that a step packs after the content went fails once, with an error that is
+     *     not a reason to stop.
+     * @return callable
+     */
+    private static function vanishing_source(string $hash, bool $failnext = false): callable {
+        return static function (\moodle_database $db) use ($hash, $failnext): file_source {
+            return new class ($db, self::filedir($hash), $failnext) extends file_source {
                 /** @var string The content that goes after its first piece. */
                 private string $path;
+
+                /** @var bool Whether the next file after the content went fails once. */
+                private bool $failnext;
+
+                /** @var bool Whether a piece of the content was asked for after it went. */
+                private bool $gone = false;
 
                 /**
                  * Constructor.
                  *
                  * @param \moodle_database $db Connection.
                  * @param string $path The content that goes.
+                 * @param bool $failnext Whether the next file after it fails once.
                  */
-                public function __construct(\moodle_database $db, string $path) {
+                public function __construct(\moodle_database $db, string $path, bool $failnext) {
                     parent::__construct($db, static fn(int $seconds) => null);
                     $this->path = $path;
+                    $this->failnext = $failnext;
                 }
 
                 /**
@@ -2226,12 +2241,33 @@ final class runner_test extends \advanced_testcase {
                         $this->close();
                         unlink($this->path);
                     }
+                    $this->gone = $this->gone || $chunk === null;
                     return $chunk;
+                }
+
+                /**
+                 * Packs a small file; the first one after the content went fails once when the test asks for it.
+                 *
+                 * @param string $contenthash Content hash.
+                 * @param int $size Size.
+                 * @param packer $packer Packer.
+                 * @return chunk_info[]|null
+                 */
+                public function pack(string $contenthash, int $size, packer $packer): ?array {
+                    if ($this->gone && $this->failnext) {
+                        $this->failnext = false;
+                        throw new \RuntimeException('A failure that is not a reason to stop.');
+                    }
+                    return parent::pack($contenthash, $size, $packer);
                 }
             };
         };
+    }
+
+    public function test_a_big_content_that_goes_between_two_pieces_is_withdrawn(): void {
+        $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
         $run = run_record::create('manual', $this->fixture->time);
-        $this->assertSame('done', $this->finish($this->runner(['filesource' => $source]), $run));
+        $this->assertSame('done', $this->finish($this->runner(['filesource' => self::vanishing_source($hash)]), $run));
         [$header] = $this->manifest($run->run_uuid());
         $this->assertContains($hash, $header['missing_files']);
         $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash));
@@ -2240,6 +2276,23 @@ final class runner_test extends \advanced_testcase {
         [, $sizes] = $this->index($run->run_uuid());
         $this->assertArrayHasKey($piece, $sizes);
         $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_step_that_fails_after_a_big_content_was_withdrawn_is_gone_on_with(): void {
+        $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
+        // A small file after it in the order of the content hash, which the step packs before its next commit.
+        do {
+            $small = random_bytes(64);
+        } while (strcmp(sha1($small), $hash) <= 0);
+        $after = $this->store_file('after.bin', $small);
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['filesource' => self::vanishing_source($hash, true)]);
+        $this->assertSame('done', $this->finish($runner, $run), (string) $run->abort_code());
+        $this->assertContains('The backup step failed and is tried again: RuntimeException', $this->logged);
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains($hash, $header['missing_files']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash));
+        $this->assertCount(1, $this->entries_of($run->run_uuid(), 'file', 'contenthash', $after));
     }
 
     public function test_the_pieces_of_a_big_file_that_the_present_list_holds_are_not_sent_again(): void {
@@ -2423,5 +2476,43 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame([], $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'big.bin'));
         [, $sizes] = $this->index($run->run_uuid());
         $this->assertSame($this->stored_chunks(), $sizes);
+    }
+
+    public function test_a_step_that_fails_after_a_big_file_of_the_data_root_was_withdrawn_is_gone_on_with(): void {
+        file_put_contents($this->dataroot . '/big.bin', random_bytes(series_writer::PIECE + 100));
+        file_put_contents($this->dataroot . '/zz.txt', 'after the big file');
+        $run = run_record::create('manual', $this->fixture->time);
+        $folder = $this->tempdir . '/run-' . $run->id();
+        $changed = false;
+        $thrown = false;
+        $runner = $this->runner([
+            // The big file changes after its first piece, so that its second piece is not the one of the first read.
+            'sample' => function () use ($run, $folder, &$changed): array {
+                if ($run->stage() === 'dataroot' && !$changed && count(self::chunk_files($folder)) > 0) {
+                    $changed = true;
+                    $handle = fopen($this->dataroot . '/big.bin', 'r+b');
+                    fseek($handle, series_writer::PIECE + 10);
+                    fwrite($handle, 'changed');
+                    fclose($handle);
+                }
+                return self::CALM;
+            },
+            // Once the file is withdrawn, the next look at the time fails, before the step commits again.
+            'timer' => function () use ($folder, &$thrown): float {
+                $unreadable = $folder . '/journal/unreadable.jsonl';
+                if (!$thrown && is_file($unreadable) && str_contains((string) file_get_contents($unreadable), 'big.bin')) {
+                    $thrown = true;
+                    throw new \RuntimeException('A failure that is not a reason to stop.');
+                }
+                return microtime(true);
+            },
+        ]);
+        $this->assertSame('done', $this->finish($runner, $run), (string) $run->abort_code());
+        $this->assertTrue($thrown);
+        $this->assertContains('The backup step failed and is tried again: RuntimeException', $this->logged);
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains('dataroot:big.bin', $header['unreadable']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'big.bin'));
+        $this->assertCount(1, $this->entries_of($run->run_uuid(), 'dataroot', 'path', 'zz.txt'));
     }
 }

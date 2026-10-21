@@ -315,8 +315,11 @@ final class tree_stage {
             }
             $chunk = $this->writer->big_piece($file['root'], $file['base'], $file['path'], $this->big['digests'], $piece);
             if ($chunk === null) {
+                // Committed at once, so that the entries are never fewer than the commit says.
                 $this->withdraw($file['root'] . ':' . $file['path']);
-                break;
+                $this->safe = ['source' => $index, 'position' => $file['position']];
+                $this->commit();
+                return true;
             }
             $this->context->numbered($chunk);
             $this->drain_entries();

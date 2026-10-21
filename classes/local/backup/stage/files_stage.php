@@ -36,8 +36,8 @@ use tool_secbackup\local\crypto\chunk_writer;
  * the budget: a first read checks the file against its content hash and takes the SHA-256 of every piece (packer::big_digests()),
  * then each piece is made after needs_drain(), checked against that read, queued, committed with the point to go on from (the
  * file in progress and its next piece are in the cursor), and watched. A piece that is not the one of the first read stops the
- * run (tamper_detected); a file that is gone when a piece is read is withdrawn (its entries are cut back) and listed in
- * missing_files, and the pieces made before stay in the index.
+ * run (tamper_detected); a file that is gone when a piece is read is withdrawn (its entries are cut back, at once committed)
+ * and listed in missing_files, and the pieces made before stay in the index.
  *
  * A chunk that the present list holds (same name, same size) is not sent and stays in the index; a big file whose pieces are
  * all in the present list is not even read: its entries are made from the list (a piece is the one item of its chunk, at
@@ -229,10 +229,14 @@ final class files_stage {
                 }
                 $chunk = $this->source->big_piece($hash, $size, $piece, $this->big['digests'][$piece], $this->packer);
                 if ($chunk === null) {
-                    // The file is gone since its first read: what was written of it is withdrawn.
+                    // The file is gone since its first read: what was written of it is withdrawn, and committed at once, so
+                    // that the entries are never fewer than the commit says.
                     $this->context->entries->truncate_to($this->big['entries']);
                     $this->context->journal('missing_files')->append($hash);
-                    break;
+                    $this->big = null;
+                    $this->safe = $after;
+                    $this->commit();
+                    return true;
                 }
                 $this->context->object($chunk);
                 $this->drain_entries();
