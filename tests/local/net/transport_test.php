@@ -348,13 +348,14 @@ final class transport_test extends \advanced_testcase {
 
     public function test_a_body_that_does_not_end_is_read_only_up_to_the_limit(): void {
         $chunks = 0;
-        $source = static function () use (&$chunks) {
-            // 64 chunks of 64 KiB, 4 MiB in all: a reader that does not stop at the limit takes all of them.
-            return $chunks++ < 64 ? str_repeat('x', 65536) : false;
+        $limit = intdiv(transport::MAX_RESPONSE, 65536);
+        $source = static function () use (&$chunks, $limit) {
+            // Chunks of 64 KiB, four times the limit in all: a reader that does not stop at the limit takes all of them.
+            return $chunks++ < 4 * $limit ? str_repeat('x', 65536) : false;
         };
         $this->expect_failure('transport_too_large', new MockHandler([new Response(200, [], new PumpStream($source))]));
-        // The limit and one more byte are 16 chunks and one byte.
-        $this->assertLessThanOrEqual(17, $chunks);
+        // The limit and one more byte are the chunks of the limit and one byte.
+        $this->assertLessThanOrEqual($limit + 1, $chunks);
     }
 
     public function test_the_response_is_not_decompressed_so_that_the_limit_counts_the_bytes_of_the_wire(): void {

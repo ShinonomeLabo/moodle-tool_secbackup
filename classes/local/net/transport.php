@@ -33,8 +33,12 @@ use tool_secbackup\local\trust\developer_settings;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class transport {
-    /** @var int Largest response accepted, in bytes. */
-    public const MAX_RESPONSE = 1048576;
+    /**
+     * @var int Largest response accepted, in bytes (4 MiB): the largest is the answer with the URLs of a batch, 256 URLs of up to
+     *     8 KiB each (a URL signed with a session token has no fixed size) with the headers that each is signed with, about
+     *     2.2 MB at the most.
+     */
+    public const MAX_RESPONSE = 4194304;
 
     /** @var string User agent of the requests: the name of the plugin and nothing of the site. */
     private const USER_AGENT = 'tool_secbackup';

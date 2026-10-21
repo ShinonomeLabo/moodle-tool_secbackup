@@ -1133,6 +1133,39 @@ final class client_runs_test extends \advanced_testcase {
         );
     }
 
+    public function test_an_answer_of_256_signed_urls_of_the_longest_size_is_taken(): void {
+        // A URL signed with a session token (a role of a container, a session policy) is long, and the token has no fixed
+        // size: every URL here has the longest size that the plugin takes, with the headers that each is signed with.
+        $expires = gmdate('Y-m-d\TH:i:s\Z', self::NOW + 900);
+        $items = [];
+        $requests = [];
+        for ($i = 0; $i < 256; $i++) {
+            $name = hash('sha256', 'chunk ' . $i);
+            $start = 'https://app.example.test/_s3/sites/' . fake_service::SITE_ID . '/objects/' . $name
+                . '?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ASIAEXAMPLE%2F20261022%2Fap-northeast-1%2Fs3%2Faws4_request'
+                . '&X-Amz-Date=20261022T000000Z&X-Amz-Expires=900&X-Amz-Security-Token=';
+            $end = '&X-Amz-SignedHeaders=content-length%3Bhost%3Bif-none-match%3Bx-amz-checksum-sha256&X-Amz-Signature='
+                . hash('sha256', $name);
+            $url = $start . str_repeat('A', 8192 - strlen($start) - strlen($end)) . $end;
+            $this->assertSame(8192, strlen($url));
+            $items[] = ['kind' => 'object', 'name' => $name, 'url' => $url, 'headers' => [
+                'Content-Length' => '10',
+                'x-amz-checksum-sha256' => self::SHA_A,
+                'x-amz-storage-class' => 'STANDARD',
+                'x-amz-object-lock-mode' => 'COMPLIANCE',
+                'x-amz-object-lock-retain-until-date' => '2027-01-01T00:00:00Z',
+                'If-None-Match' => '*',
+            ], 'expires_at' => $expires];
+            $requests[] = ['kind' => 'object', 'name' => $name, 'size' => 10, 'sha256' => self::SHA_A];
+        }
+        $body = json_encode(['items' => $items]);
+        $this->assertGreaterThan(2 * 1048576, strlen($body));
+        $targets = self::answering([new Response(200, [], $body)])
+            ->upload_urls(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN, $requests);
+        $this->assertCount(256, $targets);
+        $this->assertLessThanOrEqual(\tool_secbackup\local\net\transport::MAX_RESPONSE, strlen($body));
+    }
+
     public function test_a_good_hand_made_answer_for_the_targets_is_taken(): void {
         $targets = self::targets_from(self::good_targets());
         $this->assertCount(2, $targets);
