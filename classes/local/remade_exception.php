@@ -32,7 +32,7 @@ use tool_secbackup\local\crypto\key_exception;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class remade_exception {
-    /** @var string[] Classes made again as they are: their constructor takes the error code, the value and the debug information. */
+    /** @var string[] Classes made again as they are: their constructor takes the error code, the value and the debug info. */
     private const KEPT = [plugin_exception::class, key_exception::class];
 
     /**
