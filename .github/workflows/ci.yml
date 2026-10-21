@@ -379,12 +379,16 @@ jobs:
   # Behat in Firefox and Edge, in every Moodle version with both databases. The Chrome run, with the coverage, is in the
   # test job. A scenario has to pass the first time (--auto-rerun 0). No secret and no coverage here.
   #
-  # A known failure of the runner, seen in 1 of 190 Edge jobs from 2026-10-19 to 2026-10-21 (run 39543279659, Edge Moodle 5.3
-  # MariaDB), never in Firefox (188 jobs): in the hook before the first step of a scenario, the front page that Moodle opens
-  # (behat_hooks::before_step(), "I visit /") did not finish its JavaScript in the 10 seconds of Behat ("not ready after 10
-  # seconds (theme_boost/loader)"). The plugin has no code on that page and no JavaScript of its own, so the time limits are
-  # not raised for it. When the Behat step fails, the next step names this failure and the one of Safari (job behat-safari) in
-  # the summary of the run (.dev/ci/behat-known-failures.sh); the job fails all the same.
+  # A known failure of the runner, seen in 2 of about 220 Edge jobs from 2026-10-19 to 2026-10-21, both Moodle 5.3 with
+  # MariaDB (runs 39543279659 and 39610496035), never in Firefox (about 220 jobs): in the hook before the first step of a
+  # scenario, the front page that Moodle opens (behat_hooks::before_step(), "I visit /") did not finish its JavaScript in the
+  # 10 seconds of Behat ("not ready after 10 seconds (theme_boost/loader)"). The plugin has no code on that page and no
+  # JavaScript of its own. Behat empties the data folder of its site before every scenario
+  # (testing_util::reset_dataroot() keeps only the files of the install), so the first page of a scenario makes the caches
+  # of Moodle (its JavaScript among them) again, while the Edge container shares the runner with the web server of PHP. So the
+  # time limits of Behat are doubled for Edge ($CFG->behat_increasetimeout = 2, the setting that Moodle's message names).
+  # When the Behat step fails, the next step names this failure and the one of Safari (job behat-safari) in the summary of
+  # the run (.dev/ci/behat-known-failures.sh); the job fails all the same.
   behat:
     name: Behat ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     if: inputs.scope != 'phpunit'
@@ -467,12 +471,13 @@ jobs:
           exit 1
 
       # moodle-plugin-ci knows the profiles chrome and firefox. Edge is added to config.php, and the Behat site is enabled
-      # again so that behat.yml has the profile. SECBK_BEHAT_TIMEOUT_FACTOR is not set on GitHub; .dev/ci/act.sh sets it,
-      # because Edge runs emulated (amd64 on Apple silicon) under act and needs longer time limits there.
+      # again so that behat.yml has the profile. The time limits of Behat are doubled for Edge on GitHub (see the comment of
+      # this job); .dev/ci/act.sh sets SECBK_BEHAT_TIMEOUT_FACTOR to 8, because Edge runs emulated (amd64 on Apple silicon)
+      # under act.
       - name: Add the Edge profile
         if: matrix.browser == 'edge'
         env:
-          TIMEOUT_FACTOR: ${{ env.SECBK_BEHAT_TIMEOUT_FACTOR }}
+          TIMEOUT_FACTOR: ${{ env.SECBK_BEHAT_TIMEOUT_FACTOR || '2' }}
         run: |
           if [ -n "$TIMEOUT_FACTOR" ]; then
             moodle-plugin-ci add-config "\$CFG->behat_increasetimeout = $TIMEOUT_FACTOR;"
