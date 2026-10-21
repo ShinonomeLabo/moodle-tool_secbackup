@@ -1051,6 +1051,34 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('done', ($this->finish($runner, $run)));
     }
 
+    public function test_an_expired_run_whose_files_are_on_a_server_that_does_not_come_back_is_stopped_from_another(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->runner(['timer' => $this->fast_timer()])->step($run, 1);
+        $this->assertSame('web1', $run->hostname());
+        $other = $this->runner(['hostname' => fn(): string => 'web2']);
+        $this->assertSame('paused', $other->step($run, 600));
+        $this->fixture->set_time($run->started_at() + runner::EXPIRES_AFTER);
+        $this->assertSame('aborted', $other->step($run, 600));
+        $this->assertSame('expired', $run->abort_code());
+        // The files are on web1, where this server cannot remove them: the record says that they are left.
+        $this->assertFalse($run->progress()['abort']['cleared']);
+        $this->assertDirectoryExists($this->tempdir . '/run-' . $run->id());
+        $this->assertNull(run_record::active());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+    }
+
+    public function test_an_expired_run_that_waits_for_its_receipt_on_another_server_is_stopped_from_this_one(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner();
+        for ($i = 0; $i < 100 && $run->stage() !== 'receipt'; $i++) {
+            $runner->step($run, 600);
+        }
+        $this->assertSame('receipt', $run->stage());
+        $this->fixture->set_time($run->started_at() + runner::EXPIRES_AFTER);
+        $this->assertSame('aborted', $this->runner(['hostname' => fn(): string => 'web2'])->step($run, 600));
+        $this->assertSame('expired', $run->abort_code());
+    }
+
     public function test_a_run_in_the_temporary_folder_of_moodle_can_go_on_on_any_server(): void {
         global $CFG;
         $run = run_record::create('manual', $this->fixture->time);

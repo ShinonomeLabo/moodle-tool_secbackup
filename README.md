@@ -121,7 +121,8 @@ print their help with `--help`.
 - **Several web servers** share Moodle's temporary folder, which holds the temporary files of a backup by default, so any of
   them goes on with a running backup. When "Temporary folder" on the page "Limits of the backup" names a folder of one server,
   only that server goes on with a backup that it started, and `cli/backup.php` names that server when it is run on another
-  one.
+  one. When that server does not come back (replaced or renamed), any server stops the backup 24 hours and 10 minutes after
+  its start, so that the next backups can start; its temporary files stay on the server that started it.
 
 ## Tested combinations
 

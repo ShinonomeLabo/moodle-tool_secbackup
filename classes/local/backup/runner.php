@@ -203,13 +203,16 @@ final class runner {
         if ($status !== 'active' && $status !== 'paused') {
             return 'aborted';
         }
-        if ($run->hostname() !== null && $run->hostname() !== ($this->seams['hostname'])()) {
-            return 'paused';
-        }
         $now = $this->now();
-        // A run that waits for its receipt asks for it once more; a run in any other stage cannot get one in time.
-        if ($this->expired($run, $now) && !in_array($run->stage(), ['receipt', 'done'], true)) {
-            return $this->failed($run, null, 'expired', '');
+        $elsewhere = $run->hostname() !== null && $run->hostname() !== ($this->seams['hostname'])();
+        // A run that waits for its receipt asks for it once more; a run in any other stage cannot get one in time. A run whose
+        // files are on another server is stopped from any server, in any stage: that server may never come back (replaced, or
+        // renamed), and the run would keep every other backup from starting.
+        if ($this->expired($run, $now) && ($elsewhere || !in_array($run->stage(), ['receipt', 'done'], true))) {
+            return $this->failed($run, null, 'expired', '', null, !$elsewhere);
+        }
+        if ($elsewhere) {
+            return 'paused';
         }
         if ($status === 'paused' && $run->next_attempt() !== null && $run->next_attempt() > $now) {
             // The command line does not wait for a window; it waits for anything else as the task does.
@@ -341,9 +344,18 @@ final class runner {
      * @param string $code The reason, or an empty string.
      * @param string $error The class and code of the error, for the log.
      * @param int|null $wait Seconds that a busy service asked the run to wait; null when it was not busy.
+     * @param bool $here Whether the folder of the run is on this server; false for a run that another server started in a
+     *     folder of its own, whose files this server cannot remove.
      * @return string continue, paused or aborted.
      */
-    private function failed(run_record $run, ?run_context $context, string $code, string $error, ?int $wait = null): string {
+    private function failed(
+        run_record $run,
+        ?run_context $context,
+        string $code,
+        string $error,
+        ?int $wait = null,
+        bool $here = true
+    ): string {
         if ($code !== '') {
             abort::run(
                 $run,
@@ -353,7 +365,8 @@ final class runner {
                 $this->temp,
                 $this->seams['link'],
                 $this->clock,
-                $context === null ? [] : $context->uploader->leftovers()
+                $context === null ? [] : $context->uploader->leftovers(),
+                $here
             );
             return 'aborted';
         }

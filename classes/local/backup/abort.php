@@ -57,6 +57,8 @@ final class abort {
      * @param callable|null $link Gives [endpoint, signing_keypair, site ID]; null for the registration of this site.
      * @param callable|null $clock Gives the current UNIX time; null for time().
      * @param string[] $leftovers Files that the uploader could not remove, for the record.
+     * @param bool $here Whether the folder of the run is on this server. False for a run that another server started in a
+     *     folder of its own: the folder is left to that server, and the stop records that it was not cleared.
      */
     public static function run(
         run_record $run,
@@ -66,7 +68,8 @@ final class abort {
         ?temp_area $temp = null,
         ?callable $link = null,
         ?callable $clock = null,
-        array $leftovers = []
+        array $leftovers = [],
+        bool $here = true
     ): void {
         if ($closedb !== null) {
             try {
@@ -80,7 +83,7 @@ final class abort {
             // A stale copy: another process ended the run, which keeps its record, its files and its state at the service.
             return;
         }
-        $cleared = ($temp ?? temp_area::create())->clear($run->id());
+        $cleared = $here && ($temp ?? temp_area::create())->clear($run->id());
         if ($run->run_uuid() !== null && in_array($code, client::FAIL_CODES, true)) {
             try {
                 [$endpoint, $pair, $siteid] = ($link ?? [uploader::class, 'site_link'])();
