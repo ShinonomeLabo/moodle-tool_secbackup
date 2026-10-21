@@ -305,7 +305,9 @@ jobs:
         shell: bash
         env:
           PHP_CLI_SERVER_WORKERS: '4'
-        run: moodle-plugin-ci behat --profile chrome --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
+          # From Moodle 5.0 on, a page that uses a style of Bootstrap 4 that Moodle has deprecated fails the step.
+          SCSS: ${{ matrix.moodle != '4.5' && 'check' || '' }}
+        run: moodle-plugin-ci behat ${SCSS:+--scss-deprecations} --profile chrome --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
 
       # See the comment of the job behat.
       - name: Name a known failure of the browser or the runner
@@ -505,8 +507,10 @@ jobs:
         env:
           PHP_CLI_SERVER_WORKERS: '4'
           BROWSER: ${{ matrix.browser }}
+          SCSS: ${{ matrix.moodle != '4.5' && 'check' || '' }}
         run: |
-          moodle-plugin-ci behat --profile "$BROWSER" --selenium "selenium/standalone-$BROWSER:4" --auto-rerun 0 2>&1 \
+          moodle-plugin-ci behat ${SCSS:+--scss-deprecations} --profile "$BROWSER" --selenium "selenium/standalone-$BROWSER:4" \
+            --auto-rerun 0 2>&1 \
             | tee "$RUNNER_TEMP/behat.log"
 
       - name: Name a known failure of the browser or the runner
@@ -717,7 +721,8 @@ jobs:
         shell: bash
         env:
           MOODLE_START_BEHAT_SERVERS: 'NO'
-        run: moodle-plugin-ci behat --profile safari --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
+          SCSS: ${{ matrix.moodle != '4.5' && 'check' || '' }}
+        run: moodle-plugin-ci behat ${SCSS:+--scss-deprecations} --profile safari --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
 
       - name: Name a known failure of the browser or the runner
         if: ${{ failure() && steps.behat.outcome == 'failure' }}

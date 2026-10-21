@@ -405,6 +405,26 @@ final class status_page_test extends \advanced_testcase {
             . '~', $html) === 1;
     }
 
+    public function test_the_labels_of_the_tables_are_row_headers_and_the_notice_needs_no_old_class(): void {
+        global $DB;
+        self::register();
+        $run = run_record::create('manual', 1760000000);
+        $run->abort('disk_low', 1760000100);
+        $html = (new status_page())->render();
+        foreach (['status_platform', 'status_last_completed', 'status_next_backup'] as $label) {
+            $text = preg_quote(get_string($label, 'tool_secbackup'), '~');
+            $this->assertMatchesRegularExpression('~<th [^>]*scope="row"[^>]*>' . $text . '</th>~', $html, $label);
+        }
+        $this->assertStringNotContainsString('<td class="cell c0"', $html);
+        // The heading of the notice is strong text: the class font-weight-bold of Bootstrap 4 is gone from Moodle 5.
+        $this->assertStringNotContainsString('font-weight-bold', $html);
+        $this->assertStringContainsString('<strong>' . htmlspecialchars(get_string(
+            'status_aborted',
+            'tool_secbackup',
+            userdate(1760000000)
+        ), ENT_NOQUOTES) . '</strong>', $html);
+    }
+
     public function test_without_a_completed_backup_the_page_says_so(): void {
         self::register();
         $html = (new status_page())->render();
@@ -854,6 +874,17 @@ final class status_page_test extends \advanced_testcase {
         set_config('coremodified', 1, 'tool_secbackup');
         (new status_page())->render();
         $this->assertSame([], self::dialog_texts(self::dialogs()));
+    }
+
+    public function test_markup_in_the_name_of_the_platform_is_escaped_in_the_dialog(): void {
+        global $CFG;
+        self::register();
+        set_config('platformname', '<img src=x onerror=alert(1)>', 'tool_secbackup');
+        $CFG->alternative_file_system_class = '\file_system_filedir';
+        (new status_page())->render();
+        $expected = s(str_replace('Example Platform', '<img src=x onerror=alert(1)>', self::EXTERNAL_EN));
+        $this->assertSame([$expected], self::dialog_texts(self::dialogs()));
+        $this->assertStringContainsString('&lt;img src=x onerror=alert(1)&gt;', $expected);
     }
 
     public function test_the_warnings_are_the_sentences_of_the_design_in_both_languages(): void {

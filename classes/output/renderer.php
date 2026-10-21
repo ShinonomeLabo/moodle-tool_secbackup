@@ -106,8 +106,25 @@ class renderer extends \plugin_renderer_base {
             ],
             [get_string('status_service_status', 'tool_secbackup'), $this->service_status($state->last_poll_status())],
         ];
+        $table->data = self::with_row_headers($table->data);
         return html_writer::table($table) . $this->clock_warning($state->clock_skew()) . $this->poll_error($state)
             . $this->backups($state) . $this->links();
+    }
+
+    /**
+     * Rows of a table of labels and values, with the label as the header of its row, so that a screen reader announces the
+     * value with its label.
+     *
+     * @param array[] $rows Each [label, value], both HTML.
+     * @return \html_table_row[]
+     */
+    private static function with_row_headers(array $rows): array {
+        return array_map(static function (array $row): \html_table_row {
+            $label = new \html_table_cell($row[0]);
+            $label->header = true;
+            $label->scope = 'row';
+            return new \html_table_row([$label, new \html_table_cell($row[1])]);
+        }, $rows);
     }
 
     /**
@@ -140,6 +157,7 @@ class renderer extends \plugin_renderer_base {
         if ($active !== null) {
             $table->data[] = [get_string('status_running', 'tool_secbackup'), s($this->progress($active))];
         }
+        $table->data = self::with_row_headers($table->data);
         return $this->output->heading(get_string('status_backups_heading', 'tool_secbackup'), 3) . html_writer::table($table)
             . $this->secret_warning(run_record::last_completed())
             . $this->latest_run_notice(run_record::recent(1)[0] ?? null, $state) . $this->backup_button($active !== null);
@@ -309,7 +327,7 @@ class renderer extends \plugin_renderer_base {
      */
     private function run_notice(string $heading, string $reason, string $advice, string $type): string {
         return $this->output->notification(
-            html_writer::tag('p', s($heading), ['class' => 'font-weight-bold'])
+            html_writer::tag('p', html_writer::tag('strong', s($heading)))
             . html_writer::tag('p', s($reason))
             . html_writer::tag('p', s(get_string('status_advice', 'tool_secbackup', $advice)), ['class' => 'mb-0']),
             $type,
