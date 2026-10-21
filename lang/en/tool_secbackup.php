@@ -114,6 +114,7 @@ $string['check_tempdir'] = 'Temporary folder';
 $string['cli_backup_aborted'] = 'The backup was stopped: {$a}';
 $string['cli_backup_continued'] = 'The backup that is running goes on.';
 $string['cli_backup_done'] = 'The backup is complete: the backup service verified it and its receipt was checked.';
+$string['cli_backup_error'] = 'The command stopped with an error ({$a}). The backup was not stopped: the cron of Moodle goes on with it, or run the command again.';
 $string['cli_backup_failed'] = 'A step of the backup failed ({$a}). It is tried again in 5 minutes.';
 $string['cli_backup_heading'] = 'Backup of Shinonome LMS Backup';
 $string['cli_backup_help'] = 'Runs the backup of this site to the backup service until it ends.
@@ -125,7 +126,7 @@ Options:
 --quiet      Print only the outcome.
 -h, --help   Print this help.
 
-Exit codes: 0 the backup is complete, 1 the backup was stopped or the backup service did not start it, 2 no backup was run.
+Exit codes: 0 the backup is complete, 1 the backup was stopped or the backup service did not start it, 2 no backup was run here (none is running, or its files are on another server), 3 the command failed and the backup goes on (with the cron of Moodle, or when the command is run again).
 
 Run it as the user that runs cron, for example:
 $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/backup.php --now

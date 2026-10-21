@@ -193,6 +193,47 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertContains(get_string('status_secret_unreadable', 'tool_secbackup', $counts['secret']), $lines);
     }
 
+    public function test_the_stage_is_named_as_the_status_page_names_it(): void {
+        [$code, $lines] = $this->run_command(true);
+        $this->assertSame(0, $code);
+        $prefix = get_string('cli_backup_stage', 'tool_secbackup', '');
+        $stages = array_map(
+            static fn(string $line): string => substr($line, strlen($prefix)),
+            array_values(array_filter($lines, static fn(string $line): bool => str_starts_with($line, $prefix)))
+        );
+        $this->assertNotSame([], $stages);
+        $names = array_map(
+            static fn(string $stage): string => get_string('stage_' . $stage, 'tool_secbackup'),
+            \tool_secbackup\local\backup\run_record::STAGES
+        );
+        foreach ($stages as $stage) {
+            $this->assertContains($stage, $names);
+        }
+    }
+
+    public function test_a_step_that_cannot_be_recorded_ends_the_command_with_3_and_leaves_the_backup(): void {
+        global $DB;
+        $steps = 0;
+        // The record of the run goes away while a step runs: the next step cannot read it again.
+        [$code, $lines] = $this->run_command(true, false, ['sample' => function () use (&$steps, $DB): array {
+            if ($steps++ === 0) {
+                $DB->delete_records('tool_secbackup_runs');
+            }
+            return ['load_per_core' => 0.1];
+        }]);
+        $this->assertSame(backup_command::EXIT_FAILED, $code);
+        $this->assertSame(3, backup_command::EXIT_FAILED);
+        $this->assertStringStartsWith(explode('MARK', get_string('cli_backup_error', 'tool_secbackup', 'MARK'))[0], end($lines));
+        $this->assertStringContainsString('dml_missing_record_exception', end($lines));
+    }
+
+    public function test_the_help_names_every_exit_code(): void {
+        $help = get_string('cli_backup_help', 'tool_secbackup');
+        foreach ([0, 1, 2, 3] as $code) {
+            $this->assertStringContainsString($code . ' ', $help);
+        }
+    }
+
     public function test_a_reason_without_a_text_of_its_own_is_named_by_its_code(): void {
         $this->fixture->intercept = function (\Psr\Http\Message\RequestInterface $request) {
             return preg_match('~/runs/[0-9a-f-]{36}\z~', $request->getUri()->getPath()) === 1
@@ -430,7 +471,8 @@ final class backup_command_test extends \advanced_testcase {
         $lines = [];
         $code = $command->run(true, false, function (string $line) use (&$lines, &$held, &$phase): void {
             $lines[] = $line;
-            if ($phase === 0 && $line === get_string('cli_backup_stage', 'tool_secbackup', 'files')) {
+            $files = get_string('cli_backup_stage', 'tool_secbackup', get_string('stage_files', 'tool_secbackup'));
+            if ($phase === 0 && $line === $files) {
                 // Between two steps of the command, another process takes the lock.
                 $phase = 1;
                 $held = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', 0);

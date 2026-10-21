@@ -42,8 +42,11 @@ final class backup_command {
     /** @var int The backup was stopped, or the service did not start it. */
     public const EXIT_STOPPED = 1;
 
-    /** @var int No backup was run. */
+    /** @var int No backup was run here: none was running, or its files are on another server. */
     public const EXIT_NOT_RUN = 2;
+
+    /** @var int The command failed; the backup was not stopped, and the cron (or the command again) goes on with it. */
+    public const EXIT_FAILED = 3;
 
     /** @var int Seconds to wait for the lock of the steps, which the task holds for up to ten minutes. */
     public const LOCK_WAIT = 60;
@@ -105,7 +108,7 @@ final class backup_command {
      * @param bool $now Whether to start a backup when none is running.
      * @param bool $quiet Whether to write the outcome only.
      * @param callable $write Writes one line.
-     * @return int EXIT_DONE, EXIT_STOPPED or EXIT_NOT_RUN.
+     * @return int EXIT_DONE, EXIT_STOPPED, EXIT_NOT_RUN or EXIT_FAILED.
      */
     public function run(bool $now, bool $quiet, callable $write): int {
         $say = $quiet ? static fn(string $line) => null : $write;
@@ -138,6 +141,11 @@ final class backup_command {
             }
             try {
                 $result = $runner->step($run, self::BUDGET);
+            } catch (\Throwable $e) {
+                // A failure that the step could not record: the step made it again from its class and code, so its message
+                // holds nothing of the run. The run is not stopped by it.
+                $write(get_string('cli_backup_error', 'tool_secbackup', $e->getMessage()));
+                return self::EXIT_FAILED;
             } finally {
                 $lock->release();
             }
@@ -149,7 +157,7 @@ final class backup_command {
                 // The run waits five minutes and is tried again; a run without a receipt after 24 hours is stopped.
                 $say(get_string('cli_backup_failed', 'tool_secbackup', $runner->last_error()));
             }
-            $say(get_string('cli_backup_stage', 'tool_secbackup', $run->stage()));
+            $say(get_string('cli_backup_stage', 'tool_secbackup', get_string('stage_' . $run->stage(), 'tool_secbackup')));
             $next = $run->next_attempt();
             $wait = $next === null ? 0 : $next - ($this->clock)();
             if ($wait > 0) {

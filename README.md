@@ -108,7 +108,9 @@ are in `public/admin/tool/secbackup/cli/`.
 
 `backup.php` goes on with the running backup until it ends, also past the end of the window; with `--now` it starts one when
 none is running, in or out of the window. A step that fails is tried again after 5 minutes. Exit codes: 0 the backup is
-complete, 1 it was stopped or the service did not start it, 2 no backup was run. The cron runs backups without it.
+complete, 1 it was stopped or the service did not start it, 2 no backup was run here (none is running, or its temporary
+files are on another server), 3 the command failed and the backup goes on (with the cron, or when the command is run
+again). The cron runs backups without it.
 
 A large site whose backup does not finish within its window can run `backup.php` from the cron of the system, as the user
 that runs Moodle's cron, once a day 35 minutes after the start of the window (the schedule starts the backup at most 30
