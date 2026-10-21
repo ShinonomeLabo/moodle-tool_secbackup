@@ -20,6 +20,7 @@ use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
 use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\env\external_storage;
+use tool_secbackup\local\backup\limits;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\backup\starter;
@@ -559,6 +560,18 @@ final class status_page_test extends \advanced_testcase {
                 $code
             );
         }
+    }
+
+    public function test_a_denial_of_selinux_gives_the_advice_of_what_was_denied(): void {
+        self::register();
+        $run = run_record::create('manual', 1760000000);
+        $run->abort('selinux_denied', 1760000100, ['denial' => 'network']);
+        $html = (new status_page())->render();
+        $advice = get_string('selinux_denial_network', 'tool_secbackup', limits::current()->tempdir);
+        $this->assertStringContainsString(
+            htmlspecialchars(get_string('status_advice', 'tool_secbackup', $advice), ENT_NOQUOTES),
+            $html
+        );
     }
 
     public function test_a_reason_without_a_text_of_its_own_is_named_and_escaped_once(): void {

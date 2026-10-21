@@ -81,14 +81,18 @@ final class dns_guard {
      */
     public function inspect(string $host, bool $viaproxy): dns_report {
         $doh = [];
+        $connectfailed = $this->doh !== [];
         foreach ($this->doh as $resolver) {
             try {
                 $doh[$resolver->name()] = $resolver->lookup($host);
+                $connectfailed = false;
             } catch (transport_exception $e) {
                 $doh[$resolver->name()] = null;
+                $connectfailed = $connectfailed
+                    && $e->debuginfo === $resolver->name() . ', ' . transport_exception::CONNECT_FAILED;
             }
         }
-        return new dns_report($doh, $viaproxy ? null : ($this->oslookup)($host));
+        return new dns_report($doh, $viaproxy ? null : ($this->oslookup)($host), $connectfailed);
     }
 
     /**
@@ -133,7 +137,8 @@ final class dns_guard {
         $report = $this->inspect($host, $viaproxy);
         $problem = $this->problem($report, $service);
         if ($problem !== null) {
-            throw new transport_exception($problem);
+            $failedatconnect = $problem === 'dns_doh_unavailable' && $report->connectfailed;
+            throw new transport_exception($problem, $failedatconnect ? transport_exception::CONNECT_FAILED : null);
         }
         return $report->pinned();
     }

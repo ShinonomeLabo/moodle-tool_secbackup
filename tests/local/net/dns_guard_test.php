@@ -111,6 +111,69 @@ final class dns_guard_test extends \advanced_testcase {
         $this->expect_problem('dns_doh_unavailable', network_fakes::guard(null, null, ['13.225.9.9']));
     }
 
+    public function test_no_resolver_answering_because_no_connection_could_be_made_says_so(): void {
+        // Both connections failed at once (cURL error 7): what a denial of the system (SELinux) looks like.
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $this->assertTrue($guard->inspect(network_fakes::HOST, false)->connectfailed);
+        try {
+            $guard->check(network_fakes::HOST, false, aws_ranges::SERVICE_CLOUDFRONT);
+            $this->fail('No exception');
+        } catch (transport_exception $e) {
+            $this->assertSame('dns_doh_unavailable', $e->errorcode);
+            $this->assertSame(transport_exception::CONNECT_FAILED, $e->debuginfo);
+            $this->assertTrue(transport_exception::failed_at_connect($e));
+        }
+    }
+
+    public function test_a_resolver_that_timed_out_or_answered_is_not_a_failed_connection(): void {
+        $timeout = static fn(): doh_resolver => new doh_resolver('google', new \GuzzleHttp\Handler\MockHandler([
+            new \GuzzleHttp\Exception\ConnectException(
+                'cURL error 28',
+                new \GuzzleHttp\Psr7\Request('GET', 'https://8.8.8.8/'),
+                null,
+                ['errno' => 28]
+            ),
+        ]));
+        $guard = new dns_guard(
+            network_fakes::ranges(),
+            [network_fakes::doh('cloudflare', null), $timeout()],
+            static fn(string $host): array => ['13.225.9.9']
+        );
+        $this->assertFalse($guard->inspect(network_fakes::HOST, false)->connectfailed);
+        $guard = new dns_guard(
+            network_fakes::ranges(),
+            [network_fakes::doh('cloudflare', null), $timeout()],
+            static fn(string $host): array => ['13.225.9.9']
+        );
+        try {
+            $guard->check(network_fakes::HOST, false, aws_ranges::SERVICE_CLOUDFRONT);
+            $this->fail('No exception');
+        } catch (transport_exception $e) {
+            $this->assertSame('dns_doh_unavailable', $e->errorcode);
+            $this->assertNull($e->debuginfo);
+            $this->assertFalse(transport_exception::failed_at_connect($e));
+        }
+        $this->assertFalse(network_fakes::guard(null, ['13.225.1.1'], ['13.225.9.9'])
+            ->inspect(network_fakes::HOST, false)->connectfailed);
+        $this->assertFalse((new dns_report([], null))->connectfailed);
+    }
+
+    public function test_only_a_connection_or_a_lookup_that_failed_at_once_is_a_failed_connection(): void {
+        $this->assertTrue(transport_exception::failed_at_connect(new transport_exception('transport_connect', 'cURL error 7')));
+        $this->assertFalse(transport_exception::failed_at_connect(new transport_exception('transport_connect', 'cURL error 28')));
+        $this->assertFalse(transport_exception::failed_at_connect(new transport_exception('transport_tls', 'cURL error 7')));
+        $this->assertFalse(transport_exception::failed_at_connect(new \tool_secbackup\local\plugin_exception(
+            'temp_write_failed',
+            null,
+            'cURL error 7'
+        )));
+        $this->assertTrue(transport_exception::failed_at_connect(new \tool_secbackup\local\plugin_exception(
+            'transport_connect',
+            null,
+            'cURL error 7'
+        )));
+    }
+
     public function test_unknown_name_stops(): void {
         $guard = new dns_guard(
             network_fakes::ranges(),

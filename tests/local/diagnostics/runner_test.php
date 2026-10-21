@@ -94,6 +94,7 @@ final class runner_test extends \advanced_testcase {
      * @param array|null $extensions Required extensions.
      * @param monitor|null $monitor The watch of the server; null for one that reads the files of the root.
      * @param callable|null $autobackup Gives what is known of the automated backup of Moodle; null for the real one.
+     * @param int $probe The error number that a connection on the loopback address gets: 13 (EACCES) is a denial of SELinux.
      * @return runner
      */
     private static function runner(
@@ -103,7 +104,8 @@ final class runner_test extends \advanced_testcase {
         ?dns_guard $guard = null,
         ?array $extensions = null,
         ?monitor $monitor = null,
-        ?callable $autobackup = null
+        ?callable $autobackup = null,
+        int $probe = 13
     ): runner {
         $developer = developer_settings::from_value($settings === [] ? null : $settings);
         $guard = $guard ?? network_fakes::passing_guard();
@@ -114,8 +116,18 @@ final class runner_test extends \advanced_testcase {
             new system_files($root),
             $extensions,
             $monitor,
-            $autobackup
+            $autobackup,
+            static fn(int $port): int => $port === selinux::PORT ? $probe : 0
         );
+    }
+
+    /**
+     * The advice about SELinux, with the temporary folder of the limits that are set.
+     *
+     * @return string
+     */
+    private static function selinux_advice(): string {
+        return get_string('diag_selinux_advice', 'tool_secbackup', limits::current()->tempdir);
     }
 
     /**
@@ -404,10 +416,32 @@ final class runner_test extends \advanced_testcase {
         $named = self::by_name(self::runner([self::failure(7)], system_roots::nfs('1'))->run(self::endpoint()));
         $this->assertSame(check_result::INFO, $named['selinux']->result);
         $this->assertSame(get_string('diag_selinux_enforcing', 'tool_secbackup', 'httpd_t'), $named['selinux']->detail);
-        $this->assertSame(get_string('diag_selinux_advice', 'tool_secbackup'), $named['selinux']->advice);
+        $this->assertSame(self::selinux_advice(), $named['selinux']->advice);
         $this->assertSame(check_result::FAIL, $named['connection']->result);
         $this->assertSame(get_string('transport_connect', 'tool_secbackup'), $named['connection']->detail);
-        $this->assertSame(get_string('diag_selinux_advice', 'tool_secbackup'), $named['connection']->advice);
+        $this->assertSame(self::selinux_advice(), $named['connection']->advice);
+    }
+
+    public function test_selinux_is_not_blamed_for_a_refused_or_timed_out_connection_or_outside_the_web_server(): void {
+        // The connection on the loopback address is refused: SELinux did not deny it.
+        $named = self::by_name(self::runner([self::failure(7)], system_roots::nfs('1'), [], null, null, null, null, 111)
+            ->run(self::endpoint()));
+        $this->assertSame('', $named['connection']->advice);
+        $guard = network_fakes::guard(null, null, ['13.225.9.9']);
+        $named = self::by_name(self::runner([], system_roots::nfs('1'), [], $guard, null, null, null, 111)
+            ->run(self::endpoint()));
+        $this->assertSame(get_string('dns_doh_unavailable', 'tool_secbackup'), $named['dns']->advice);
+        // A timeout is never a denial.
+        $named = self::by_name(self::runner([self::failure(28)], system_roots::nfs('1'))->run(self::endpoint()));
+        $this->assertSame(get_string('transport_connect', 'tool_secbackup'), $named['connection']->detail);
+        $this->assertSame('', $named['connection']->advice);
+        // The command line and the cron of the system are not confined.
+        foreach (["system_u:system_r:unconfined_t:s0\n", "system_u:system_r:system_cronjob_t:s0\n", ''] as $context) {
+            $root = system_roots::nfs('1');
+            file_put_contents($root . '/proc/self/attr/current', $context);
+            $named = self::by_name(self::runner([self::failure(7)], $root)->run(self::endpoint()));
+            $this->assertSame('', $named['connection']->advice, $context);
+        }
     }
 
     public function test_selinux_enforcing_does_not_explain_another_failure(): void {
@@ -429,11 +463,11 @@ final class runner_test extends \advanced_testcase {
         $named = self::by_name(self::runner([], system_roots::nfs('1'), [], $guard)->run(self::endpoint()));
         $this->assertSame(check_result::FAIL, $named['dns']->result);
         $this->assertSame(
-            get_string('dns_doh_unavailable', 'tool_secbackup') . ' ' . get_string('diag_selinux_advice', 'tool_secbackup'),
+            get_string('dns_doh_unavailable', 'tool_secbackup') . ' ' . self::selinux_advice(),
             $named['dns']->advice
         );
         $this->assertSame(get_string('dns_doh_unavailable', 'tool_secbackup'), $named['connection']->detail);
-        $this->assertSame(get_string('diag_selinux_advice', 'tool_secbackup'), $named['connection']->advice);
+        $this->assertSame(self::selinux_advice(), $named['connection']->advice);
     }
 
     public function test_selinux_enforcing_does_not_explain_another_name_problem(): void {
@@ -653,7 +687,7 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(get_string('diag_apparmor_unknown', 'tool_secbackup'), $named['apparmor']->detail);
         $this->assertSame(check_result::INFO, $named['selinux']->result);
         $this->assertSame(get_string('diag_selinux_enforcing', 'tool_secbackup', 'httpd_t'), $named['selinux']->detail);
-        $this->assertSame(get_string('diag_selinux_advice', 'tool_secbackup'), $named['selinux']->advice);
+        $this->assertSame(self::selinux_advice(), $named['selinux']->advice);
     }
 
     /**
@@ -951,7 +985,7 @@ final class runner_test extends \advanced_testcase {
 
     public function test_the_advice_of_selinux_and_of_apparmor_do_not_depend_on_each_other(): void {
         $guard = network_fakes::guard(null, null, ['13.225.9.9']);
-        $selinux = get_string('diag_selinux_advice', 'tool_secbackup');
+        $selinux = self::selinux_advice();
         $apparmor = get_string('diag_apparmor_advice', 'tool_secbackup');
         $problem = get_string('dns_doh_unavailable', 'tool_secbackup');
 

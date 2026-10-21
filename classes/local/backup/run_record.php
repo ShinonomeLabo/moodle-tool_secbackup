@@ -513,6 +513,16 @@ final class run_record {
     }
 
     /**
+     * What this site kept about the stop of the run besides its reason (abort::reason()), such as the denial of SELinux.
+     *
+     * @return array Empty for a run that was not stopped, or stopped without details.
+     */
+    public function abort_note(): array {
+        $note = $this->progress()['abort'] ?? null;
+        return is_array($note) ? $note : [];
+    }
+
+    /**
      * The class and code of the unexpected error that ended the last step, while the run waits to try again.
      *
      * @return string|null Null when the last step did not end with such an error, or a step has committed since.

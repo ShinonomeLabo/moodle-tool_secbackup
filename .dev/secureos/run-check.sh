@@ -190,7 +190,11 @@ if sys.argv[3] == 'start':
     print(next((k for k in sorted(keys) if strings['start_' + k] in page), 'none'))
 else:
     codes = sorted(k[6:-7] for k in strings if k.startswith('abort_') and k.endswith('_advice'))
-    shown = [c for c in codes if strings['abort_' + c] in page and strings['abort_' + c + '_advice'] in page]
+    # A denial of SELinux has the advice of what was denied (selinux_denial_*, with the folder in the place of {$a}).
+    def advice(c):
+        kinds = [strings[k].split('{$a}')[0] for k in strings if k.startswith('selinux_denial_')] if c == 'selinux_denied' else []
+        return strings['abort_' + c + '_advice'] in page or any(kind in page for kind in kinds)
+    shown = [c for c in codes if strings['abort_' + c] in page and advice(c)]
     last = strings['status_last_duration'] in page and strings['status_none_completed'] not in page
     print(shown[0] if shown else ('completed' if last else 'none'))
 PY

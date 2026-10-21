@@ -27,6 +27,7 @@ use tool_secbackup\local\net\aws_ranges;
 use tool_secbackup\local\net\dns_guard;
 use tool_secbackup\local\net\proxy_settings;
 use tool_secbackup\local\net\transport;
+use tool_secbackup\local\net\transport_exception;
 use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\trust\developer_settings;
 
@@ -78,6 +79,9 @@ final class runner {
     /** @var \Closure|null Gives what is known of the automated backup of Moodle; null for autobackup_watch::describe(). */
     private ?\Closure $autobackup;
 
+    /** @var \Closure|null Tries a connection on the loopback address for SELinux; null for selinux::connect_loopback(). */
+    private ?\Closure $probe;
+
     /**
      * Constructor.
      *
@@ -89,6 +93,7 @@ final class runner {
      * @param monitor|null $monitor Watch of the server; null for one that reads $files with the limits that are set.
      * @param callable|null $autobackup Gives what is known of the automated backup of Moodle, as
      *     autobackup_watch::describe() does; null for that function.
+     * @param callable|null $probe As for selinux::connection_denied(); null for a connection to the loopback address.
      */
     public function __construct(
         developer_settings $settings,
@@ -97,7 +102,8 @@ final class runner {
         system_files $files,
         ?array $extensions = null,
         ?monitor $monitor = null,
-        ?callable $autobackup = null
+        ?callable $autobackup = null,
+        ?callable $probe = null
     ) {
         $this->settings = $settings;
         $this->guard = $guard;
@@ -106,6 +112,7 @@ final class runner {
         $this->extensions = $extensions ?? self::REQUIRED_EXTENSIONS;
         $this->monitor = $monitor;
         $this->autobackup = $autobackup === null ? null : \Closure::fromCallable($autobackup);
+        $this->probe = $probe === null ? null : \Closure::fromCallable($probe);
     }
 
     /**
@@ -125,15 +132,16 @@ final class runner {
      */
     public function run(?endpoint $endpoint): array {
         $enforce = $this->files->read('/sys/fs/selinux/enforce');
-        $enforcing = $enforce !== null && trim($enforce) === '1';
+        // SELinux can deny this process only when it is enforcing and the process is the confined web server (design 7.3).
+        $selinux = selinux::enforcing($this->files) && selinux::confined($this->files);
         $profile = $this->apparmor_profile();
         $confining = $profile !== null && in_array($profile['mode'], self::APPARMOR_DENYING_MODES, true);
         return [
             $this->developer(),
             $this->extensions(),
             $this->proxy($endpoint),
-            $this->dns($endpoint, $enforcing, $confining),
-            $this->connection($endpoint, $enforcing, $confining),
+            $this->dns($endpoint, $selinux, $confining),
+            $this->connection($endpoint, $selinux, $confining),
             $this->clock(),
             $this->selinux($enforce),
             $this->apparmor($profile),
@@ -200,11 +208,11 @@ final class runner {
      * Name resolution.
      *
      * @param endpoint|null $endpoint Connection URL.
-     * @param bool $enforcing Whether SELinux is enforcing.
+     * @param bool $selinux Whether SELinux is enforcing and confines this process.
      * @param bool $confining Whether an AppArmor profile that denies is on this process.
      * @return check_result
      */
-    private function dns(?endpoint $endpoint, bool $enforcing, bool $confining): check_result {
+    private function dns(?endpoint $endpoint, bool $selinux, bool $confining): check_result {
         if ($endpoint === null) {
             return new check_result('dns', check_result::INFO, get_string('diag_no_endpoint', 'tool_secbackup'));
         }
@@ -226,9 +234,10 @@ final class runner {
             'dns',
             check_result::FAIL,
             implode('; ', $lines),
-            self::with_access_control_advice(
+            $this->with_access_control_advice(
                 get_string($problem, 'tool_secbackup'),
-                $enforcing && $problem === 'dns_doh_unavailable',
+                $selinux && $problem === 'dns_doh_unavailable' && $report->connectfailed
+                    && selinux::connection_denied($this->probe),
                 $confining && in_array($problem, self::APPARMOR_PROBLEMS, true)
             ),
             $problem
@@ -239,13 +248,13 @@ final class runner {
      * Adds the advice about SELinux and about AppArmor to an advice.
      *
      * @param string $advice The advice; may be empty.
-     * @param bool $selinux Whether SELinux may be the cause.
+     * @param bool $selinux Whether SELinux denied it.
      * @param bool $apparmor Whether AppArmor may be the cause.
      * @return string
      */
-    private static function with_access_control_advice(string $advice, bool $selinux, bool $apparmor): string {
+    private function with_access_control_advice(string $advice, bool $selinux, bool $apparmor): string {
         if ($selinux) {
-            $advice .= ' ' . get_string('diag_selinux_advice', 'tool_secbackup');
+            $advice .= ' ' . $this->selinux_advice();
         }
         if ($apparmor) {
             $advice .= ' ' . get_string('diag_apparmor_advice', 'tool_secbackup');
@@ -270,24 +279,24 @@ final class runner {
      * Connection to the service, with one request without a signature.
      *
      * @param endpoint|null $endpoint Connection URL.
-     * @param bool $enforcing Whether SELinux is enforcing.
+     * @param bool $selinux Whether SELinux is enforcing and confines this process.
      * @param bool $confining Whether an AppArmor profile that denies is on this process.
      * @return check_result
      */
-    private function connection(?endpoint $endpoint, bool $enforcing, bool $confining): check_result {
+    private function connection(?endpoint $endpoint, bool $selinux, bool $confining): check_result {
         if ($endpoint === null) {
             return new check_result('connection', check_result::INFO, get_string('diag_no_endpoint', 'tool_secbackup'));
         }
         try {
             $response = $this->transport->send('GET', $endpoint, 'status', ['Accept' => 'application/json'], '');
         } catch (plugin_exception $e) {
-            $selinux = $enforcing && in_array($e->errorcode, ['transport_connect', 'dns_doh_unavailable'], true);
+            $denied = $selinux && transport_exception::failed_at_connect($e) && selinux::connection_denied($this->probe);
             $apparmor = $confining && in_array($e->errorcode, array_merge(['transport_connect'], self::APPARMOR_PROBLEMS), true);
             return new check_result(
                 'connection',
                 check_result::FAIL,
                 $e->message(),
-                self::with_access_control_advice('', $selinux, $apparmor),
+                $this->with_access_control_advice('', $denied, $apparmor),
                 $e->errorcode
             );
         }
@@ -334,6 +343,16 @@ final class runner {
     }
 
     /**
+     * The advice about SELinux, with the temporary folder of the plugin in it.
+     *
+     * @return string
+     */
+    private function selinux_advice(): string {
+        $tempdir = ($this->monitor ?? new monitor($this->files, limits::current()))->limits()->tempdir;
+        return get_string('diag_selinux_advice', 'tool_secbackup', $tempdir);
+    }
+
+    /**
      * SELinux.
      *
      * @param string|null $enforce Content of /sys/fs/selinux/enforce.
@@ -349,7 +368,7 @@ final class runner {
                 'selinux',
                 check_result::INFO,
                 get_string('diag_selinux_enforcing', 'tool_secbackup', $type),
-                get_string('diag_selinux_advice', 'tool_secbackup')
+                $this->selinux_advice()
             );
         }
         if ($enforce === '0') {

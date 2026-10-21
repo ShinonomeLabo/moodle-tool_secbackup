@@ -60,14 +60,15 @@ final class doh_resolver_test extends \advanced_testcase {
      * Expects lookup() to fail.
      *
      * @param MockHandler $mock Mocked transport.
+     * @param string $debuginfo The debug information: the resolver, and a connection that failed at once.
      */
-    private function expect_failure(MockHandler $mock): void {
+    private function expect_failure(MockHandler $mock, string $debuginfo = 'cloudflare'): void {
         try {
             (new doh_resolver('cloudflare', $mock))->lookup('app.example.test');
             $this->fail('No exception');
         } catch (transport_exception $e) {
             $this->assertSame('dns_doh_failed', $e->errorcode);
-            $this->assertSame('cloudflare', $e->debuginfo);
+            $this->assertSame($debuginfo, $e->debuginfo);
         }
     }
 
@@ -243,9 +244,17 @@ final class doh_resolver_test extends \advanced_testcase {
     }
 
     public function test_connection_error_is_an_error(): void {
+        // A connection that failed at once is told apart: only such a failure can be a denial of the system (SELinux).
         $this->expect_failure(new MockHandler([
             new ConnectException('cURL error 7', new Request('GET', 'https://1.1.1.1/'), null, ['errno' => 7]),
+        ]), 'cloudflare, cURL error 7');
+        $this->expect_failure(new MockHandler([
+            new ConnectException('cURL error 28', new Request('GET', 'https://1.1.1.1/'), null, ['errno' => 28]),
         ]));
+        $this->expect_failure(new MockHandler([
+            new ConnectException('cURL error 6', new Request('GET', 'https://1.1.1.1/'), null, ['errno' => 6]),
+        ]));
+        $this->expect_failure(new MockHandler([new ConnectException('no context', new Request('GET', 'https://1.1.1.1/'))]));
     }
 
     public function test_moodle_security_list_applies(): void {

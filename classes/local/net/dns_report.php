@@ -30,15 +30,20 @@ final class dns_report {
     /** @var string[]|null IPv4 addresses from the operating system; null when an HTTP proxy resolves the name. */
     public readonly ?array $os;
 
+    /** @var bool Whether no resolver answered because every connection to them failed at once (cURL error 7). */
+    public readonly bool $connectfailed;
+
     /**
      * Constructor.
      *
      * @param array $doh Answers by resolver name.
      * @param string[]|null $os The operating system's answer.
+     * @param bool $connectfailed Whether every connection to the resolvers failed at once.
      */
-    public function __construct(array $doh, ?array $os) {
+    public function __construct(array $doh, ?array $os, bool $connectfailed = false) {
         $this->doh = $doh;
         $this->os = $os;
+        $this->connectfailed = $connectfailed;
     }
 
     /**

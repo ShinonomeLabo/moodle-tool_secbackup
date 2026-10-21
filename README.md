@@ -128,8 +128,11 @@ print their help with `--help`.
 - **SELinux and AppArmor** confine the processes of the web server, not the command line. A backup started with the button
   and moved on by a cron that runs in the web server (`admin/cron.php` requested over HTTP) is subject to them; a backup run
   by `cli/backup.php` or by a cron on the command line usually is not. Under SELinux in enforcing mode, the web server needs
-  the boolean `httpd_can_network_relay` (or `httpd_can_network_connect`) to reach the service and its storage on port 443;
-  when SELinux blocks a backup, it stops with a reason that names SELinux, and the connection diagnostics give the advice.
+  the boolean `httpd_can_network_relay` (or `httpd_can_network_connect`) to reach the service and its storage on port 443,
+  a temporary folder on another disk needs the label `httpd_sys_rw_content_t` (`semanage fcontext` and `restorecon`), and a
+  data directory on NFS needs `httpd_use_nfs`. A backup stops with the reason that names SELinux only when the web server, in
+  its confined domain, was denied a connection or the temporary folder (a timeout, a refused connection or a full disk keep
+  their own reasons); the status page and the connection diagnostics give the commands.
   Under AppArmor, a profile of the web server that denies the network stops the backup as a failed network check; the
   diagnostics show the AppArmor rules. The connection diagnostics were tested in virtual machines with Rocky Linux,
   AlmaLinux, Debian and Ubuntu, and whole backups from the web server with Rocky Linux 9 and Ubuntu 24.04

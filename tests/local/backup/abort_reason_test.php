@@ -64,6 +64,40 @@ final class abort_reason_test extends \advanced_testcase {
         }
     }
 
+    public function test_a_denial_of_selinux_has_the_advice_of_what_was_denied(): void {
+        $this->assertSame(
+            get_string('selinux_denial_network', 'tool_secbackup', '/data/tool'),
+            abort_reason::advice('selinux_denied', null, ['denial' => 'network', 'folder' => '/data/tool'])
+        );
+        $this->assertSame(
+            get_string('selinux_denial_tempfolder', 'tool_secbackup', '/data/tool'),
+            abort_reason::advice('selinux_denied', null, ['denial' => 'tempfolder', 'folder' => '/data/tool'])
+        );
+        $this->assertStringContainsString(
+            'semanage fcontext -a -t httpd_sys_rw_content_t "/data/tool(/.*)?"',
+            abort_reason::advice('selinux_denied', 'en', ['denial' => 'tempfolder', 'folder' => '/data/tool'])
+        );
+        $this->assertStringContainsString(
+            'restorecon -Rv /data/tool',
+            abort_reason::advice('selinux_denied', 'ja', ['denial' => 'tempfolder', 'folder' => '/data/tool'])
+        );
+        // A stop that kept no folder names the folder that is set now.
+        $this->assertSame(
+            get_string('selinux_denial_tempfolder', 'tool_secbackup', limits::current()->tempdir),
+            abort_reason::advice('selinux_denied', null, ['denial' => 'tempfolder'])
+        );
+        // A stop that kept nothing, or something unknown, has the advice of the reason.
+        $this->assertSame(get_string('abort_selinux_denied_advice', 'tool_secbackup'), abort_reason::advice('selinux_denied'));
+        $this->assertSame(
+            get_string('abort_selinux_denied_advice', 'tool_secbackup'),
+            abort_reason::advice('selinux_denied', null, ['denial' => 'other'])
+        );
+        $this->assertSame(
+            get_string('abort_disk_low_advice', 'tool_secbackup'),
+            abort_reason::advice('disk_low', null, ['denial' => 'network'])
+        );
+    }
+
     public function test_a_code_without_a_text_of_its_own_is_named(): void {
         $this->assertSame(get_string('abort_unknown', 'tool_secbackup', 'something_new'), abort_reason::text('something_new'));
         $this->assertStringContainsString('something_new', abort_reason::text('something_new'));

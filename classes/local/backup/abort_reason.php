@@ -59,13 +59,23 @@ final class abort_reason {
     /**
      * What the administrator can do.
      *
+     * A denial of SELinux has the advice of what was denied (a connection, or the temporary folder, which is named), when the
+     * stop kept it.
+     *
      * @param string $code The reason.
      * @param string|null $lang The language; null for the one of the user.
+     * @param array $note What the site kept about the stop (run_record::abort_note()).
      * @return string Plain text.
      */
-    public static function advice(string $code, ?string $lang = null): string {
+    public static function advice(string $code, ?string $lang = null, array $note = []): string {
+        $strings = get_string_manager();
+        $denial = $note['denial'] ?? null;
+        if ($code === 'selinux_denied' && in_array($denial, ['network', 'tempfolder'], true)) {
+            $folder = is_string($note['folder'] ?? null) ? $note['folder'] : limits::current()->tempdir;
+            return $strings->get_string('selinux_denial_' . $denial, 'tool_secbackup', $folder, $lang);
+        }
         $id = in_array($code, self::codes(), true) ? 'abort_' . $code . '_advice' : 'abort_unknown_advice';
-        return get_string_manager()->get_string($id, 'tool_secbackup', null, $lang);
+        return $strings->get_string($id, 'tool_secbackup', null, $lang);
     }
 
     /**

@@ -286,13 +286,13 @@ final class runner {
             }
             return $this->stages($context);
         } catch (\Throwable $e) {
-            $code = abort::classify($e, $this->seams['files']);
+            [$code, $details] = abort::reason($e, $this->seams['files'], $this->seams['limits']->tempdir);
             $busy = $e instanceof api_exception && in_array($e->errorcode, ['api_unavailable', 'api_rate_limited'], true);
             $wait = $busy ? ($e->retryafter ?? self::DEFAULT_WAIT) : null;
             $error = $e::class . ($e instanceof plugin_exception ? ' ' . $e->errorcode : '');
             // The error is not kept: its trace holds the arguments of the calls, and those can be secrets.
             unset($e);
-            return $this->failed($run, $context, $code, $error, $wait);
+            return $this->failed($run, $context, $code, $error, $wait, true, $details);
         } finally {
             $context?->close();
         }
@@ -358,6 +358,7 @@ final class runner {
      * @param int|null $wait Seconds that a busy service asked the run to wait; null when it was not busy.
      * @param bool $here Whether the folder of the run is on this server; false for a run that another server started in a
      *     folder of its own, whose files this server cannot remove.
+     * @param array $details What this site keeps about a stop besides its reason (abort::reason()).
      * @return string continue, paused or aborted.
      */
     private function failed(
@@ -366,7 +367,8 @@ final class runner {
         string $code,
         string $error,
         ?int $wait = null,
-        bool $here = true
+        bool $here = true,
+        array $details = []
     ): string {
         if ($code !== '') {
             abort::run(
@@ -378,7 +380,8 @@ final class runner {
                 $this->seams['link'],
                 $this->clock,
                 $context === null ? [] : $context->uploader->leftovers(),
-                $here
+                $here,
+                $details
             );
             return 'aborted';
         }

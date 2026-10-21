@@ -209,6 +209,37 @@ final class abort_test extends \advanced_testcase {
         $this->assertSame(0, $sink->count());
     }
 
+    public function test_what_the_site_keeps_about_a_stop_is_recorded_and_told_to_the_administrators(): void {
+        global $DB;
+        $sink = $this->redirectMessages();
+        $DB->set_field('user', 'lang', 'en', ['id' => get_admin()->id]);
+        $this->abort(run_record::create('schedule', self::NOW), 'server_busy');
+        $this->abort(run_record::create('schedule', self::NOW), 'server_busy');
+        $run = run_record::create('schedule', self::NOW);
+        $details = ['denial' => 'tempfolder', 'folder' => '/data/tool'];
+        abort::run(
+            $run,
+            'selinux_denied',
+            $this->fixture->client(),
+            null,
+            $this->temp(),
+            $this->fixture->link(),
+            $this->fixture->clock(),
+            [],
+            true,
+            $details
+        );
+        $this->assertSame($details, array_intersect_key($run->abort_note(), $details));
+        $this->assertSame(['cleared' => true, 'leftovers' => 0] + $details, run_record::recent(1)[0]->abort_note());
+        $messages = $sink->get_messages();
+        $this->assertCount(1, $messages);
+        $this->assertStringContainsString(
+            get_string('selinux_denial_tempfolder', 'tool_secbackup', '/data/tool'),
+            reset($messages)->fullmessage
+        );
+        $this->assertSame([], run_record::create('manual', self::NOW)->abort_note());
+    }
+
     public function test_a_completed_run_starts_the_count_again(): void {
         $sink = $this->redirectMessages();
         $this->abort(run_record::create('schedule', self::NOW), 'server_busy');
@@ -282,9 +313,14 @@ final class abort_test extends \advanced_testcase {
             'an ended contract' => [new plugin_exception('contract_inactive'), 'contract_inactive', 'contract_inactive'],
             'sends that failed' => [new plugin_exception('upload_failed'), 'upload_failed', 'upload_failed'],
             'a changed file' => [new plugin_exception('tamper_detected'), 'tamper_detected', 'tamper_detected'],
-            'no connection' => [new transport_exception('transport_connect'), 'network_check_failed', 'selinux_denied'],
-            'no DNS over HTTPS' => [new transport_exception('dns_doh_unavailable'), 'network_check_failed', 'selinux_denied'],
-            'a temporary file' => [new plugin_exception('temp_write_failed'), 'disk_low', 'selinux_denied'],
+            // SELinux alone is not to blame: the process is not the confined web server here (see the test of denials).
+            'no connection' => [new transport_exception('transport_connect'), 'network_check_failed', 'network_check_failed'],
+            'no DNS over HTTPS' => [
+                new transport_exception('dns_doh_unavailable'),
+                'network_check_failed',
+                'network_check_failed',
+            ],
+            'a temporary file' => [new plugin_exception('temp_write_failed'), 'disk_low', 'disk_low'],
             'a bad envelope' => [new envelope_exception('envelope_signature'), 'signature_invalid', 'signature_invalid'],
             'an untrusted key' => [new envelope_exception('envelope_untrusted'), 'signature_invalid', 'signature_invalid'],
             'a malformed envelope' => [new envelope_exception('envelope_malformed'), 'signature_invalid', 'signature_invalid'],
@@ -334,6 +370,102 @@ final class abort_test extends \advanced_testcase {
     public function test_classify(\Throwable $exception, string $enforce, string $expected): void {
         $files = new system_files(system_roots::with_files(['/sys/fs/selinux/enforce' => $enforce . "\n"]));
         $this->assertSame($expected, abort::classify($exception, $files));
+    }
+
+    /**
+     * Errors that SELinux may have caused, and what they stand for when the confined web server got a denial.
+     *
+     * @return array
+     */
+    public static function denial_provider(): array {
+        return [
+            'a connection that failed at once' => [
+                new transport_exception('transport_connect', 'cURL error 7'), 13, true,
+                ['selinux_denied', ['denial' => 'network']],
+            ],
+            'lookups that all failed at once' => [
+                new transport_exception('dns_doh_unavailable', 'cURL error 7'), 13, true,
+                ['selinux_denied', ['denial' => 'network']],
+            ],
+            'a connection that the loopback address refuses too' => [
+                new transport_exception('transport_connect', 'cURL error 7'), 111, true, ['network_check_failed', []],
+            ],
+            'a timeout' => [new transport_exception('transport_connect', 'cURL error 28'), 13, true, ['network_check_failed', []]],
+            'lookups of which one timed out' => [
+                new transport_exception('dns_doh_unavailable'), 13, true, ['network_check_failed', []],
+            ],
+            'a temporary folder that cannot be written' => [
+                new plugin_exception('temp_write_failed', null, 'folder: /data/tool'), 13, false,
+                ['selinux_denied', ['denial' => 'tempfolder', 'folder' => '/data/tool']],
+            ],
+            'a temporary folder that can be written' => [
+                new plugin_exception('temp_write_failed', null, 'journal_write'), 13, true, ['disk_low', []],
+            ],
+            'a journal shorter than committed' => [
+                new plugin_exception('temp_write_failed', null, 'journal_short'), 13, false, ['disk_low', []],
+            ],
+            'entries that are missing' => [
+                new plugin_exception('temp_write_failed', null, 'entries_missing'), 13, false, ['disk_low', []],
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('denial_provider')]
+    /**
+     * SELinux is blamed for a denial of the confined web server only.
+     *
+     * @dataProvider denial_provider
+     * @param plugin_exception $exception The error.
+     * @param int $probe The error number of a connection on the loopback address.
+     * @param bool $writable Whether the temporary folder can be written to.
+     * @param array $expected The reason and the details.
+     */
+    public function test_selinux_is_blamed_for_a_denial_of_the_web_server_only(
+        plugin_exception $exception,
+        int $probe,
+        bool $writable,
+        array $expected
+    ): void {
+        $root = system_roots::with_files([
+            '/sys/fs/selinux/enforce' => "1\n",
+            '/proc/self/attr/current' => "system_u:system_r:httpd_t:s0\0",
+        ]);
+        $files = new system_files($root);
+        $probes = [];
+        $probefn = function (int $port) use ($probe, &$probes): int {
+            $probes[] = $port;
+            return $probe;
+        };
+        $writablefn = static fn(string $folder): bool => $writable;
+        $this->assertSame($expected, abort::reason($exception, $files, '/data/tool', $probefn, $writablefn));
+        $this->assertSame($expected[0], abort::classify($exception, $files, '/data/tool', $probefn, $writablefn));
+        $this->assertSame(in_array(($exception->debuginfo ?? ''), ['cURL error 7'], true) ? [443, 443] : [], $probes);
+        // The same denial outside the web server (the command line), or while SELinux is permissive, is not blamed.
+        foreach (
+            ["system_u:system_r:unconfined_t:s0\0", "system_u:system_r:system_cronjob_t:s0\0",
+                "system_u:system_r:httpd_unconfined_script_t:s0\0", ''] as $context
+        ) {
+            file_put_contents($root . '/proc/self/attr/current', $context);
+            $this->assertNotSame('selinux_denied', abort::classify($exception, $files, '/data/tool', $probefn, $writablefn));
+        }
+        file_put_contents($root . '/proc/self/attr/current', "system_u:system_r:httpd_t:s0\0");
+        file_put_contents($root . '/sys/fs/selinux/enforce', "0\n");
+        $this->assertNotSame('selinux_denied', abort::classify($exception, $files, '/data/tool', $probefn, $writablefn));
+    }
+
+    public function test_the_default_checks_ask_the_system(): void {
+        // A connection on the loopback address of a test server is refused or made, never denied; the temporary folder of
+        // the limits that are set can be written to.
+        $files = new system_files(system_roots::with_files([
+            '/sys/fs/selinux/enforce' => "1\n",
+            '/proc/self/attr/current' => "system_u:system_r:httpd_t:s0\0",
+        ]));
+        $this->assertNotSame(13, \tool_secbackup\local\diagnostics\selinux::connect_loopback(1));
+        $this->assertSame(
+            'network_check_failed',
+            abort::classify(new transport_exception('transport_connect', 'cURL error 7'), $files)
+        );
+        $this->assertSame('disk_low', abort::classify(new plugin_exception('temp_write_failed', null, 'journal_write'), $files));
     }
 
     public function test_without_selinux_a_refused_connection_is_a_failed_network_check(): void {

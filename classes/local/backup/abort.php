@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\backup;
 
 use tool_secbackup\local\api\client;
+use tool_secbackup\local\diagnostics\selinux;
 use tool_secbackup\local\diagnostics\system_files;
 use tool_secbackup\local\plugin_exception;
 
@@ -37,7 +38,7 @@ final class abort {
     /** @var int Stops in a row after which the site administrators are told. */
     public const NOTIFY_AFTER = 3;
 
-    /** @var string[] Errors of the connection that SELinux causes when it denies a connection. */
+    /** @var string[] Errors of the connection that are failed network checks when SELinux is not to blame. */
     private const CONNECTION_ERRORS = ['transport_connect', 'dns_doh_unavailable'];
 
     /**
@@ -59,6 +60,8 @@ final class abort {
      * @param string[] $leftovers Files that the uploader could not remove, for the record.
      * @param bool $here Whether the folder of the run is on this server. False for a run that another server started in a
      *     folder of its own: the folder is left to that server, and the stop records that it was not cleared.
+     * @param array $details What this site keeps about the stop besides its reason, from reason(): it stays with the run (the
+     *     status page, the command line and the message to the administrators show it) and is never sent to the service.
      */
     public static function run(
         run_record $run,
@@ -69,7 +72,8 @@ final class abort {
         ?callable $link = null,
         ?callable $clock = null,
         array $leftovers = [],
-        bool $here = true
+        bool $here = true,
+        array $details = []
     ): void {
         if ($closedb !== null) {
             try {
@@ -95,37 +99,79 @@ final class abort {
             }
         }
         $now = $clock === null ? time() : (int) $clock();
-        $run->abort($code, $now, ['cleared' => $cleared, 'leftovers' => count($leftovers)]);
+        $run->abort($code, $now, ['cleared' => $cleared, 'leftovers' => count($leftovers)] + $details);
         if (run_record::consecutive_aborts() === self::NOTIFY_AFTER) {
-            notifier::backup_failed($code, self::NOTIFY_AFTER);
+            notifier::backup_failed($code, self::NOTIFY_AFTER, $details);
         }
     }
 
     /**
      * The reason to stop a run that an error stands for.
      *
-     * An error of the plugin whose code is a reason is that reason. A connection that is refused, a lookup over HTTPS that is
-     * not possible and a temporary file that cannot be written are selinux_denied while SELinux is enforcing; otherwise the
-     * first two are network_check_failed and the third is disk_low. An envelope or a receipt that cannot be verified, and a
-     * signature of the artifacts that the service refuses, are signature_invalid. The other refusals of the name lookup and of
-     * the storage address are network_check_failed. Anything else is not a reason to stop: the caller tries again.
-     *
      * @param \Throwable $e The error.
-     * @param system_files $files Reader of /sys, for the state of SELinux.
+     * @param system_files $files Reader of /proc and /sys, for SELinux.
+     * @param string|null $tempdir The temporary folder of the plugin; the one of the limits that are set when null.
+     * @param callable|null $probe As for selinux::connection_denied().
+     * @param callable|null $writable As for selinux::folder_denied().
      * @return string The reason, or an empty string when the error is not a reason to stop.
      */
-    public static function classify(\Throwable $e, system_files $files): string {
+    public static function classify(
+        \Throwable $e,
+        system_files $files,
+        ?string $tempdir = null,
+        ?callable $probe = null,
+        ?callable $writable = null
+    ): string {
+        return self::reason($e, $files, $tempdir, $probe, $writable)[0];
+    }
+
+    /**
+     * The reason to stop a run that an error stands for, and what this site keeps about it.
+     *
+     * An error of the plugin whose code is a reason is that reason. A connection that failed at once, lookups over HTTPS that
+     * all failed at once, and a temporary file that could not be written are selinux_denied when SELinux denied them
+     * (selinux::denial(): the denial, network or tempfolder, and the folder are kept); otherwise the first two are
+     * network_check_failed and the third is disk_low. An envelope or a receipt that cannot be verified, and a signature of the
+     * artifacts that the service refuses, are signature_invalid. The other refusals of the name lookup and of the storage
+     * address are network_check_failed. Anything else is not a reason to stop: the caller tries again.
+     *
+     * @param \Throwable $e The error.
+     * @param system_files $files Reader of /proc and /sys, for SELinux.
+     * @param string|null $tempdir The temporary folder of the plugin; the one of the limits that are set when null.
+     * @param callable|null $probe As for selinux::connection_denied().
+     * @param callable|null $writable As for selinux::folder_denied().
+     * @return array [the reason, or an empty string when the error is not a reason to stop; the details for run()]
+     */
+    public static function reason(
+        \Throwable $e,
+        system_files $files,
+        ?string $tempdir = null,
+        ?callable $probe = null,
+        ?callable $writable = null
+    ): array {
         if (!$e instanceof plugin_exception) {
-            return '';
+            return ['', []];
         }
         $code = $e->errorcode;
         if (in_array($code, client::FAIL_CODES, true)) {
-            return $code;
+            return [$code, []];
         }
-        $selinux = in_array($code, self::CONNECTION_ERRORS, true) || $code === 'temp_write_failed';
-        if ($selinux && trim((string) $files->read('/sys/fs/selinux/enforce')) === '1') {
-            return 'selinux_denied';
+        $tempdir ??= limits::current()->tempdir;
+        $denial = selinux::denial($e, $files, $tempdir, $probe, $writable);
+        if ($denial !== null) {
+            return ['selinux_denied', ['denial' => $denial] + ($denial === 'tempfolder' ? ['folder' => $tempdir] : [])];
         }
+        return [self::other_reason($e), []];
+    }
+
+    /**
+     * The reason of an error of the plugin whose code is not a reason itself, when SELinux is not to blame.
+     *
+     * @param plugin_exception $e The error.
+     * @return string The reason, or an empty string.
+     */
+    private static function other_reason(plugin_exception $e): string {
+        $code = $e->errorcode;
         if ($code === 'temp_write_failed') {
             return 'disk_low';
         }

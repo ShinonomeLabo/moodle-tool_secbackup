@@ -223,7 +223,7 @@ class renderer extends \plugin_renderer_base {
             return $this->run_notice(
                 get_string('status_aborted', 'tool_secbackup', $when),
                 abort_reason::text($code),
-                abort_reason::advice($code),
+                abort_reason::advice($code, null, $latest->abort_note()),
                 notification::NOTIFY_ERROR
             );
         }

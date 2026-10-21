@@ -32,8 +32,9 @@ final class notifier {
      *
      * @param string $code The reason of the last stop, a word of lower-case letters and underscores.
      * @param int $count How many backups in a row were stopped.
+     * @param array $note What the site kept about the last stop (abort::reason()).
      */
-    public static function backup_failed(string $code, int $count): void {
+    public static function backup_failed(string $code, int $count, array $note = []): void {
         $url = (new \moodle_url('/admin/tool/secbackup/index.php'))->out(false);
         $strings = get_string_manager();
         foreach (get_admins() as $admin) {
@@ -42,7 +43,7 @@ final class notifier {
                 $a = (object) [
                     'count' => $count,
                     'reason' => abort_reason::text($code, $lang),
-                    'advice' => abort_reason::advice($code, $lang),
+                    'advice' => abort_reason::advice($code, $lang, $note),
                     'url' => $url,
                 ];
                 $message = new \core\message\message();
