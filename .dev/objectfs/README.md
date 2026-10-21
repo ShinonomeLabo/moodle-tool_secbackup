@@ -30,6 +30,14 @@ keeps as an artifact with the two screenshots and the output of the check.
 
 ## Results
 
-| CI run | MinIO | tool_objectfs | Locations after the tasks | `filedir` | Dialog | Started by the button | Backup | Check |
-|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | |
+Runs 39571659756 and 39572325039 of the workflow Storage (2026-10-21, on the plugin of origin/p2 8d8bf01; GitHub's
+`ubuntu-24.04` runner, Moodle 4.5.15 (Build: 20261005), PHP 8.3, PostgreSQL 13). Both gave the same results:
+
+| Item | Result |
+|---|---|
+| MinIO | `bitnamilegacy/minio:2025.4.22-debian-12-r2@sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01` (296,237,342 bytes unpacked); `minio --version` says `DEVELOPMENT.2025-04-22T22-12-26Z (commit-id=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e)` |
+| tool_objectfs | commit `e2ac620651c5ecdec003f1133a3a38e87195d4c9`, version 2026041012 |
+| After the tasks of tool_objectfs | 104 contents of the site, all 104 `external` in the table of tool_objectfs, 104 objects in the bucket; `filedir` keeps one file, `da39a3ee5e6b4b0d3255bfef95601890afd80709` of 0 bytes (the empty content, which tool_objectfs does not move and the backup does not take) |
+| Status page | the dialog shows the title and the text of the design with the platform name (`check modal ok`; `1-modal.png`); after OK, "Back up now" answers "The backup was queued." (`check started ok`; `2-started.png`, where the dialog shows again because the page is opened again) |
+| Backup | the run that the button started (`manual`), gone on with `cli/backup.php`: completed in 61 s (59 s), 113 chunks, receipt checked |
+| Check | list of the generation of 752 entries (105 database blocks, 104 files, 3 dataroot, 540 code; tool_objectfs is an added plugin and is sent as code); 104 of 104 contents decrypted, SHA-1 and size match; none missing |

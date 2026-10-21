@@ -26,15 +26,16 @@ watch reads the file through NFS and gets a usable value, not what a real networ
 
 ## Results
 
-Run 39548262101 of the workflow Storage (2026-10-21, GitHub's `ubuntu-24.04` runner, Moodle 5.3+ (Build: 20261013), PHP 8.4,
-PostgreSQL 17). The file that the watch reads is a file of 12 MiB of the dummy data (it reads 4 MiB of it).
+Run 39571659756 of the workflow Storage (2026-10-21, on the plugin of origin/p2 8d8bf01; GitHub's `ubuntu-24.04` runner,
+Moodle 5.3+ (Build: 20261013), PHP 8.4, PostgreSQL 17). The file that the watch reads is a file of 12 MiB of the dummy data (it
+reads 4 MiB of it). The run 39548262101, on the plugin before 8d8bf01, gave the same outcome with speeds of the same size.
 
 | NFS | Mount options (as `findmnt` shows them) | Cold reads (MiB/s) | Warm reads (MiB/s) | `dd` 4 MiB through the mount / from the export | Backup | Check |
 |---|---|---|---|---|---|---|
-| v3 | `vers=3,rsize=1048576,wsize=1048576,hard,proto=tcp,timeo=600,retrans=2,sec=sys,local_lock=none` | 600.2, 536.3, 552.6 | 1505.5, 1769.9, 1663.3 | 661 MB/s / 1.1 GB/s | completed in 65 s, 105 chunks, 111,126,004 bytes | 104 of 104 contents, SHA-1 and size match |
-| v4.2 | `vers=4.2,rsize=1048576,wsize=1048576,hard,proto=tcp,timeo=600,retrans=2,sec=sys,local_lock=none` | 491.7, 470.5, 475.7 | 901.7, 1006.3, 1028.3 | 734 MB/s / 1.7 GB/s | completed in 63 s, 105 chunks, 111,126,118 bytes | 104 of 104 contents, SHA-1 and size match |
+| v3 | `vers=3,rsize=1048576,wsize=1048576,hard,proto=tcp,timeo=600,retrans=2,sec=sys,local_lock=none` | 496.1, 389.4, 448.5 | 1538.5, 1546.7, 1637.9 | 607 MB/s / 1.6 GB/s | completed in 60 s, 105 chunks, 111,191,796 bytes | 104 of 104 contents, SHA-1 and size match |
+| v4.2 | `vers=4.2,rsize=1048576,wsize=1048576,hard,proto=tcp,timeo=600,retrans=2,sec=sys,local_lock=none` | 642.5, 588.1, 611.6 | 1681.4, 1949.5, 1956.1 | 748 MB/s / 1.3 GB/s | completed in 63 s, 105 chunks, 111,191,845 bytes | 104 of 104 contents, SHA-1 and size match |
 
 In both, the connection diagnostics show the data directory as a network file system with the warning (`[Warning] Data
-directory: File system: nfs` and `nfs4`), the list of the generation has no missing and no unreadable file, and the run was not
-stopped with `nfs_slow`: the watch measured the speed after every chunk with the default limit of 5 MB/s, about a hundredth
-of what was measured here.
+directory: File system: nfs` and `nfs4`), the list of the generation (566 entries: 97 database blocks, 104 files, 3 dataroot
+and 362 code entries) has no missing and no unreadable file, and the run was not stopped with `nfs_slow`: the watch measured
+the speed after every chunk with the default limit of 5 MB/s, about a hundredth of what was measured here.
