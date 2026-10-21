@@ -1236,19 +1236,19 @@ final class client_runs_test extends \advanced_testcase {
     /**
      * An answer for the targets whose items are a list nested in lists, as deep as the reader allows or one deeper.
      *
-     * @param int $lists Lists around the number: the answer is that many levels deep, and two more (the object, the number).
+     * @param int $lists Lists around the number: the answer has that many containers and one more (the object) around it.
      * @return string
      */
     private static function nested_targets(int $lists): string {
         return '{"items":' . str_repeat('[', $lists) . '1' . str_repeat(']', $lists) . '}';
     }
 
-    public function test_an_answer_eight_levels_deep_is_read_and_refused_by_its_fields(): void {
+    public function test_an_answer_with_containers_seven_deep_is_read_and_refused_by_its_fields(): void {
         $e = $this->expect_api_error('api_response_invalid', fn() => self::targets_from(self::nested_targets(6)), 200);
         $this->assertSame('items', $e->debuginfo);
     }
 
-    public function test_an_answer_nine_levels_deep_is_not_read(): void {
+    public function test_an_answer_with_containers_eight_deep_is_not_read(): void {
         $e = $this->expect_api_error('api_response_invalid', fn() => self::targets_from(self::nested_targets(7)), 200);
         $this->assertSame('body', $e->debuginfo);
     }
