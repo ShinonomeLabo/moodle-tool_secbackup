@@ -57,7 +57,10 @@ the release that accompanies the launch of the service.
 - A memory limit of 256 MB or more for the backup: PHP's `memory_limit`, or Moodle's extra memory limit
   (`$CFG->extramemorylimit`, 512 MB by default), which Moodle raises the limit to for the cron.
 - Free space for the temporary files of a backup: by default the smaller of 10% of the free space and 2,048 MB, in the
-  folder `tool_secbackup` of Moodle's temporary folder (both can be changed on the page "Limits of the backup").
+  folder `tool_secbackup` of Moodle's temporary folder (both can be changed on the page "Limits of the backup"). Moodle's
+  cleanup of its temporary folder removes files that have not changed for some hours (the setting "Clean up temporary data
+  files older than"); the plugin keeps the files of a running backup fresh at every status request (every five minutes) and
+  every step, so even the shortest setting does not remove them while the cron runs.
 - Outgoing HTTPS from the server to the service and to its storage (see the connection diagnostics).
 - A contract for the Shinonome LMS Backup service
 

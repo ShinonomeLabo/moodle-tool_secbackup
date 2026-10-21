@@ -153,6 +153,34 @@ final class temp_area {
     }
 
     /**
+     * Gives the folder of a run and everything in it the current time as the time of the last change.
+     *
+     * Moodle's cleanup of its temporary folder (\core\task\file_temp_cleanup_task, every six hours) removes every file that
+     * was not changed for the hours of the setting "tempdatafoldercleanup", one at the least. Many files of a run are written
+     * once and then only read (the journals, the present list, a chunk that waits for its next try), and a run that waits for
+     * its next window does not change anything for most of a day, so every step and every status request refreshes them.
+     * A symbolic link is left as it is: what it points to is never touched. Nothing happens when the folder is missing (the run
+     * is on another server).
+     *
+     * @param int $runid ID of the run.
+     */
+    public function refresh(int $runid): void {
+        set_error_handler(static fn(int $errno, string $errstr): bool => true);
+        try {
+            $real = $this->resolved($runid);
+            if ($real === null) {
+                return;
+            }
+            foreach ($this->files_below($real, \RecursiveIteratorIterator::SELF_FIRST) as $item) {
+                $item->isLink() || touch($item->getPathname());
+            }
+            touch($real);
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    /**
      * Removes the folder of a run with everything in it. Nothing happens when it is missing.
      *
      * A symbolic link is removed as a link: what it points to is never entered or changed. The folder is resolved once and

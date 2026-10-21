@@ -1079,6 +1079,27 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('expired', $run->abort_code());
     }
 
+    public function test_a_step_of_a_run_that_waits_for_its_window_keeps_its_folder_fresh(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        for ($i = 0; $i < 50 && $run->stage() !== 'files'; $i++) {
+            $runner->step($run, 1);
+        }
+        $folder = $this->tempdir . '/run-' . $run->id();
+        $paths = array_merge([$folder], glob($folder . '/*'), glob($folder . '/journal/*'));
+        $this->assertGreaterThan(3, count($paths));
+        foreach ($paths as $path) {
+            touch($path, time() - 2 * DAYSECS);
+        }
+        $run->keep(['windowpause' => true]);
+        $run->pause($this->fixture->time, $this->fixture->time + 7200);
+        $this->assertSame('paused', $runner->step($run, 600));
+        clearstatcache();
+        foreach ($paths as $path) {
+            $this->assertGreaterThan(time() - 60, filemtime($path), $path);
+        }
+    }
+
     public function test_a_run_in_the_temporary_folder_of_moodle_can_go_on_on_any_server(): void {
         global $CFG;
         $run = run_record::create('manual', $this->fixture->time);

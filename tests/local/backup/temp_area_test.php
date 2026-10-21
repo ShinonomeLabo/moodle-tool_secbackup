@@ -70,6 +70,63 @@ final class temp_area_test extends \advanced_testcase {
         $this->assertSame($base . '/configured/run-6', temp_area::create()->for_run(6));
     }
 
+    /**
+     * Makes a folder of a run inside Moodle's temporary folder, with files and folders that were last changed two days ago.
+     *
+     * @param temp_area $area The area.
+     * @param int $runid The run.
+     * @return string[] The files and folders, the folder of the run first.
+     */
+    private static function aged_run(temp_area $area, int $runid): array {
+        $folder = $area->for_run($runid);
+        mkdir($folder . '/journal');
+        file_put_contents($folder . '/journal/files.jsonl', "[\"a\",1]\n");
+        file_put_contents($folder . '/present.gz', 'list');
+        file_put_contents($folder . '/chunk', 'data');
+        $paths = [$folder, $folder . '/journal', $folder . '/journal/files.jsonl', $folder . '/present.gz', $folder . '/chunk'];
+        foreach (array_reverse($paths) as $path) {
+            touch($path, time() - 2 * DAYSECS);
+        }
+        clearstatcache();
+        return $paths;
+    }
+
+    public function test_a_run_that_is_refreshed_is_kept_by_the_cleanup_of_the_temporary_folder_of_moodle(): void {
+        global $CFG;
+        $area = new temp_area(self::limits($CFG->tempdir . '/tool_secbackup'));
+        $kept = self::aged_run($area, 41);
+        $left = self::aged_run($area, 42);
+        $outside = make_request_directory() . '/target';
+        file_put_contents($outside, 'not of the run');
+        touch($outside, time() - 2 * DAYSECS);
+        symlink($outside, $kept[0] . '/link');
+        $this->without_warnings(static fn() => $area->refresh(41));
+        clearstatcache();
+        foreach ($kept as $path) {
+            $this->assertGreaterThan(time() - 60, filemtime($path), $path);
+        }
+        // A link is not followed: what it points to is not touched.
+        $this->assertLessThan(time() - DAYSECS, filemtime($outside));
+        // The cleanup of Moodle, at its shortest setting (one hour), removes what was not refreshed only.
+        $CFG->tempdatafoldercleanup = 1;
+        ob_start();
+        (new \core\task\file_temp_cleanup_task())->execute();
+        ob_end_clean();
+        clearstatcache();
+        foreach ($kept as $path) {
+            $this->assertFileExists($path);
+        }
+        $this->assertFileDoesNotExist($left[2]);
+        $this->assertFileDoesNotExist($left[4]);
+    }
+
+    public function test_refreshing_a_run_without_a_folder_makes_none(): void {
+        $base = make_request_directory();
+        $area = new temp_area(self::limits($base . '/tool'));
+        $this->without_warnings(static fn() => $area->refresh(43));
+        $this->assertDirectoryDoesNotExist($base . '/tool/run-43');
+    }
+
     public function test_for_run_makes_the_folder_of_the_run_inside_the_temporary_folder(): void {
         $base = make_request_directory();
         $area = new temp_area(self::limits($base . '/nested/tool'));

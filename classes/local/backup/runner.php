@@ -203,6 +203,9 @@ final class runner {
         if ($status !== 'active' && $status !== 'paused') {
             return 'aborted';
         }
+        // First of all, also for a step that only finds that the run waits: Moodle's cleanup of its temporary folder must not
+        // take the files of the run.
+        $this->temp->refresh($run->id());
         $now = $this->now();
         $elsewhere = $run->hostname() !== null && $run->hostname() !== ($this->seams['hostname'])();
         // A run that waits for its receipt asks for it once more; a run in any other stage cannot get one in time. A run whose

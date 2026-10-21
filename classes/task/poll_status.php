@@ -16,6 +16,8 @@
 
 namespace tool_secbackup\task;
 
+use tool_secbackup\local\backup\run_record;
+use tool_secbackup\local\backup\temp_area;
 use tool_secbackup\local\enrollment\poller;
 
 /**
@@ -36,9 +38,16 @@ class poll_status extends \core\task\scheduled_task {
     }
 
     /**
-     * Asks for the status and prints the outcome.
+     * Keeps the folder of a run that goes on fresh, asks for the status and prints the outcome.
+     *
+     * A run that waits for its next window is not stepped for most of a day; this task runs every five minutes, so the files
+     * of the run never look old to Moodle's cleanup of its temporary folder (temp_area::refresh()).
      */
     public function execute() {
+        $live = run_record::active();
+        if ($live !== null) {
+            temp_area::create()->refresh($live->id());
+        }
         mtrace(get_string('task_poll_' . (new poller())->run(), 'tool_secbackup'));
     }
 }
