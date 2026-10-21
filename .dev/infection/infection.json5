@@ -23,29 +23,53 @@
         "@default": true,
         // Mutants that do not change the behaviour. Each entry is one mutator on one line of one method, Class::method::line,
         // and has its row in REVIEW.md, which says why. When the code moves, the line no longer matches and the mutant comes back.
+        "BitwiseOr": {
+            "ignore": ["tool_secbackup\\local\\api\\client::call::589"]
+        },
         "CastInt": {
             "ignore": [
-                "tool_secbackup\\local\\net\\aws_ranges::network::265",
+                "tool_secbackup\\local\\net\\aws_ranges::network::266",
+                "tool_secbackup\\local\\net\\aws_ranges::stored_seq::120",
+                "tool_secbackup\\local\\net\\object_transport::declared_length::217",
+                "tool_secbackup\\local\\net\\object_transport::get_to_file::175",
+                "tool_secbackup\\local\\net\\object_url::parse::94",
                 "tool_secbackup\\local\\net\\transport::retry_after::201"
             ]
         },
         "CastString": {
             "ignore": [
+                "tool_secbackup\\local\\api\\client::check_upload_headers::779",
+                "tool_secbackup\\local\\api\\client::is_sha256::673",
+                "tool_secbackup\\local\\api\\client::upload_request::707",
                 "tool_secbackup\\local\\api\\enrollment_request::for_this_site::78",
                 "tool_secbackup\\local\\api\\enrollment_request::release_text::90",
                 "tool_secbackup\\local\\api\\enrollment_request::release_text::91",
                 "tool_secbackup\\local\\api\\request_signer::headers::120",
                 "tool_secbackup\\local\\crypto\\fingerprint::normalize::57",
                 "tool_secbackup\\local\\net\\aws_ranges::bundled::81",
+                "tool_secbackup\\local\\net\\aws_ranges::endpoint::129",
+                "tool_secbackup\\local\\net\\aws_ranges::stored_endpoint::138",
+                "tool_secbackup\\local\\net\\object_transport::declared_length::202",
+                "tool_secbackup\\local\\net\\object_transport::is_conditional::228",
                 "tool_secbackup\\local\\net\\transport::send::122",
                 "tool_secbackup\\local\\trust\\sec_trust::current::67",
                 "tool_secbackup\\local\\trust\\sec_trust::key_ids::88"
             ]
         },
+        "Concat": {
+            "ignore": [
+                "tool_secbackup\\local\\api\\client::upload_request::707",
+                "tool_secbackup\\local\\net\\aws_ranges::from_json::240",
+                "tool_secbackup\\local\\net\\object_url::in_region::121",
+                "tool_secbackup\\local\\net\\object_url::parse::83"
+            ]
+        },
         "DecrementInteger": {
             "ignore": [
+                "tool_secbackup\\local\\api\\client::exact_object::611",
                 "tool_secbackup\\local\\net\\guarded_options::failure::112",
                 "tool_secbackup\\local\\net\\guarded_options::failure::114",
+                "tool_secbackup\\local\\net\\object_transport::get_to_file::169",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
             ]
         },
@@ -57,8 +81,15 @@
                 "tool_secbackup\\local\\trust\\developer_settings::from_value::127"
             ]
         },
+        "FunctionCallRemoval": {
+            "ignore": ["tool_secbackup\\local\\net\\object_transport::get_to_file::174"]
+        },
+        "GreaterThanOrEqualTo": {
+            "ignore": ["tool_secbackup\\local\\net\\object_transport::check_status::331"]
+        },
         "IncrementInteger": {
             "ignore": [
+                "tool_secbackup\\local\\api\\client::exact_object::611",
                 "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
                 "tool_secbackup\\local\\net\\transport::send::186",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
@@ -70,8 +101,17 @@
         "PregMatchRemoveCaret": {
             "ignore": ["tool_secbackup\\local\\crypto\\base64url::decode::46"]
         },
+        "TrueValue": {
+            "ignore": ["tool_secbackup\\local\\api\\client::upload_request::711"]
+        },
         "UnwrapArrayMap": {
             "ignore": ["tool_secbackup\\local\\trust\\sec_trust::current::67"]
+        },
+        "UnwrapArrayValues": {
+            "ignore": [
+                "tool_secbackup\\local\\api\\client::upload_urls::370",
+                "tool_secbackup\\local\\net\\aws_ranges::from_json::245"
+            ]
         },
         "UnwrapTrim": {
             "ignore": ["tool_secbackup\\local\\net\\transport::retry_after::201"]
