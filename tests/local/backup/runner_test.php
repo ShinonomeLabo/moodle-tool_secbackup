@@ -1334,9 +1334,10 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(['db', 'files', 'dataroot', 'code'], array_keys($stats['bytes']));
         $this->assertGreaterThan(packer::FILE_LIMIT, $stats['bytes']['files']);
         $this->assertSame(strlen('lang') + strlen('key'), $stats['bytes']['dataroot']);
-        $this->assertFalse($stats['core_modified']);
+        // Without an official list nothing was compared: the whole program was sent, and the service and the status page warn
+        // as for a change (design 8.3).
+        $this->assertTrue($stats['core_modified']);
         $this->assertFalse($stats['external_storage']);
-        // Without an official list nothing was compared: the whole program was sent, and the status page warns as for a change.
         $this->assertSame('1', get_config('tool_secbackup', 'coremodified'));
         $this->assertSame('20250113', $stats['moodle']['build']);
     }
@@ -1386,11 +1387,19 @@ final class runner_test extends \advanced_testcase {
             $text .= $path . "\t" . $hash . "\n";
         }
         $this->fixture->service->publish_core_manifest('2024100703.10', '20250113', gzencode($text), ['count' => 3]);
+        $body = null;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$body) {
+            if (str_ends_with($request->getUri()->getPath(), '/complete')) {
+                $body = (string) $request->getBody();
+            }
+            return null;
+        };
         $run = run_record::create('manual', $this->fixture->time);
         $this->assertSame('done', ($this->finish($this->runner(), $run)));
         [$header] = $this->manifest($run->run_uuid());
         $this->assertSame(['official' => true, 'modified' => [], 'added' => [], 'deleted' => []], $header['core_diff']);
         $this->assertSame('0', get_config('tool_secbackup', 'coremodified'));
+        $this->assertFalse(json_decode($body, true)['stats']['core_modified']);
     }
 
     public function test_an_official_list_for_another_build_sends_the_whole_program(): void {

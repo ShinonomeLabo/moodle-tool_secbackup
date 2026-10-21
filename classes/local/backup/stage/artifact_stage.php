@@ -270,13 +270,15 @@ final class artifact_stage {
      * @return array
      */
     private static function stats(run_context $context, array $seams, array $manifest, array $index): array {
+        // The service sees only the statistics, so it is told the same as the status page: the program may be modified when
+        // it differs from the official files and when nothing could be compared (design 8.3).
         [$official, $changed] = self::core_state($context);
         $stats = stats::collect(
             $context->get('tablerows', []),
             $context->get('bytes'),
             $context->now() - $context->run->started_at(),
             self::moodle($seams),
-            $official && $changed > 0,
+            !$official || $changed > 0,
             (bool) ($seams['external'])()
         );
         $rest = strlen(stats::encode(['manifest' => $manifest, 'index' => $index, 'stats' => new \stdClass()]));

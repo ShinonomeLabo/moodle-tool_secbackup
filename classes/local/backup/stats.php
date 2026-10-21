@@ -53,7 +53,8 @@ final class stats {
      * @param array $bytes Sizes by db, files, dataroot and code (integers, 0 to 9007199254740991).
      * @param int $durationseconds How long the run took.
      * @param array $moodle ['release', 'version', 'build'], as core_diff::release_parts() gives them.
-     * @param bool $coremodified Whether the files of the Moodle program differ from the official ones.
+     * @param bool $coremodified Whether the files of the Moodle program differ from the official ones, or could not be compared
+     *     with them.
      * @param bool $externalstorage Whether the site keeps files outside the data folder.
      * @return array The statistics, as the complete report holds them.
      * @throws \coding_exception For sizes, a version or a build that the service cannot take.

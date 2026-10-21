@@ -19,6 +19,8 @@
   backup" (load per CPU core, free memory, database response, read speed of the file storage, free space for temporary
   files, upload speed) and waits while they are exceeded. A backup does not start while Moodle's automated course backup is
   working, when the clock is 5 minutes or more off, or with less than 256 MB of memory.
+- The report of a backup tells the service whether Moodle's code may have been modified: when it differs from the official
+  release, and also when no official list could be compared with it (the whole code was then sent).
 - The status page shows the running backup, the last completed backup and why the latest backup stopped, with advice. The
   site administrators get a message when backups are stopped three times in a row. Before a backup, a dialog warns when the
   files of the site are in an external storage (such as tool_objectfs) or when Moodle's code may have been modified.
