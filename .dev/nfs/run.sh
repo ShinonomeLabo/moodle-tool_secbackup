@@ -29,7 +29,7 @@ echo "== NFS server and mount (version $version)"
 if ! dpkg -s nfs-kernel-server > /dev/null 2>&1; then
     sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q install nfs-kernel-server > /dev/null
 fi
-sudo mkdir -p "$export" "$mount"
+sudo mkdir -p "$export" "$mount" /etc/exports.d
 sudo chown "$(id -u):$(id -g)" "$export"
 echo "$export 127.0.0.1(rw,sync,no_subtree_check)" | sudo tee /etc/exports.d/secbk.exports > /dev/null
 sudo systemctl restart nfs-server
