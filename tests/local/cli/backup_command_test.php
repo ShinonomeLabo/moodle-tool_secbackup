@@ -19,7 +19,6 @@ namespace tool_secbackup\local\cli;
 use tool_secbackup\local\backup\core_diff;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\runner;
-use tool_secbackup\local\crypto\dedup_key;
 use tool_secbackup\tests\run_fixture;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\cli\backup_command::class)]
@@ -234,8 +233,8 @@ final class backup_command_test extends \advanced_testcase {
             'X-Amz',
             'example.test',
             base64_encode($this->fixture->pair->public_key()),
-            base64_encode(dedup_key::load_or_create()),
-            bin2hex(dedup_key::load_or_create()),
+            base64_encode(run_fixture::names_key()),
+            bin2hex(run_fixture::names_key()),
             run_record::recent(1)[0]->run_uuid(),
         ];
         foreach ($secrets as $secret) {

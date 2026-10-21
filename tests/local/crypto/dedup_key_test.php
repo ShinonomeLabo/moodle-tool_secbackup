@@ -26,17 +26,47 @@ namespace tool_secbackup\local\crypto;
  * @covers     \tool_secbackup\local\crypto\dedup_key
  */
 final class dedup_key_test extends \advanced_testcase {
+    /** @var string The registration that the keys of the tests belong to. */
+    private const OWNER = '11111111-2222-4333-8444-555555555555 0123456789ABCDEF01234567';
+
+    public function test_the_owner_is_the_site_id_and_the_fingerprint_of_the_encryption_key(): void {
+        $key = str_repeat("\x01", 32);
+        $this->assertSame('11111111-2222-4333-8444-555555555555 ' . fingerprint::of($key),
+            dedup_key::owner('11111111-2222-4333-8444-555555555555', $key));
+    }
+
+    public function test_a_key_of_another_registration_is_replaced_and_belongs_to_the_new_one(): void {
+        $this->resetAfterTest();
+        $this->assertFalse(dedup_key::belongs_to(self::OWNER));
+        $key = dedup_key::load_or_create(self::OWNER);
+        $this->assertSame(self::OWNER, get_config('tool_secbackup', 'dedupowner'));
+        $this->assertTrue(dedup_key::belongs_to(self::OWNER));
+        $this->assertFalse(dedup_key::belongs_to('another owner'));
+        $other = dedup_key::load_or_create('another owner');
+        $this->assertNotSame($key, $other);
+        $this->assertTrue(dedup_key::belongs_to('another owner'));
+        $this->assertFalse(dedup_key::belongs_to(self::OWNER));
+        $this->assertSame($other, dedup_key::load_or_create('another owner'));
+        // A key that was stored without an owner belongs to none.
+        unset_config('dedupowner', 'tool_secbackup');
+        $this->assertFalse(dedup_key::belongs_to('another owner'));
+        $this->assertNotSame($other, dedup_key::load_or_create('another owner'));
+        // Without a key there is nothing to keep, whatever the owner says.
+        set_config('dedupsecret', '', 'tool_secbackup');
+        $this->assertFalse(dedup_key::belongs_to('another owner'));
+    }
+
     public function test_the_key_is_created_once_and_kept(): void {
         $this->resetAfterTest();
         $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
-        $key = dedup_key::load_or_create();
+        $key = dedup_key::load_or_create(self::OWNER);
         $this->assertSame(32, strlen($key));
-        $this->assertSame($key, dedup_key::load_or_create());
+        $this->assertSame($key, dedup_key::load_or_create(self::OWNER));
     }
 
     public function test_the_key_is_stored_wrapped_by_the_encryption_of_moodle(): void {
         $this->resetAfterTest();
-        $key = dedup_key::load_or_create();
+        $key = dedup_key::load_or_create(self::OWNER);
         $stored = get_config('tool_secbackup', 'dedupsecret');
         $this->assertIsString($stored);
         foreach ([$key, base64_encode($key), bin2hex($key)] as $form) {
@@ -49,21 +79,23 @@ final class dedup_key_test extends \advanced_testcase {
         $this->resetAfterTest();
         $key = random_bytes(32);
         set_config('dedupsecret', \core\encryption::encrypt(base64_encode($key)), 'tool_secbackup');
-        $this->assertSame($key, dedup_key::load_or_create());
+        set_config('dedupowner', self::OWNER, 'tool_secbackup');
+        $this->assertSame($key, dedup_key::load_or_create(self::OWNER));
     }
 
     public function test_forget_makes_the_next_call_create_a_new_key(): void {
         $this->resetAfterTest();
-        $first = dedup_key::load_or_create();
+        $first = dedup_key::load_or_create(self::OWNER);
         dedup_key::forget();
         $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
-        $this->assertNotSame($first, dedup_key::load_or_create());
+        $this->assertFalse(get_config('tool_secbackup', 'dedupowner'));
+        $this->assertNotSame($first, dedup_key::load_or_create(self::OWNER));
     }
 
     public function test_an_empty_stored_value_means_no_key(): void {
         $this->resetAfterTest();
         set_config('dedupsecret', '', 'tool_secbackup');
-        $key = dedup_key::load_or_create();
+        $key = dedup_key::load_or_create(self::OWNER);
         $this->assertSame(32, strlen($key));
         $this->assertSame(base64_encode($key), \core\encryption::decrypt(get_config('tool_secbackup', 'dedupsecret')));
     }
@@ -92,8 +124,9 @@ final class dedup_key_test extends \advanced_testcase {
         $this->resetAfterTest();
         $stored = \core\encryption::encrypt($inner);
         set_config('dedupsecret', $stored, 'tool_secbackup');
+        set_config('dedupowner', self::OWNER, 'tool_secbackup');
         try {
-            dedup_key::load_or_create();
+            dedup_key::load_or_create(self::OWNER);
             $this->fail('No exception');
         } catch (key_exception $e) {
             $this->assertSame('dedupkey_corrupt', $e->errorcode);
@@ -110,8 +143,9 @@ final class dedup_key_test extends \advanced_testcase {
         ];
         foreach ($cases as $cause => $stored) {
             set_config('dedupsecret', $stored, 'tool_secbackup');
+            set_config('dedupowner', self::OWNER, 'tool_secbackup');
             try {
-                dedup_key::load_or_create();
+                dedup_key::load_or_create(self::OWNER);
                 $this->fail('No exception');
             } catch (key_exception $e) {
                 $this->assertSame('dedupkey_corrupt', $e->errorcode);
@@ -135,7 +169,7 @@ final class dedup_key_test extends \advanced_testcase {
         $this->assertNotNull($cause, 'encrypt() has to fail for this test to mean anything');
         $previous = ini_set('zend.exception_ignore_args', '0');
         try {
-            dedup_key::load_or_create();
+            dedup_key::load_or_create(self::OWNER);
             $this->fail('No exception');
         } catch (key_exception $e) {
             $this->assertSame('dedupkey_savefailed', $e->errorcode);

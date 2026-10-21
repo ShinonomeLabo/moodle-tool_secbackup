@@ -18,6 +18,7 @@ namespace tool_secbackup\local\enrollment;
 
 use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
+use tool_secbackup\local\crypto\dedup_key;
 use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
@@ -36,14 +37,14 @@ final class state {
     /**
      * @var string[] Settings that hold the registration (the signing key is kept by signing_keys), in the order in which
      *     they are removed. They are removed one by one, outside a transaction, so a failure can stop the removal half-way.
-     *     The list starts with the key for the names of the chunks (dedup_key), which belongs to the registration: a new
-     *     registration gets a new key. It ends with the connection URL, the site ID and the site name, in that order. The
+     *     The list starts with the key for the names of the chunks (dedup_key) and the registration that it belongs to: a
+     *     registration again of the same site with the same encryption key keeps them, any other one drops them. It ends with the connection URL, the site ID and the site name, in that order. The
      *     site ID is what makes the site read as registered, and the removal form asks for the site name: while the site
      *     ID is there, the name is there too, so that the removal can be confirmed and run again. A registered site keeps
      *     its connection URL as long as possible. Once the site ID is gone, the site reads as not registered, and a later
      *     registration removes every stored value first.
      */
-    private const NAMES = ['dedupsecret', 'platformname', 'encryptionkey', 'enrolledat', 'clockskew',
+    private const NAMES = ['dedupsecret', 'dedupowner', 'platformname', 'encryptionkey', 'enrolledat', 'clockskew',
         'backupsettings', 'backupsettingsseq', 'backupsettingssite', 'awsranges', 'awsrangesseq', 'awsrangesendpoint',
         'lastpoll', 'lastpollstatus', 'lastpollerror', 'lastpollerrora', 'endpoint', 'siteid', 'sitename'];
 
@@ -249,7 +250,9 @@ final class state {
         global $DB;
         $transaction = $DB->start_delegated_transaction();
         try {
-            self::forget_values();
+            // The chunks that the storage holds keep their names for the same site with the same encryption key.
+            $owner = dedup_key::owner($result->siteid, public_key_format::parse($encryptionkey));
+            self::forget_values(dedup_key::belongs_to($owner) ? ['dedupsecret', 'dedupowner'] : []);
             $values = [
                 'siteid' => $result->siteid,
                 'sitename' => $result->sitename,
@@ -316,9 +319,11 @@ final class state {
 
     /**
      * Removes the registration settings, in the order of the list: the site name goes after the site ID.
+     *
+     * @param string[] $keep Settings that are not removed.
      */
-    private static function forget_values(): void {
-        foreach (self::NAMES as $name) {
+    private static function forget_values(array $keep = []): void {
+        foreach (array_diff(self::NAMES, $keep) as $name) {
             unset_config($name, 'tool_secbackup');
         }
     }

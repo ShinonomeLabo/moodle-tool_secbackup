@@ -16,6 +16,9 @@
   end of its window and goes on in the next one when that one starts early enough for it to finish within 24 hours;
   otherwise (one window a day) it is stopped at the end of its window, and one that two windows did not finish is stopped.
   A failed step is tried again, and an upload three times, before the backup is stopped.
+- Registering the site again with the same site and the same encryption key keeps the key for the names of the chunks, so
+  the next backup does not send again what the storage holds; a registration of another site or with another key gets a
+  new one, and so does the removal of the registration.
 - Before a start and while a backup runs, the plugin checks the server against the limits of the new page "Limits of the
   backup" (load per CPU core, free memory, database response, read speed of the file storage, free space for temporary
   files, upload speed) and waits while they are exceeded. A backup does not start while Moodle's automated course backup is

@@ -19,6 +19,7 @@ namespace tool_secbackup\local\enrollment;
 use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\api\status_result;
 use tool_secbackup\local\crypto\dedup_key;
+use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\signing_keys;
 
@@ -43,20 +44,28 @@ final class state_test extends \advanced_testcase {
     /**
      * Saves a registration.
      *
+     * @param string $siteid The site ID.
+     * @param string $key The encryption public key, as the platform shows it.
      * @return signing_keypair The saved key pair.
      */
-    private static function save(): signing_keypair {
+    private static function save(
+        string $siteid = '11111111-2222-4333-8444-555555555555',
+        string $key = 'secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE='
+    ): signing_keypair {
         $pair = signing_keypair::generate();
-        $result = new enroll_result(
-            '11111111-2222-4333-8444-555555555555',
-            'Example site',
-            'Example Platform',
-            self::API,
-            1760000000,
-            -40
-        );
-        state::save_enrollment($result, 'secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=', $pair, 1760000100);
+        $result = new enroll_result($siteid, 'Example site', 'Example Platform', self::API, 1760000000, -40);
+        state::save_enrollment($result, $key, $pair, 1760000100);
         return $pair;
+    }
+
+    /**
+     * The key for the names of the chunks of the registration that is stored.
+     *
+     * @return string
+     */
+    private static function names_key(): string {
+        $state = state::load();
+        return dedup_key::load_or_create(dedup_key::owner($state->site_id(), public_key_format::parse($state->encryption_key())));
     }
 
     public function test_nothing_saved_yet(): void {
@@ -114,9 +123,10 @@ final class state_test extends \advanced_testcase {
 
     public function test_clear(): void {
         self::save();
-        dedup_key::load_or_create();
+        self::names_key();
         state::clear();
         $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
+        $this->assertFalse(get_config('tool_secbackup', 'dedupowner'));
         $this->assertFalse(state::load()->is_enrolled());
         $state = state::load();
         $this->assertSame('', $state->endpoint_url());
@@ -129,12 +139,26 @@ final class state_test extends \advanced_testcase {
         $this->assertNull(signing_keys::load());
     }
 
-    public function test_a_new_registration_drops_the_key_for_names(): void {
+    public function test_a_registration_again_of_the_same_site_with_the_same_key_keeps_the_key_for_names(): void {
         self::save();
-        $key = dedup_key::load_or_create();
+        $key = self::names_key();
         self::save();
+        // The chunks that the storage holds keep their names: the next backup does not send them again.
+        $this->assertSame($key, self::names_key());
+    }
+
+    public function test_a_registration_of_another_site_or_with_another_key_drops_the_key_for_names(): void {
+        self::save();
+        $key = self::names_key();
+        self::save('99999999-2222-4333-8444-555555555555');
         $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
-        $this->assertNotSame($key, dedup_key::load_or_create());
+        $this->assertFalse(get_config('tool_secbackup', 'dedupowner'));
+        $other = self::names_key();
+        $this->assertNotSame($key, $other);
+        // A new encryption key must not keep reusing the chunks that were sealed for the old one.
+        self::save('99999999-2222-4333-8444-555555555555', 'secbk1:AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=');
+        $this->assertFalse(get_config('tool_secbackup', 'dedupsecret'));
+        $this->assertNotSame($other, self::names_key());
     }
 
     public function test_numbers_that_are_not_numbers_read_as_unknown(): void {

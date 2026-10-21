@@ -520,7 +520,7 @@ final class run_context {
      * @return string
      */
     public function dedup_key(): string {
-        $this->dedupkey ??= dedup_key::load_or_create();
+        $this->dedupkey ??= dedup_key::load_or_create(dedup_key::owner($this->siteid, $this->sitepublickey));
         return $this->dedupkey;
     }
 

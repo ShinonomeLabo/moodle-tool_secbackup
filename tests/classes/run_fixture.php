@@ -23,6 +23,7 @@ use tool_secbackup\local\api\enroll_result;
 use tool_secbackup\local\backup\core_diff;
 use tool_secbackup\local\backup\limits;
 use tool_secbackup\local\backup\settings;
+use tool_secbackup\local\crypto\dedup_key;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\diagnostics\system_files;
@@ -221,6 +222,16 @@ final class run_fixture {
             'corediff' => static fn(): core_diff => new core_diff($core, []),
             'external' => static fn(): bool => false,
         ];
+    }
+
+    /**
+     * The key for the names of the chunks of the registered site, as a run uses it (made when there is none).
+     *
+     * @return string
+     */
+    public static function names_key(): string {
+        $state = state::load();
+        return dedup_key::load_or_create(dedup_key::owner($state->site_id(), public_key_format::parse($state->encryption_key())));
     }
 
     /**

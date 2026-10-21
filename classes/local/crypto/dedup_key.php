@@ -23,6 +23,10 @@ namespace tool_secbackup\local\crypto;
  * A restore does not need it: a lost key only gives the chunks new names, so the next backup sends them again. It is made
  * at the start of the first backup. Only one backup runs at a time (the lock of the run), so two keys are not made at once.
  *
+ * A key belongs to a registration: the site ID and the fingerprint of the encryption public key (owner()), stored with it.
+ * A registration again of the same site with the same encryption key keeps the key, so that the chunks that the storage holds
+ * keep their names; any other registration gets a new one (chunks sealed for an old encryption key must not keep being used).
+ *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -31,18 +35,44 @@ final class dedup_key {
     /** @var string Config name of the wrapped key. */
     private const NAME = 'dedupsecret';
 
+    /** @var string Config name of the registration that the key belongs to. */
+    private const OWNER = 'dedupowner';
+
     /**
-     * The key, made and saved when there is none.
+     * The registration that a key belongs to.
      *
+     * @param string $siteid The site ID at the service.
+     * @param string $rawpublickey The encryption public key of the site (32 bytes).
+     * @return string The site ID and the fingerprint of the key.
+     */
+    public static function owner(string $siteid, string $rawpublickey): string {
+        return $siteid . ' ' . fingerprint::of($rawpublickey);
+    }
+
+    /**
+     * Whether a key is stored and belongs to a registration.
+     *
+     * @param string $owner The registration, from owner().
+     * @return bool
+     */
+    public static function belongs_to(string $owner): bool {
+        $stored = get_config('tool_secbackup', self::NAME);
+        return is_string($stored) && $stored !== '' && get_config('tool_secbackup', self::OWNER) === $owner;
+    }
+
+    /**
+     * The key of a registration, made and saved when there is none for it (a key of another registration is replaced).
+     *
+     * @param string $owner The registration, from owner().
      * @return string 32 bytes.
      * @throws key_exception With dedupkey_corrupt when the stored value cannot be decrypted (the debug information is the
      *     error code of Moodle) or is not a key; it is not replaced. With dedupkey_savefailed when a new key cannot be
      *     encrypted; the failure is not chained, because the arguments in its trace include the key, and the debug
      *     information is only its class name.
      */
-    public static function load_or_create(): string {
-        $stored = get_config('tool_secbackup', self::NAME);
-        if (is_string($stored) && $stored !== '') {
+    public static function load_or_create(string $owner): string {
+        if (self::belongs_to($owner)) {
+            $stored = get_config('tool_secbackup', self::NAME);
             try {
                 $key = base64_decode(\core\encryption::decrypt($stored), true);
             } catch (\moodle_exception $e) {
@@ -60,13 +90,15 @@ final class dedup_key {
             throw new key_exception('dedupkey_savefailed', null, $e::class);
         }
         set_config(self::NAME, $wrapped, 'tool_secbackup');
+        set_config(self::OWNER, $owner, 'tool_secbackup');
         return $key;
     }
 
     /**
-     * Removes the saved key.
+     * Removes the saved key and its registration.
      */
     public static function forget(): void {
         unset_config(self::NAME, 'tool_secbackup');
+        unset_config(self::OWNER, 'tool_secbackup');
     }
 }

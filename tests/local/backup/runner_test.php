@@ -24,7 +24,6 @@ use tool_secbackup\local\crypto\chunk_info;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
-use tool_secbackup\local\crypto\dedup_key;
 use tool_secbackup\local\crypto\key_exception;
 use tool_secbackup\local\diagnostics\system_files;
 use tool_secbackup\tests\fake_service;
@@ -894,7 +893,7 @@ final class runner_test extends \advanced_testcase {
         $path = $CFG->dataroot . '/filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash;
         $run = run_record::create('manual', $this->fixture->time);
         $folder = $this->tempdir . '/run-' . $run->id();
-        $first = chunk_name::file(dedup_key::load_or_create(), $hash, 0);
+        $first = chunk_name::file(run_fixture::names_key(), $hash, 0);
         $runner = $this->runner([
             'limits' => $this->limits(0),
             'diskspace' => fn(string $folder): array => [0, 1000],
@@ -911,7 +910,7 @@ final class runner_test extends \advanced_testcase {
         ]);
         $this->assertSame('aborted', $this->finish($runner, $run));
         $this->assertSame('tamper_detected', $run->abort_code());
-        $key = dedup_key::load_or_create();
+        $key = run_fixture::names_key();
         $this->assertNull($this->stored('objects/' . chunk_name::file($key, $hash, 1)));
         $this->assertNull($this->stored('objects/' . chunk_name::file($key, $hash, 2)));
     }
@@ -1220,7 +1219,7 @@ final class runner_test extends \advanced_testcase {
         $this->fixture->advance(86400);
         $second = run_record::create('manual', $this->fixture->time);
         $this->assertSame('done', ($this->finish($this->runner(), $second)));
-        $piece = chunk_name::file(dedup_key::load_or_create(), $this->hashes['big'], 0);
+        $piece = chunk_name::file(run_fixture::names_key(), $this->hashes['big'], 0);
         $after = $this->fixture->puts();
         $this->assertSame(1, $after['sites/' . self::SITE . '/objects/' . $piece]);
         // The packs of the small files are the same chunks too.
@@ -2119,7 +2118,7 @@ final class runner_test extends \advanced_testcase {
             } catch (\Throwable $e) {
                 $this->assertSame([], \tool_secbackup\tests\trace_strings::objects_in_plugin_frames($e, [run_record::class]));
                 $strings = implode("\n", \tool_secbackup\tests\trace_strings::of($e));
-                $this->assertStringNotContainsString(dedup_key::load_or_create(), $strings);
+                $this->assertStringNotContainsString(run_fixture::names_key(), $strings);
                 $this->assertStringNotContainsString($this->fixture->pair->export_secret(), $strings);
             }
         } finally {
@@ -2368,7 +2367,7 @@ final class runner_test extends \advanced_testcase {
         $this->assertContains($hash, $header['missing_files']);
         $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash));
         // The first piece was sent: it is stored and in the index, with no entry.
-        $piece = chunk_name::file(dedup_key::load_or_create(), $hash, 0);
+        $piece = chunk_name::file(run_fixture::names_key(), $hash, 0);
         [, $sizes] = $this->index($run->run_uuid());
         $this->assertArrayHasKey($piece, $sizes);
         $this->assertSame($this->stored_chunks(), $sizes);
@@ -2459,7 +2458,7 @@ final class runner_test extends \advanced_testcase {
         $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
         $first = run_record::create('manual', $this->fixture->time);
         $this->assertSame('done', $this->finish($this->runner(), $first));
-        $key = dedup_key::load_or_create();
+        $key = run_fixture::names_key();
         $kept = chunk_name::file($key, $hash, 0);
         $lost = chunk_name::file($key, $hash, 1);
         // The storage has lost the second piece: the list has the first only.
