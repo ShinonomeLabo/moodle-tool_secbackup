@@ -48,6 +48,12 @@ final class tree_stage {
     /** @var int Files that are asked of a walker at a time. */
     private const PAGE = 200;
 
+    /**
+     * @var string[] Folders of a version control system, at any depth of an added plugin, that are not code to send: the
+     *     history of a plugin that is deployed as a clone. node_modules is sent: a plugin may need it to run.
+     */
+    private const VCS_FOLDERS = ['.git', '.hg', '.svn'];
+
     /** @var run_context The step. */
     private run_context $context;
 
@@ -57,7 +63,10 @@ final class tree_stage {
     /** @var series_writer The writer of the step. */
     private series_writer $writer;
 
-    /** @var array[] The sources: name, folder, what is left out, and how the files are listed (walk, diff or full). */
+    /**
+     * @var array[] The sources: name, folder, what is left out, and how the files are listed: walk (the data root), plugin (a
+     *     walk without the folders of a version control system) or core.
+     */
     private array $sources;
 
     /** @var array The point to go on from: source (index), position (a path, or an offset in the journal core_send). */
@@ -126,7 +135,7 @@ final class tree_stage {
     public static function code(run_context $context, array $seams): string {
         $sources = [];
         foreach (($seams['coderoots'])() as $component => $folder) {
-            $sources[] = ['name' => $component, 'folder' => $folder, 'excluded' => [], 'kind' => 'walk'];
+            $sources[] = ['name' => $component, 'folder' => $folder, 'excluded' => [], 'kind' => 'plugin'];
         }
         $sources[] = ['name' => 'core', 'folder' => null, 'excluded' => [], 'kind' => 'core'];
         return (new self($context, $seams, 'code', $sources))->go('manifest');
@@ -206,8 +215,25 @@ final class tree_stage {
             yield from $this->walk($core['diff']->walker(), 'core', $base, $position);
             return;
         }
-        $walker = new tree_walker($source['folder'], $source['excluded']);
+        $walker = new tree_walker($source['folder'], $source['excluded'], $source['kind'] === 'plugin' ? self::lister() : null);
         yield from $this->walk($walker, $source['name'], $source['folder'], $position);
+    }
+
+    /**
+     * Lists a folder of an added plugin without the folders of a version control system (a file or a link with such a name is
+     * listed).
+     *
+     * @return \Closure Takes the path of a folder, gives its names or false, as scandir() does.
+     */
+    private static function lister(): \Closure {
+        return static function (string $dir): array|false {
+            $names = error_silencer::run(static fn() => scandir($dir), $warning);
+            if ($names === false) {
+                return false;
+            }
+            return array_values(array_filter($names, static fn(string $name): bool => !in_array($name, self::VCS_FOLDERS, true)
+                || is_link($dir . '/' . $name) || !is_dir($dir . '/' . $name)));
+        };
     }
 
     /**
@@ -452,7 +478,8 @@ final class tree_stage {
     }
 
     /**
-     * Writes the differences with the official list to the journals.
+     * Writes the differences with the official list to the journals: the deleted files without those under a path that could
+     * not be read or under a symbolic link.
      *
      * @param core_diff $diff The comparison.
      * @param array $result What compare() found.
@@ -461,6 +488,11 @@ final class tree_stage {
         $unlisted = $diff->unlisted();
         foreach ($unlisted as $path) {
             $this->context->journal('unreadable')->append('core:' . $path);
+        }
+        // A link is not followed: the official files under it are not on this site as files, but they are not deleted.
+        $links = $diff->skipped_links();
+        foreach ($links as $path) {
+            $this->context->journal('skipped_links')->append('core:' . $path);
         }
         foreach (['modified', 'added'] as $kind) {
             foreach ($result[$kind] as $path) {
@@ -473,7 +505,7 @@ final class tree_stage {
             $this->context->journal('core_send')->append($path);
         }
         foreach ($result['deleted'] as $path) {
-            if (!self::under_any($path, $unlisted)) {
+            if (!self::under_any($path, array_merge($unlisted, $links))) {
                 $this->context->journal('core_deleted')->append($path);
             }
         }

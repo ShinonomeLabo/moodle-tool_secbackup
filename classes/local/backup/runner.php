@@ -206,11 +206,10 @@ final class runner {
         // command line) may have moved it on since the caller read it.
         $run->reload();
         $status = $run->status();
-        if ($status === 'completed') {
-            return 'done';
-        }
         if ($status !== 'active' && $status !== 'paused') {
-            return 'aborted';
+            // A step that stopped between the end of the run and the removal of its folder left it.
+            $this->temp->clear($run->id());
+            return $status === 'completed' ? 'done' : 'aborted';
         }
         // First of all, also for a step that only finds that the run waits: Moodle's cleanup of its temporary folder must not
         // take the files of the run.
@@ -234,6 +233,10 @@ final class runner {
             }
         }
         $result = $this->attempt($run, $budgetseconds, $status, $now);
+        if ($run->status() === 'refused') {
+            // The service did not start the run: nothing of it is kept.
+            $this->temp->clear($run->id());
+        }
         if ($result === 'continue' && $this->expired($run, $this->now())) {
             return $this->failed($run, null, 'expired', '');
         }

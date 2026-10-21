@@ -127,6 +127,26 @@ final class temp_area_test extends \advanced_testcase {
         $this->assertDirectoryDoesNotExist($base . '/tool/run-43');
     }
 
+    public function test_clear_all_removes_the_folders_of_the_runs_and_the_present_records_only(): void {
+        $base = make_request_directory();
+        $area = new temp_area(self::limits($base . '/tool'));
+        foreach ([1, 2] as $id) {
+            file_put_contents($area->for_run($id) . '/chunk', 'data');
+        }
+        file_put_contents($base . '/tool/present-0011223344556677.records', 'records');
+        file_put_contents($base . '/tool/notes.txt', 'of the administrator');
+        mkdir($base . '/tool/run-x');
+        $this->without_warnings(static fn() => $area->clear_all());
+        $this->assertDirectoryDoesNotExist($base . '/tool/run-1');
+        $this->assertDirectoryDoesNotExist($base . '/tool/run-2');
+        $this->assertFileDoesNotExist($base . '/tool/present-0011223344556677.records');
+        $this->assertFileExists($base . '/tool/notes.txt');
+        $this->assertDirectoryExists($base . '/tool/run-x');
+        // A folder that is not there is nothing to clear.
+        $this->without_warnings(static fn() => (new temp_area(self::limits($base . '/none')))->clear_all());
+        $this->assertDirectoryDoesNotExist($base . '/none');
+    }
+
     public function test_for_run_makes_the_folder_of_the_run_inside_the_temporary_folder(): void {
         $base = make_request_directory();
         $area = new temp_area(self::limits($base . '/nested/tool'));

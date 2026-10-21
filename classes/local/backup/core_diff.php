@@ -168,6 +168,15 @@ final class core_diff {
     }
 
     /**
+     * The symbolic links that the last local_hashes() found and did not follow.
+     *
+     * @return string[] Paths.
+     */
+    public function skipped_links(): array {
+        return $this->walker === null ? [] : $this->walker->skipped();
+    }
+
+    /**
      * Compares the list of the official files with the files of this site.
      *
      * @param string $officialgzip The list of the official files, compressed.

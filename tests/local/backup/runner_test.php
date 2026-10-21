@@ -1348,6 +1348,24 @@ final class runner_test extends \advanced_testcase {
         $this->assertNull(run_record::active());
     }
 
+    public function test_a_run_that_the_service_refuses_leaves_no_folder(): void {
+        $this->fixture->service->state['contractinactive'] = true;
+        $run = run_record::create('schedule', $this->fixture->time);
+        $this->assertSame('aborted', $this->runner()->step($run, 600));
+        $this->assertSame('refused', $run->status());
+        $this->assertDirectoryDoesNotExist($this->tempdir . '/run-' . $run->id());
+    }
+
+    public function test_a_step_that_finds_its_run_ended_removes_the_folder_that_was_left(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        // A step that stopped between the end of the run and the removal of its folder left it.
+        mkdir($this->tempdir . '/run-' . $run->id() . '/journal', 0777, true);
+        file_put_contents($this->tempdir . '/run-' . $run->id() . '/journal/files.jsonl', 'left');
+        $this->assertSame('done', $this->runner()->step($run, 600));
+        $this->assertDirectoryDoesNotExist($this->tempdir . '/run-' . $run->id());
+    }
+
     public function test_the_number_of_runs_of_the_plan_refuses_the_run(): void {
         $this->fixture->service->state['mode'] = 'run_limit_reached';
         $run = run_record::create('manual', $this->fixture->time);
@@ -1556,6 +1574,42 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('1', get_config('tool_secbackup', 'coremodified'));
         $core = array_values(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'core'));
         $this->assertEqualsCanonicalizing(['index.php', 'lib/new.php'], array_column($core, 'path'));
+    }
+
+    public function test_the_folders_of_a_version_control_system_of_an_added_plugin_are_not_sent(): void {
+        foreach (['.git/objects/ab', '.hg/store', '.svn/pristine', 'node_modules/lib', 'classes/.git'] as $folder) {
+            mkdir($this->plugin . '/' . $folder, 0777, true);
+            file_put_contents($this->plugin . '/' . $folder . '/file', 'content of ' . $folder);
+        }
+        // A file named like such a folder (the .git of a worktree) is code like any other.
+        file_put_contents($this->plugin . '/.gitmodules', 'modules');
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [, $entries] = $this->manifest($run->run_uuid());
+        $paths = array_column(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'local_example'), 'path');
+        $this->assertEqualsCanonicalizing(['.gitmodules', 'lib.php', 'node_modules/lib/file', 'version.php'], $paths);
+    }
+
+    public function test_official_files_under_a_symbolic_link_are_not_listed_as_deleted(): void {
+        rename($this->core . '/lib', $this->core . '/lib-real');
+        symlink($this->core . '/lib-real', $this->core . '/lib');
+        $official = [];
+        foreach (['index.php', 'version.php'] as $path) {
+            $official[$path] = hash_file('sha256', $this->core . '/' . $path);
+        }
+        $official['lib/a.php'] = hash('sha256', 'core a');
+        ksort($official, SORT_STRING);
+        $text = json_encode(['v' => 1, 'version' => '2024100703.10', 'build' => '20250113',
+            'release' => '4.5.3+ (Build: 20250113)', 'count' => count($official)], JSON_UNESCAPED_SLASHES) . "\n";
+        foreach ($official as $path => $hash) {
+            $text .= $path . "\t" . $hash . "\n";
+        }
+        $this->fixture->service->publish_core_manifest('2024100703.10', '20250113', gzencode($text), ['count' => 3]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertSame([], $header['core_diff']['deleted']);
+        $this->assertContains('core:lib', $header['skipped_links']);
     }
 
     public function test_a_flag_of_a_change_is_taken_back_by_a_run_that_finds_the_program_as_it_is_officially(): void {

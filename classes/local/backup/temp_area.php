@@ -211,6 +211,26 @@ final class temp_area {
     }
 
     /**
+     * Removes the folders of every run and the records of the present lists from the temporary folder, and nothing else of it
+     * (a folder that an administrator named may hold other files). The uninstallation calls it.
+     */
+    public function clear_all(): void {
+        foreach (glob($this->limits->tempdir . '/run-*', GLOB_NOSORT) ?: [] as $path) {
+            if (preg_match('~/run-([1-9]\d{0,17})\z~', $path, $m) === 1) {
+                $this->clear((int) $m[1]);
+            }
+        }
+        set_error_handler(static fn(int $errno, string $errstr): bool => true);
+        try {
+            foreach (glob($this->limits->tempdir . '/present-*.records', GLOB_NOSORT) ?: [] as $path) {
+                unlink($path);
+            }
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    /**
      * Removes a file, a link or an empty folder.
      *
      * @param \SplFileInfo $item The item.
