@@ -73,6 +73,29 @@ if ($method === 'POST' && str_starts_with($path, '/_fake/')) {
             $fake->set_instruction('settings', $given['seq'], (array) ($given['body'] ?? []));
         }
         $state = $fake->state;
+    } else if ($action === 'encryptionkey') {
+        // The site's encryption public key that the enrolment accepts, as the platform shows it (secbk1:...).
+        $key = trim((string) file_get_contents('php://input'));
+        if (preg_match('~^secbk1:[A-Za-z0-9+/]{43}=\z~', $key) !== 1) {
+            http_response_code(400);
+            return;
+        }
+        $state['encryptionkey'] = $key;
+    } else if ($action === 'core-manifest') {
+        // The body is {"version", "build", "release", "count", "content": the list, compressed, in base64}.
+        $given = json_decode((string) file_get_contents('php://input'), true);
+        $gzip = is_array($given) ? base64_decode((string) ($given['content'] ?? ''), true) : false;
+        if (
+            !is_string($gzip) || $gzip === '' || !is_string($given['version'] ?? null) || !is_string($given['build'] ?? null)
+            || !is_string($given['release'] ?? null) || !is_int($given['count'] ?? null)
+        ) {
+            http_response_code(400);
+            return;
+        }
+        $fake = new fake_service($apibase, $state);
+        $fake->publish_core_manifest($given['version'], $given['build'], $gzip,
+            ['release' => $given['release'], 'count' => $given['count']]);
+        $state = $fake->state;
     } else if ($action === 'instructions/clear') {
         $fake = new fake_service($apibase, $state);
         $fake->clear_instructions();

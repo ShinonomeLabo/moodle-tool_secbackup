@@ -12,7 +12,9 @@ Public key of the site: secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 The site must trust the fake service's key; .dev/env/devconfig.sh adds the settings to config.php.
 
 Control (POST, answers 204): /_fake/reset, /_fake/newcode, /_fake/mode/<mode>, /_fake/status/<status>,
-/_fake/clock/<seconds from now>. GET /_fake/state shows the state.
+/_fake/clock/<seconds from now>, /_fake/encryptionkey (the body is the public key that the enrolment accepts, `secbk1:...`),
+/_fake/core-manifest (the body is `{"version", "build", "release", "count", "content"}`, the list of official files compressed
+and in base64). GET /_fake/state shows the state.
 Modes: unavailable, rate_limited, ip_not_allowed, unexpected, untrusted_key, bad_signature, site_removed, bad_status.
 
 ## Where it runs
