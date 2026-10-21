@@ -462,6 +462,15 @@ final class manifest_builder_test extends \advanced_testcase {
         $this->assert_write_failure(fn() => new manifest_builder(faulty_stream::url($folder)), 'entries_truncate');
     }
 
+    public function test_lines_after_the_committed_figures_that_cannot_be_dropped_are_a_failure(): void {
+        faulty_stream::register();
+        $folder = make_request_directory();
+        file_put_contents($folder . '/entries.jsonl', "{\"n\":1}\n{\"n\":2}\n");
+        faulty_stream::fail('truncate', '/entries.jsonl');
+        $this->assert_write_failure(fn() => new manifest_builder(faulty_stream::url($folder), 1, 8), 'entries_truncate');
+        $this->assertSame("{\"n\":1}\n{\"n\":2}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
     public function test_every_line_can_be_dropped_while_the_file_is_open(): void {
         [$builder, $folder] = $this->builder();
         $builder->append(['n' => 1]);

@@ -2121,6 +2121,22 @@ final class runner_test extends \advanced_testcase {
         };
     }
 
+    public function test_a_run_whose_step_fails_inside_its_next_window_tries_again_at_once(): void {
+        self::twice_a_day();
+        $this->refuse_the_report();
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner();
+        for ($i = 0; $i < 50 && ($run->stage() !== 'complete' || $run->next_attempt() === null); $i++) {
+            $runner->step($run, 600);
+        }
+        // The window of 02:00 ended long ago: the failure is inside the window of 14:00, which goes on at once.
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 14:40'));
+        $this->assertSame('continue', $runner->step($run, 600));
+        $this->assertSame(1, $run->window_misses());
+        $this->assertSame(run_fixture::tokyo('2026-10-19 14:40') + runner::RETRY_AFTER, $run->next_attempt());
+        $this->assertSame(run_fixture::tokyo('2026-10-19 17:00'), $run->progress()['run']['window_end']);
+    }
+
     public function test_a_run_whose_report_keeps_failing_expires_and_is_not_told_back(): void {
         $this->refuse_the_report();
         $run = run_record::create('manual', $this->fixture->time);
