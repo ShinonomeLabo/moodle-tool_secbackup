@@ -30,14 +30,14 @@
                 "tool_secbackup\\local\\net\\object_transport::declared_length::217",
                 "tool_secbackup\\local\\net\\object_transport::get_to_file::175",
                 "tool_secbackup\\local\\net\\object_url::parse::94",
-                "tool_secbackup\\local\\net\\transport::retry_after::201"
+                "tool_secbackup\\local\\net\\transport::retry_after::205"
             ]
         },
         "CastString": {
             "ignore": [
-                "tool_secbackup\\local\\api\\client::check_upload_headers::779",
-                "tool_secbackup\\local\\api\\client::is_sha256::673",
-                "tool_secbackup\\local\\api\\client::upload_request::707",
+                "tool_secbackup\\local\\api\\client::check_upload_headers::796",
+                "tool_secbackup\\local\\api\\client::is_sha256::690",
+                "tool_secbackup\\local\\api\\client::upload_request::724",
                 "tool_secbackup\\local\\api\\enrollment_request::for_this_site::78",
                 "tool_secbackup\\local\\api\\enrollment_request::release_text::90",
                 "tool_secbackup\\local\\api\\enrollment_request::release_text::91",
@@ -48,16 +48,16 @@
                 "tool_secbackup\\local\\net\\aws_ranges::stored_endpoint::138",
                 "tool_secbackup\\local\\net\\object_transport::declared_length::202",
                 "tool_secbackup\\local\\net\\object_transport::is_conditional::228",
-                "tool_secbackup\\local\\net\\transport::send::122",
+                "tool_secbackup\\local\\net\\transport::send::126",
                 "tool_secbackup\\local\\trust\\sec_trust::current::67",
                 "tool_secbackup\\local\\trust\\sec_trust::key_ids::88"
             ]
         },
         "Concat": {
             "ignore": [
-                "tool_secbackup\\local\\api\\client::upload_request::707",
+                "tool_secbackup\\local\\api\\client::upload_request::724",
                 "tool_secbackup\\local\\net\\aws_ranges::from_json::240",
-                "tool_secbackup\\local\\net\\object_url::in_region::121",
+                "tool_secbackup\\local\\net\\object_url::in_region::130",
                 "tool_secbackup\\local\\net\\object_url::parse::83"
             ]
         },
@@ -72,7 +72,7 @@
         "FalseValue": {
             "ignore": [
                 "tool_secbackup\\local\\crypto\\signing_keys::load::70",
-                "tool_secbackup\\local\\net\\doh_resolver::lookup::99",
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::100",
                 "tool_secbackup\\local\\trust\\developer_settings::from_value::124",
                 "tool_secbackup\\local\\trust\\developer_settings::from_value::127"
             ]
@@ -82,8 +82,8 @@
         },
         "IncrementInteger": {
             "ignore": [
-                "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
-                "tool_secbackup\\local\\net\\transport::send::186",
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::134",
+                "tool_secbackup\\local\\net\\transport::send::190",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
             ]
         },
@@ -94,7 +94,7 @@
             "ignore": ["tool_secbackup\\local\\crypto\\base64url::decode::46"]
         },
         "TrueValue": {
-            "ignore": ["tool_secbackup\\local\\api\\client::upload_request::711"]
+            "ignore": ["tool_secbackup\\local\\api\\client::upload_request::728"]
         },
         "UnwrapArrayMap": {
             "ignore": ["tool_secbackup\\local\\trust\\sec_trust::current::67"]
@@ -106,7 +106,7 @@
             ]
         },
         "UnwrapTrim": {
-            "ignore": ["tool_secbackup\\local\\net\\transport::retry_after::201"]
+            "ignore": ["tool_secbackup\\local\\net\\transport::retry_after::205"]
         }
     },
     "logs": {
