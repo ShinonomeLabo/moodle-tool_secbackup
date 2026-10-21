@@ -257,6 +257,7 @@ final class request_signer_test extends \basic_testcase {
         $this->assertArrayHasKey('X-SecBackup-Signature', $headers);
         $this->assertSame(65536, request_signer::MAX_BODY);
         $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage('A request body has at most 65536 bytes.');
         request_signer::headers(
             self::pair(),
             'POST',

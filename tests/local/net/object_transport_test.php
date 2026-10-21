@@ -184,6 +184,15 @@ final class object_transport_test extends \advanced_testcase {
         $this->assertSame('tool_secbackup', $request->getHeaderLine('User-Agent'));
     }
 
+    public function test_the_file_is_closed_when_the_put_returns(): void {
+        $mock = new MockHandler([self::reading()]);
+        $this->assertTrue(self::transport($mock)->put_file(self::url(), self::headers('data'), $this->file('data'), 0));
+        // The request that the mock kept holds the stream of the file: closed, it has no size and cannot be read.
+        $body = $mock->getLastRequest()->getBody();
+        $this->assertFalse($body->isReadable());
+        $this->assertNull($body->getSize());
+    }
+
     public function test_header_names_are_kept_in_the_case_that_was_given(): void {
         $mock = new MockHandler([self::reading()]);
         self::transport($mock)->put_file(
@@ -586,6 +595,18 @@ final class object_transport_test extends \advanced_testcase {
             new Response(403, ['Content-Length' => (string) (transport::MAX_RESPONSE + 1)], 'x'),
         ]), '');
         $this->assertSame('object_rejected', $e->errorcode);
+    }
+
+    public function test_a_redirect_that_is_announced_as_large_is_still_a_redirect(): void {
+        $e = $this->get_failure(new MockHandler([
+            new Response(300, ['Content-Length' => '2000'], 'x'),
+        ]), $this->file(null));
+        $this->assertSame('transport_redirect', $e->errorcode);
+    }
+
+    public function test_a_length_that_is_not_a_number_is_not_taken_as_too_large(): void {
+        $e = $this->get_failure(new MockHandler([new Response(200, ['Content-Length' => 'x'], 'ab')]), $this->file(null));
+        $this->assertSame('object_incomplete', $e->errorcode);
     }
 
     public function test_an_answer_of_the_largest_size_is_accepted(): void {

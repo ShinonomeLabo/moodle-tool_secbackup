@@ -147,14 +147,18 @@ final class client_runs_test extends \advanced_testcase {
      *
      * @param string $code Expected error code.
      * @param callable $call The call.
+     * @param int|null $status The HTTP status that the exception has to carry; null to leave it unchecked.
      * @return api_exception
      */
-    private function expect_api_error(string $code, callable $call): api_exception {
+    private function expect_api_error(string $code, callable $call, ?int $status = null): api_exception {
         try {
             $call();
             $this->fail('No exception');
         } catch (api_exception $e) {
             $this->assertSame($code, $e->errorcode);
+            if ($status !== null) {
+                $this->assertSame($status, $e->httpstatus);
+            }
             return $e;
         }
     }
@@ -264,6 +268,7 @@ final class client_runs_test extends \advanced_testcase {
             'expires now' => [['present_url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', self::NOW)], 'present_url_expires_at'],
             'expired' => [['present_url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', self::NOW - 1)], 'present_url_expires_at'],
             'expiry as a number' => [['present_url_expires_at' => self::NOW + 900], 'present_url_expires_at'],
+            'expiry that is not a time' => [['present_url_expires_at' => 'soon'], 'present_url_expires_at'],
             'url as a number' => [['present_url' => 5], 'present_url'],
         ];
     }
@@ -282,6 +287,15 @@ final class client_runs_test extends \advanced_testcase {
             ->start_run(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID));
         $this->assertSame($field, $e->debuginfo);
         $this->assertSame(201, $e->httpstatus);
+    }
+
+    public function test_a_start_answer_without_a_type_is_refused(): void {
+        $payload = self::start_payload();
+        unset($payload['type']);
+        $client = self::answering([new Response(201, [], (new envelope_builder())->body($payload))]);
+        $e = $this->expect_api_error('api_response_invalid', fn() => $client
+            ->start_run(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID), 201);
+        $this->assertSame('type', $e->debuginfo);
     }
 
     public function test_a_start_answer_whose_url_is_not_the_storage_is_refused_without_the_url(): void {
@@ -411,6 +425,9 @@ final class client_runs_test extends \advanced_testcase {
             'retry as text' => [429, 'run_limit_reached', ['retry_after' => 'soon'], 'retryafter', 'api_run_limit_reached'],
             'retry below zero' => [429, 'run_limit_reached', ['retry_after' => -5], 'retryafter', 'api_run_limit_reached'],
             'retry beyond a day' => [429, 'run_limit_reached', ['retry_after' => 86401], 'retryafter', 'api_run_limit_reached'],
+            'a run id of another error' => [409, 'run_state_invalid', ['run_id' => $uuid], 'runid', 'api_run_state_invalid'],
+            'a status of another error' => [409, 'run_in_progress', ['status' => 'verifying'], 'runstatus',
+                'api_run_in_progress'],
         ];
     }
 
@@ -698,6 +715,63 @@ final class client_runs_test extends \advanced_testcase {
                 '2024100703.10',
                 '202501130'
             )],
+            'version after a letter' => [static fn(client $c, $p) => $c->core_manifest(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                'x2024100703.10',
+                '20250113'
+            )],
+            'capacity of a run that is not a uuid' => [static fn(client $c, $p) => $c->capacity(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                'abc',
+                5
+            )],
+            'upload urls of a run that is not a uuid' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                'abc',
+                [['kind' => 'index', 'name' => null, 'size' => 1, 'sha256' => self::SHA_A]]
+            )],
+            'complete of a run that is not a uuid' => [static fn(client $c, $p) => $c->complete(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                'abc',
+                self::PART,
+                self::PART,
+                []
+            )],
+            'fail of a run that is not a uuid' => [static fn(client $c, $p) => $c->fail(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                'abc',
+                'restarted'
+            )],
+            'state of a run that is not a uuid' => [static fn(client $c, $p) => $c->run_state(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                'abc'
+            )],
+            'digest of 35 bytes' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [['kind' => 'index', 'name' => null, 'size' => 1, 'sha256' => base64_encode(str_repeat("\x01", 35))]]
+            )],
+            'object name of 65 digits' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [['kind' => 'object', 'name' => self::NAME_A . 'a', 'size' => 1, 'sha256' => self::SHA_A]]
+            )],
             'version with a line feed' => [static fn(client $c, $p) => $c->core_manifest(
                 self::endpoint(),
                 $p,
@@ -742,6 +816,66 @@ final class client_runs_test extends \advanced_testcase {
         } finally {
             $this->assertSame([], $service->state['requests']);
         }
+    }
+
+    /**
+     * Arguments at the limits of what the calls take.
+     *
+     * @return array
+     */
+    public static function limit_argument_provider(): array {
+        $objects = [];
+        for ($i = 0; $i < 256; $i++) {
+            $objects[] = ['kind' => 'object', 'name' => sprintf('%064x', $i), 'size' => 1, 'sha256' => self::SHA_A];
+        }
+        return [
+            'the largest exact estimate' => [static fn(client $c, $p) => $c->capacity(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                9007199254740991
+            )],
+            'a size of one byte' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [['kind' => 'index', 'name' => null, 'size' => 1, 'sha256' => self::SHA_A]]
+            )],
+            'the largest exact size' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                [['kind' => 'index', 'name' => null, 'size' => 9007199254740991, 'sha256' => self::SHA_A]]
+            )],
+            '256 items' => [static fn(client $c, $p) => $c->upload_urls(
+                self::endpoint(),
+                $p,
+                fake_service::SITE_ID,
+                self::RUN,
+                $objects
+            )],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('limit_argument_provider')]
+    /**
+     * A call with an argument at the limit is sent. The fake service does not know the run, so it answers with an error.
+     *
+     * @dataProvider limit_argument_provider
+     * @param callable $call Makes the call with a client and a key pair.
+     */
+    public function test_an_argument_at_the_limit_is_sent(callable $call): void {
+        $pair = signing_keypair::generate();
+        $service = self::service($pair);
+        try {
+            $call(self::client($service->handler()), $pair);
+        } catch (api_exception $e) {
+            $this->assertSame('api_run_not_found', $e->errorcode);
+        }
+        $this->assertCount(1, $service->state['requests']);
     }
 
     /**
@@ -1026,6 +1160,9 @@ final class client_runs_test extends \advanced_testcase {
             'expiry as a number' => $change(static function (array &$a): void {
                 $a['items'][0]['expires_at'] = self::NOW + 900;
             }),
+            'expiry that is not a time' => $change(static function (array &$a): void {
+                $a['items'][0]['expires_at'] = 'soon';
+            }),
             'expiry in the past' => $change(static function (array &$a): void {
                 $a['items'][0]['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', self::NOW - 1);
             }),
@@ -1083,6 +1220,9 @@ final class client_runs_test extends \advanced_testcase {
             'a header that is not text' => $change(static function (array &$a): void {
                 $a['items'][0]['headers']['x-amz-storage-class'] = ['STANDARD'];
             }),
+            'headers as text' => $change(static function (array &$a): void {
+                $a['items'][0]['headers'] = 'x';
+            }),
         ];
     }
 
@@ -1094,7 +1234,7 @@ final class client_runs_test extends \advanced_testcase {
      * @param mixed $answer The answer.
      */
     public function test_an_answer_for_the_targets_that_cannot_be_used_is_refused(mixed $answer): void {
-        $this->expect_api_error('api_response_invalid', fn() => self::targets_from($answer));
+        $this->expect_api_error('api_response_invalid', fn() => self::targets_from($answer), 200);
     }
 
     public function test_a_target_url_that_is_not_the_storage_is_refused_without_the_url(): void {
@@ -1271,9 +1411,9 @@ final class client_runs_test extends \advanced_testcase {
         $verifying = str_replace('X', 'verifying', $body);
         $failed = str_replace('X', 'failed', $body);
         $this->expect_api_error('api_response_invalid', fn() => self::answering([new Response(202, [], $verifying)])
-            ->complete(self::endpoint(), $pair, fake_service::SITE_ID, self::RUN, self::PART, self::PART, []));
+            ->complete(self::endpoint(), $pair, fake_service::SITE_ID, self::RUN, self::PART, self::PART, []), 202);
         $this->expect_api_error('api_response_invalid', fn() => self::answering([new Response(200, [], $failed)])
-            ->fail(self::endpoint(), $pair, fake_service::SITE_ID, self::RUN, 'restarted'));
+            ->fail(self::endpoint(), $pair, fake_service::SITE_ID, self::RUN, 'restarted'), 200);
     }
 
     public function test_complete_and_fail_take_only_their_own_success_status(): void {
@@ -1362,7 +1502,7 @@ final class client_runs_test extends \advanced_testcase {
      */
     public function test_a_run_state_that_cannot_be_used_is_refused(string $body): void {
         $this->expect_api_error('api_response_invalid', fn() => self::answering([new Response(200, [], $body)])
-            ->run_state(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN));
+            ->run_state(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN), 200);
     }
 
     public function test_a_run_state_with_a_failure_code_and_a_receipt_is_kept_as_it_came(): void {
@@ -1467,7 +1607,7 @@ final class client_runs_test extends \advanced_testcase {
         self::publish_core($service);
         $service->publish_core_manifest('2024100703.10', '20250113', gzencode('x'), $override);
         $this->expect_api_error('api_response_invalid', fn() => self::client($service->handler())
-            ->core_manifest(self::endpoint(), $pair, fake_service::SITE_ID, '2024100703.10', '20250113'));
+            ->core_manifest(self::endpoint(), $pair, fake_service::SITE_ID, '2024100703.10', '20250113'), 200);
     }
 
     /**
@@ -1489,6 +1629,7 @@ final class client_runs_test extends \advanced_testcase {
             'expiry in the past' => [static fn(array $a): string => json_encode(
                 ['url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', self::NOW)] + $a
             )],
+            'expiry that is not a time' => [static fn(array $a): string => json_encode(['url_expires_at' => 'soon'] + $a)],
             'envelope as text' => [static fn(array $a): string => json_encode(['manifest' => 'x'] + $a)],
         ];
     }
@@ -1510,7 +1651,7 @@ final class client_runs_test extends \advanced_testcase {
             'url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', self::NOW + 900),
         ];
         $this->expect_api_error('api_response_invalid', fn() => self::answering([new Response(200, [], $make($answer))])
-            ->core_manifest(self::endpoint(), $pair, fake_service::SITE_ID, '2024100703.10', '20250113'));
+            ->core_manifest(self::endpoint(), $pair, fake_service::SITE_ID, '2024100703.10', '20250113'), 200);
     }
 
     public function test_a_list_of_official_files_signed_by_another_key_is_refused(): void {

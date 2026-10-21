@@ -89,6 +89,10 @@ final class artifact_signature_test extends \basic_testcase {
         ));
     }
 
+    public function test_an_index_of_no_chunk_names_has_the_count_zero(): void {
+        $this->assertStringEndsWith("\n0", artifact_signature::index_message(self::SITE, self::RUN, self::sha(), 0));
+    }
+
     public function test_the_count_is_part_of_the_signed_index(): void {
         $pair = signing_keypair::generate();
         $this->assertNotSame(
@@ -110,6 +114,12 @@ final class artifact_signature_test extends \basic_testcase {
             'a run with a line feed' => [self::SITE, self::RUN . "\n", $sha, 1],
             'a digest of the wrong length' => [self::SITE, self::RUN, 'AAAA', 1],
             'a digest that is not canonical' => [self::SITE, self::RUN, 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQF=', 1],
+            // Canonical base64 that ends like a digest of 32 bytes: only the start of the pattern refuses it.
+            'a digest of 35 bytes' => [self::SITE, self::RUN, base64_encode(str_repeat("\x01", 35)), 1],
+            // The base64 of "1", which is true as a string.
+            'a digest of one byte' => [self::SITE, self::RUN, 'MQ==', 1],
+            // The base64 of false, which is the empty string.
+            'an empty digest' => [self::SITE, self::RUN, '', 1],
             'a negative count' => [self::SITE, self::RUN, $sha, -1],
         ];
     }
