@@ -87,7 +87,14 @@ php -r '
         $text = substr($text, 0, $at) . $block . "\n\n" . substr($text, $at);
         echo "added the remote service settings\n";
     }
-    if (file_put_contents($file, $text) === false) {
+    // Written next to it and renamed, so that a failure in the middle leaves the config.php as it was.
+    $part = $file . ".remote-service.part";
+    if (
+        @file_put_contents($part, $text) !== strlen($text)
+        || !chmod($part, fileperms($file) & 0777)
+        || !rename($part, $file)
+    ) {
+        @unlink($part);
         fwrite(STDERR, "config.php cannot be written\n");
         exit(1);
     }
