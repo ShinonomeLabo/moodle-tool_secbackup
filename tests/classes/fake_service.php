@@ -79,6 +79,8 @@ final class fake_service {
      *   site_removed, bad_status.
      * - enrollpayload: fields that replace those of the enrolment answer.
      * - sitename and platformname: the names the enrolment answer gives.
+     * - encryptionkey: the site's encryption public key that the enrolment accepts (ENCRYPTION_KEY unless a test, or a
+     *   development run that opens its backup, registers with a key pair of its own).
      * - instructions: the signed instruction envelopes that the status answer carries, by kind.
      * - awsranges: the content that GET /aws-ranges gives, or null for none.
      * - objects: the bodies that PUT /_s3/<key> stored, by key (base64, so that the state can be kept as JSON).
@@ -101,6 +103,7 @@ final class fake_service {
             'enrollpayload' => [],
             'sitename' => self::SITE_NAME,
             'platformname' => self::PLATFORM_NAME,
+            'encryptionkey' => self::ENCRYPTION_KEY,
             'status' => 'active',
             'instructions' => [],
             'awsranges' => null,
@@ -790,7 +793,8 @@ final class fake_service {
         ) {
             return [401, [], self::error('enrollment_code_invalid')];
         }
-        $encryptionfp = self::fingerprint((string) base64_decode(substr(self::ENCRYPTION_KEY, 7)));
+        $encryptionkey = $this->state['encryptionkey'] ?? self::ENCRYPTION_KEY;
+        $encryptionfp = self::fingerprint((string) base64_decode(substr($encryptionkey, 7)));
         if (strtoupper(str_replace(' ', '', $data['encryption_key_fingerprint'])) !== $encryptionfp) {
             return [409, [], self::error('encryption_key_mismatch')];
         }
