@@ -188,6 +188,103 @@ final class file_source_test extends \advanced_testcase {
         $this->assertNull($this->source()->open(sha1('')));
     }
 
+    /**
+     * A source that does not find a content the first times it looks, as a share that answers EIO for a moment.
+     *
+     * @param int $misses How many looks do not find it.
+     * @param bool|null $certain What certainly_missing() says; null for what the folders say.
+     * @return file_source
+     */
+    private function forgetful_source(int $misses, ?bool $certain = null): file_source {
+        global $DB;
+        return new class ($DB, fn(int $seconds) => $this->slept[] = $seconds, $misses, $certain) extends file_source {
+            /** @var int How many looks do not find the content. */
+            private int $misses;
+
+            /** @var bool|null What certainly_missing() says; null for the folders. */
+            private ?bool $certain;
+
+            /**
+             * Constructor.
+             *
+             * @param \moodle_database $db Connection.
+             * @param callable $sleep Sleep.
+             * @param int $misses How many looks do not find the content.
+             * @param bool|null $certain What certainly_missing() says.
+             */
+            public function __construct(\moodle_database $db, callable $sleep, int $misses, ?bool $certain) {
+                parent::__construct($db, $sleep);
+                $this->misses = $misses;
+                $this->certain = $certain;
+            }
+
+            /**
+             * Does not find the content while there are misses.
+             *
+             * @param string $contenthash Content hash.
+             * @return array|null
+             */
+            public function open(string $contenthash): ?array {
+                if ($this->misses > 0) {
+                    $this->misses--;
+                    return null;
+                }
+                return parent::open($contenthash);
+            }
+
+            /**
+             * What the test says, or the folders.
+             *
+             * @param string $contenthash Content hash.
+             * @return bool
+             */
+            protected function certainly_missing(string $contenthash): bool {
+                return $this->certain ?? parent::certainly_missing($contenthash);
+            }
+        };
+    }
+
+    public function test_a_content_that_is_not_found_for_a_moment_is_looked_for_again(): void {
+        $content = 'a file on a share that answered EIO';
+        $file = $this->make($content);
+        $packer = $this->packer(make_request_directory());
+        // The content is in the listing of its folder: not missing for certain, so it is looked for after 1 and 5 seconds.
+        $this->assertSame([], $this->forgetful_source(2)->pack($file->get_contenthash(), strlen($content), $packer));
+        $this->assertSame([1, 5], $this->slept);
+        $this->assertCount(1, $packer->flush());
+    }
+
+    public function test_a_content_that_may_be_there_is_missing_only_after_three_more_looks(): void {
+        $file = $this->make('a content that an object store does not find');
+        $hash = $file->get_contenthash();
+        $packer = $this->packer(make_request_directory());
+        $this->assertNull($this->forgetful_source(10, false)->pack($hash, 44, $packer));
+        $this->assertSame([1, 5, 15], $this->slept);
+    }
+
+    public function test_a_content_that_is_missing_for_certain_is_not_waited_for(): void {
+        global $CFG;
+        $file = $this->make('content that is deleted from the file directory');
+        $hash = $file->get_contenthash();
+        unlink(self::filedir_path($hash));
+        $packer = $this->packer(make_request_directory());
+        $this->assertNull($this->source()->pack($hash, 47, $packer));
+        $this->assertNull($this->source()->big_digests(sha1('nowhere at all'), packer::FILE_LIMIT, $packer));
+        $this->assertSame([], $this->slept);
+        // A folder of the file directory that cannot be listed (here: a file in its place) leaves it open: looked for again.
+        $folder = dirname(self::filedir_path($hash));
+        rmdir($folder);
+        file_put_contents($folder, 'not a folder');
+        $this->assertNull($this->source()->pack($hash, 47, $packer));
+        $this->assertSame([1, 5, 15], $this->slept);
+        unlink($folder);
+        // The trash is looked at too: a content there is found, not missing.
+        $this->slept = [];
+        $CFG->trashdir = make_request_directory();
+        $this->assertNull($this->source()->pack(sha1('not in the trash either'), 23, $packer));
+        $this->assertSame([], $this->slept);
+    }
+
     public function test_pack_gives_the_chunks_and_closes_the_file(): void {
         global $DB;
         $dir = make_request_directory();

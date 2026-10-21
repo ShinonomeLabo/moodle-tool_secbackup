@@ -135,7 +135,26 @@ class renderer extends \plugin_renderer_base {
             $table->data[] = [get_string('status_running', 'tool_secbackup'), s($this->progress($active))];
         }
         return $this->output->heading(get_string('status_backups_heading', 'tool_secbackup'), 3) . html_writer::table($table)
+            . $this->secret_warning(run_record::last_completed())
             . $this->latest_run_notice(run_record::recent(1)[0] ?? null, $state) . $this->backup_button($active !== null);
+    }
+
+    /**
+     * A warning when the last backup that completed could not read files of the secret folder of the site.
+     *
+     * @param run_record|null $last The last run that completed.
+     * @return string
+     */
+    private function secret_warning(?run_record $last): string {
+        $secret = $last?->not_backed_up()['secret'] ?? 0;
+        if ($secret === 0) {
+            return '';
+        }
+        return $this->output->notification(
+            s(get_string('status_secret_unreadable', 'tool_secbackup', $secret)),
+            notification::NOTIFY_ERROR,
+            false
+        );
     }
 
     /**
@@ -162,7 +181,25 @@ class renderer extends \plugin_renderer_base {
         }
         $rows[] = [get_string('status_last_size', 'tool_secbackup'), s($sent)];
         $rows[] = [get_string('status_last_duration', 'tool_secbackup'), format_time($finished - $last->started_at())];
+        $missing = $last->not_backed_up();
+        if ($missing !== null && $missing['missing'] + $missing['unreadable'] + $missing['skippedlinks'] > 0) {
+            $rows[] = [get_string('status_notbackedup', 'tool_secbackup'), s(self::not_backed_up_text($missing))];
+        }
         return array_merge($rows, $this->schedule_rows());
+    }
+
+    /**
+     * How many files a backup does not hold, as plain text.
+     *
+     * @param int[] $counts What run_record::not_backed_up() gives.
+     * @return string
+     */
+    public static function not_backed_up_text(array $counts): string {
+        return get_string('status_notbackedup_value', 'tool_secbackup', (object) [
+            'missing' => $counts['missing'],
+            'unreadable' => $counts['unreadable'],
+            'links' => $counts['skippedlinks'],
+        ]);
     }
 
     /**

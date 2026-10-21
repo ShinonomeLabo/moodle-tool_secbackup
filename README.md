@@ -42,8 +42,12 @@ connection diagnostics, on a page and on the command line. Restoring a backup co
   each chunk; the service checks that every chunk arrived before it gives a receipt. Before a chunk is sent, the URL must
   name the S3 storage of the service's region, its address must be one of Amazon S3 in that region, the connection is pinned
   to that address, and only the bundled root certificates are trusted.
-- **When something goes wrong**, the status page shows why the backup stopped and what to do. When backups stop three times
-  in a row, the site administrators get a message (the message provider "Backups that were stopped several times in a row").
+- **When something goes wrong**, the status page shows why the backup stopped and what to do, and names the file when a file
+  of the site stopped it. When backups stop three times in a row, the site administrators get a message (the message
+  provider "Backups that were stopped several times in a row"). After a backup, the status page and `cli/backup.php` say how
+  many files it does not hold (missing from the file store, not readable, symbolic links), and warn when the secret folder
+  of the site, which holds the keys that Moodle encrypts some settings with, could not be read. A file that is not found is
+  looked for again after 1, 5 and 15 seconds before it counts as missing, unless it is missing for certain.
 
 This version contains no embedded key of the service yet, so it can be registered only on a site whose `config.php` names
 the service's key (the `trustedkeys` of the `TOOL_SECBACKUP_DEVELOPER` setting, see `.dev/env/README.md`). The key comes with

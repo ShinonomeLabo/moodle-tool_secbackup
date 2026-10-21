@@ -147,6 +147,52 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertStringContainsString($run->abort_note()['file']['path'], $lines[count($lines) - 2]);
     }
 
+    public function test_a_complete_backup_says_how_many_files_it_does_not_hold(): void {
+        get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
+            'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
+            'filename' => 'gone.txt'], 'a content that is deleted');
+        global $CFG;
+        $hash = sha1('a content that is deleted');
+        unlink($CFG->dataroot . '/filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash);
+        [$code, $lines] = $this->run_command(true);
+        $this->assertSame(0, $code, implode("\n", $lines));
+        $counts = run_record::last_completed()->not_backed_up();
+        $this->assertSame(1, $counts['missing']);
+        $this->assertContains(get_string('status_notbackedup', 'tool_secbackup') . ': '
+            . \tool_secbackup\output\renderer::not_backed_up_text($counts), $lines);
+        $this->assertNotContains(get_string('status_secret_unreadable', 'tool_secbackup', 0), $lines);
+    }
+
+    public function test_a_backup_that_could_not_read_the_keys_of_the_site_says_so(): void {
+        // A data root whose secret folder cannot be read by this process.
+        $root = make_request_directory();
+        mkdir($root . '/secret');
+        file_put_contents($root . '/secret/key', 'not readable here');
+        chmod($root . '/secret', 0);
+        $runner = new runner(
+            $this->fixture->client(),
+            $this->fixture->objects(),
+            $this->fixture->clock(),
+            ['windows' => false] + $this->fixture->small_seams([
+                'datarootroots' => static fn(): array => ['dataroot' => [$root, []]],
+            ])
+        );
+        $command = new backup_command($runner, $this->fixture->clock(), function (int $seconds): void {
+            $this->fixture->advance($seconds);
+        }, static fn(): ?string => null);
+        $lines = [];
+        $code = $command->run(true, false, static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        chmod($root . '/secret', 0700);
+        $this->assertSame(0, $code);
+        $counts = run_record::last_completed()->not_backed_up();
+        if ($counts['secret'] === 0) {
+            $this->markTestSkipped('This process can read a folder without permission (it runs as root).');
+        }
+        $this->assertContains(get_string('status_secret_unreadable', 'tool_secbackup', $counts['secret']), $lines);
+    }
+
     public function test_a_reason_without_a_text_of_its_own_is_named_by_its_code(): void {
         $this->fixture->intercept = function (\Psr\Http\Message\RequestInterface $request) {
             return preg_match('~/runs/[0-9a-f-]{36}\z~', $request->getUri()->getPath()) === 1

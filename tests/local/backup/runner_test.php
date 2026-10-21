@@ -1465,6 +1465,40 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame((int) $stored, run_record::last_completed()->stored_bytes());
     }
 
+    public function test_a_completed_run_keeps_how_many_files_it_does_not_hold(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertNull($run->not_backed_up());
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertSame([
+            'missing' => count($header['missing_files']),
+            'unreadable' => count($header['unreadable']),
+            'skippedlinks' => count($header['skipped_links']),
+            'secret' => 0,
+        ], run_record::last_completed()->not_backed_up());
+        // The site of the tests has one content that is missing and a symbolic link in its data root.
+        $this->assertSame(1, run_record::last_completed()->not_backed_up()['missing']);
+        $this->assertGreaterThan(0, run_record::last_completed()->not_backed_up()['skippedlinks']);
+    }
+
+    public function test_the_files_of_the_secret_folder_that_could_not_be_read_are_counted(): void {
+        global $CFG;
+        $header = ['missing_files' => ['x'], 'unreadable' => ['dataroot:secret/key/aes-256-gcm.key', 'dataroot:secret',
+            'dataroot:secretive/x', 'dataroot:lang/ja', 'core:lib', 'secret:key'], 'skipped_links' => []];
+        $this->assertSame(
+            ['missing' => 1, 'unreadable' => 6, 'skippedlinks' => 0, 'secret' => 2],
+            stage\artifact_stage::not_backed_up($header, ['dataroot:secret'])
+        );
+        $this->assertSame(1, stage\artifact_stage::not_backed_up($header, ['secret:'])['secret']);
+        // The names of the secret folder: inside the data directory, set elsewhere inside it, or outside it.
+        $this->assertSame(['dataroot:secret'], dataroot_source::secret_names());
+        $CFG->secretdataroot = $CFG->dataroot . '/keys';
+        mkdir($CFG->secretdataroot);
+        $this->assertSame(['dataroot:keys'], dataroot_source::secret_names());
+        $CFG->secretdataroot = make_request_directory();
+        $this->assertSame(['secret:'], dataroot_source::secret_names());
+    }
+
     public function test_the_report_holds_statistics_that_the_service_takes(): void {
         $body = null;
         $this->fixture->intercept = function (RequestInterface $request) use (&$body) {

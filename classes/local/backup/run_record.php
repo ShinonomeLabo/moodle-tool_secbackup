@@ -523,6 +523,23 @@ final class run_record {
     }
 
     /**
+     * How many files the backup does not hold (artifact_stage::not_backed_up()).
+     *
+     * @return int[]|null missing, unreadable, skippedlinks and secret; null for a run that did not get to its list.
+     */
+    public function not_backed_up(): ?array {
+        $counts = $this->progress()['run']['notbackedup'] ?? null;
+        if (!is_array($counts)) {
+            return null;
+        }
+        $result = [];
+        foreach (['missing', 'unreadable', 'skippedlinks', 'secret'] as $key) {
+            $result[$key] = is_int($counts[$key] ?? null) ? $counts[$key] : 0;
+        }
+        return $result;
+    }
+
+    /**
      * The class and code of the unexpected error that ended the last step, while the run waits to try again.
      *
      * @return string|null Null when the last step did not end with such an error, or a step has committed since.

@@ -64,6 +64,40 @@ final class dataroot_source {
     }
 
     /**
+     * The names that the secret folder of the site (which holds the keys of \core\encryption) has in the lists of a backup, as
+     * the root and the path ("dataroot:secret"), or the root alone ("secret:") when it is outside the data directory.
+     *
+     * @return string[]
+     */
+    public static function secret_names(): array {
+        global $CFG;
+        if (isset(self::roots()['secret'])) {
+            return ['secret:'];
+        }
+        $real = realpath($CFG->dataroot);
+        $inside = $real === false ? null : self::inside($real, $CFG->secretdataroot ?? $CFG->dataroot . '/secret');
+        return ['dataroot:' . ($inside ?? 'secret')];
+    }
+
+    /**
+     * Whether a name of a list of a backup is the secret folder of the site or in it.
+     *
+     * @param string $name The root, a colon and the path.
+     * @param string[] $secretnames What secret_names() gives.
+     * @return bool
+     */
+    public static function in_secret(string $name, array $secretnames): bool {
+        foreach ($secretnames as $secret) {
+            $folder = str_ends_with($secret, ':') ? str_starts_with($name, $secret)
+                : ($name === $secret || str_starts_with($name, $secret . '/'));
+            if ($folder) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * The path of a folder relative to the data directory, if the folder exists and is under it.
      *
      * @param string $real The real path of the data directory.

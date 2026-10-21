@@ -443,6 +443,34 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString(get_string('start_reason_busy', 'tool_secbackup'), $html);
     }
 
+    public function test_the_last_backup_says_how_many_files_it_does_not_hold(): void {
+        self::register();
+        $run = self::completed(1760100000, 1760100100, 2097152, 3);
+        $html = (new status_page())->render();
+        $this->assertStringNotContainsString(get_string('status_notbackedup', 'tool_secbackup'), $html);
+        $run->keep(['notbackedup' => ['missing' => 0, 'unreadable' => 0, 'skippedlinks' => 0, 'secret' => 0]]);
+        $this->assertStringNotContainsString(get_string('status_notbackedup', 'tool_secbackup'), (new status_page())->render());
+        $run->keep(['notbackedup' => ['missing' => 2, 'unreadable' => 3, 'skippedlinks' => 4, 'secret' => 0]]);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_notbackedup', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(get_string(
+            'status_notbackedup_value',
+            'tool_secbackup',
+            (object) ['missing' => 2, 'unreadable' => 3, 'links' => 4]
+        ), $html);
+        $this->assertStringNotContainsString(s(get_string('status_secret_unreadable', 'tool_secbackup', 1)), $html);
+        // The keys of the site could not be read: a backup that is not enough for a restore, said loudly.
+        $run->keep(['notbackedup' => ['missing' => 0, 'unreadable' => 1, 'skippedlinks' => 0, 'secret' => 1]]);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(
+            htmlspecialchars(get_string('status_secret_unreadable', 'tool_secbackup', 1), ENT_NOQUOTES),
+            $html
+        );
+        // Values that are not counts read as none.
+        $run->keep(['notbackedup' => ['missing' => 'x']]);
+        $this->assertSame(['missing' => 0, 'unreadable' => 0, 'skippedlinks' => 0, 'secret' => 0], $run->not_backed_up());
+    }
+
     public function test_the_size_of_the_backup_is_the_one_of_the_receipt_and_the_sent_bytes_come_second(): void {
         self::register();
         self::completed(1760100000, 1760100100, 2097152, 3, 7340032);

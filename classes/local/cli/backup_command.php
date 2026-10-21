@@ -170,6 +170,14 @@ final class backup_command {
     private function outcome(run_record $run, string $result, callable $write): ?int {
         if ($result === 'done') {
             $write(get_string('cli_backup_done', 'tool_secbackup'));
+            $missing = $run->not_backed_up();
+            if ($missing !== null && $missing['missing'] + $missing['unreadable'] + $missing['skippedlinks'] > 0) {
+                $write(get_string('status_notbackedup', 'tool_secbackup') . ': '
+                    . \tool_secbackup\output\renderer::not_backed_up_text($missing));
+            }
+            if (($missing['secret'] ?? 0) > 0) {
+                $write(get_string('status_secret_unreadable', 'tool_secbackup', $missing['secret']));
+            }
             return self::EXIT_DONE;
         }
         if ($result === 'aborted') {

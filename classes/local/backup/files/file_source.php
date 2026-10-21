@@ -30,6 +30,11 @@ use tool_secbackup\local\plugin_exception;
  * after is_file_readable_remotely_by_storedfile() has said yes), which also works with an external file system class; that
  * path never recovers a file from the trash. A file that is not in the file directory but in the trash is read in place.
  *
+ * A content that is not found is looked for again after 1, 5 and 15 seconds before it is missing: a check of a network share
+ * or of an object store can fail for a moment (soft mounts answer EIO). The waits are skipped when the content is missing
+ * for certain: the file store is the file directory of Moodle, and the folders where the content would be (in the file
+ * directory and in the trash) can be listed without it.
+ *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -129,6 +134,61 @@ class file_source {
     }
 
     /**
+     * Opens the content of a file, looking for it again after 1, 5 and 15 seconds when it is not found, unless it is missing for
+     * certain.
+     *
+     * @param string $contenthash Content hash.
+     * @return array|null What open() gives; null when the content is missing.
+     * @throws plugin_exception With nfs_slow when the content is there but cannot be opened.
+     */
+    private function find(string $contenthash): ?array {
+        for ($attempt = 0;; $attempt++) {
+            $opened = $this->open($contenthash);
+            if ($opened !== null || !isset(self::WAITS[$attempt]) || $this->certainly_missing($contenthash)) {
+                return $opened;
+            }
+            ($this->sleep)(self::WAITS[$attempt]);
+        }
+    }
+
+    /**
+     * Whether a content is missing for certain: the file store is the file directory of Moodle, and every place where the
+     * content would be can be listed without it. A test replaces this.
+     *
+     * @param string $contenthash Content hash.
+     * @return bool False when that cannot be told, as for an external file system.
+     */
+    protected function certainly_missing(string $contenthash): bool {
+        global $CFG;
+        if (!\tool_secbackup\local\backup\monitor::local_store()) {
+            return false;
+        }
+        $sub = '/' . substr($contenthash, 0, 2) . '/' . substr($contenthash, 2, 2) . '/' . $contenthash;
+        $filedir = $CFG->filedir ?? $CFG->dataroot . '/filedir';
+        $trashdir = $CFG->trashdir ?? $CFG->dataroot . '/trashdir';
+        return self::listed_without($filedir . $sub) && self::listed_without($trashdir . $sub)
+            && self::listed_without($trashdir . '/' . $contenthash);
+    }
+
+    /**
+     * Whether a path is not there for certain: the nearest folder above it that exists can be listed, and its list does not
+     * have the next part of the path.
+     *
+     * @param string $path The path.
+     * @return bool False when the path is listed (it is there), or when the folder cannot be listed.
+     */
+    private static function listed_without(string $path): bool {
+        $name = basename($path);
+        $folder = dirname($path);
+        while (!is_dir($folder) && dirname($folder) !== $folder) {
+            $name = basename($folder);
+            $folder = dirname($folder);
+        }
+        $list = error_silencer::run(static fn() => scandir($folder), $warning);
+        return is_array($list) && !in_array($name, $list, true);
+    }
+
+    /**
      * Opens a file and packs it, reading it again from its start when the read fails.
      *
      * After a failed read the file is tried again after 1, 5 and 15 seconds; when the fourth try fails too, the error is
@@ -225,7 +285,7 @@ class file_source {
             $this->close();
         }
         if ($this->held === null) {
-            $opened = $this->open($contenthash);
+            $opened = $this->find($contenthash);
             if ($opened === null) {
                 return null;
             }
@@ -269,7 +329,7 @@ class file_source {
      */
     private function with_content(string $contenthash, callable $work): mixed {
         return $this->retrying(function () use ($contenthash, $work): mixed {
-            $opened = $this->open($contenthash);
+            $opened = $this->find($contenthash);
             if ($opened === null) {
                 return null;
             }

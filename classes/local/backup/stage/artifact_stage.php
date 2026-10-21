@@ -19,6 +19,7 @@ namespace tool_secbackup\local\backup\stage;
 use tool_secbackup\local\api\api_exception;
 use tool_secbackup\local\api\receipt;
 use tool_secbackup\local\backup\code_source;
+use tool_secbackup\local\backup\dataroot_source;
 use tool_secbackup\local\backup\index_builder;
 use tool_secbackup\local\backup\journal;
 use tool_secbackup\local\backup\manifest_builder;
@@ -72,12 +73,9 @@ final class artifact_stage {
             return 'more';
         }
         $context->set('bytes', self::bytes($entriesfile));
-        $chunk = $context->entries->build(
-            self::header($context, $seams),
-            $context->run_uuid(),
-            $context->site_public_key(),
-            $context->siteid
-        );
+        $header = self::header($context, $seams);
+        $context->set('notbackedup', self::not_backed_up($header, dataroot_source::secret_names()));
+        $chunk = $context->entries->build($header, $context->run_uuid(), $context->site_public_key(), $context->siteid);
         $context->uploader->queue($chunk, 'manifest');
         $context->set('manifest', ['sha256' => $chunk->sha256base64, 'size' => $chunk->size]);
         $context->next_stage('index');
@@ -116,6 +114,27 @@ final class artifact_stage {
             'missing_files' => self::values($context->journal('missing_files')),
             'skipped_links' => self::values($context->journal('skipped_links')),
             'unreadable' => self::values($context->journal('unreadable')),
+        ];
+    }
+
+    /**
+     * How many files the backup does not hold, for the status page and the command line: the contents of the file store that
+     * are missing, the names that could not be read, the symbolic links that were not followed, and how many of the names that
+     * could not be read are in the secret folder of the site (without its keys a restore cannot read the settings that Moodle
+     * encrypts).
+     *
+     * @param array $header The first line of the list of the generation.
+     * @param string[] $secretnames What dataroot_source::secret_names() gives.
+     * @return int[] missing, unreadable, skippedlinks and secret.
+     */
+    public static function not_backed_up(array $header, array $secretnames): array {
+        $secret = array_filter($header['unreadable'], static fn($name): bool => is_string($name)
+            && dataroot_source::in_secret($name, $secretnames));
+        return [
+            'missing' => count($header['missing_files']),
+            'unreadable' => count($header['unreadable']),
+            'skippedlinks' => count($header['skipped_links']),
+            'secret' => count($secret),
         ];
     }
 
