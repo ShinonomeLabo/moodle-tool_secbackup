@@ -40,9 +40,13 @@ use tool_secbackup\local\plugin_exception;
  * is not kept (the queue, the entries, the present list) and not waiting to be sent is removed. Chunks whose names are made
  * from their content (blocks of tables, pieces of files, packs) are queued as they are made, and may be sent before their
  * entries are committed. When their step stops before its commit, the step that goes on makes them again: the same name for
- * the same content, and another name for content that changed meanwhile (the rows of a table), so that no chunk is stored that
- * no list of a generation holds. A numbered chunk of the rest of the data root or of code waits only after the commit that
- * holds its entries (tosend), so that its number is never used again for other content.
+ * the same content, and another name for content that changed meanwhile (the rows of a table). What is guaranteed is that a
+ * chunk that waited unsent in the queue of the stopped step is dropped, not sent. What is not: a chunk that the stopped step
+ * sent already (a stage that cannot hold its chunks sends some before its commit, see make_room()) stays at the storage, and
+ * when the step that goes on makes its content under another name, no list of a generation holds it until the retention ends.
+ * Such chunks are bounded by what that step sent, and are not in the index of the run, so not in its stored bytes. A numbered
+ * chunk of the rest of the data root or of code waits only after the commit that holds its entries (tosend), so that its
+ * number is never used again for other content.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
