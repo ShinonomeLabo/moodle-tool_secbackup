@@ -22,9 +22,10 @@ The default branch of the repository is `main`.
 | `secureos` | Twelve jobs: the access control that the operating system ships, in real virtual machines (Lima with QEMU and KVM). `rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10` (SELinux), and `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04` (AppArmor) in the states `standard` and `confined`. Each runs `.dev/secureos/run-template.sh -s <state> <template>`; the secret `SECBK_SECUREOS_ENDPOINT` (the connection URL of a real service) selects the real expectations, and without it the stand-in's are checked. See `.dev/secureos/README.md`. |
 | `coverage` | Checks that one artifact `coverage-run-<Moodle>-<PHP>-<database>` arrived for each row of the matrix of `test`, with its PHPUnit report, and no other (`.dev/ci/check-coverage-runs.sh`; no other artifact name may start with `coverage-run-`), merges the coverage of all combinations, writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
 
-Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 40, `test` 110,
-`behat-safari` 60, `secureos` 45 (60 for the state `run`) and the badge job 10. The long steps have limits of their own:
-PHPUnit 40 minutes, Behat 25 (Chrome, Firefox, Edge) or 35 (Safari), the backup with developer debugging 20. When GitHub
+Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 55, `test` 120,
+`behat-safari` 75, `secureos` 45 (60 for the state `run`) and the badge job 10. The long steps have limits of their own:
+the install 20 minutes (a failed download of Node.js makes nvm build it from its source for more than an hour), PHPUnit 40,
+Behat 25 (Chrome, Firefox, Edge) or 35 (Safari), the backup with developer debugging 20. When GitHub
 stops a job at its own limit, the log of the step that was running is lost (a PHPUnit step that stalled in run 39493954359
 left no log), so the limits of the steps of `test` add up to less than the limit of the job, and a step that stalls fails
 with its log. On GitHub (2026-10-20) the `test` jobs took 19 to 41 minutes (PHPUnit 11 to 24, Behat 5 to 11), a `behat` job 6

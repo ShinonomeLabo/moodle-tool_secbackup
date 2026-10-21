@@ -131,11 +131,11 @@ jobs:
   test:
     name: Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     runs-on: ubuntu-24.04
-    # The long steps (PHPUnit, Behat, the backup with developer debugging) have limits of their own, which add up to less than
-    # this one: a step that stalls fails with its log kept. When GitHub stops the job itself, the log of the running step is
-    # lost (run 39493954359: PHPUnit of Moodle 5.1 PHP 8.4 MariaDB stalled until the limit of 60 minutes of the job, and its
-    # log was gone).
-    timeout-minutes: 110
+    # The long steps (the install, PHPUnit, Behat, the backup with developer debugging) have limits of their own, which add up
+    # to less than this one: a step that stalls fails with its log kept. When GitHub stops the job itself, the log of the
+    # running step is lost (run 39493954359: PHPUnit of Moodle 5.1 PHP 8.4 MariaDB stalled until the limit of 60 minutes of the
+    # job, and its log was gone).
+    timeout-minutes: 120
 
     strategy:
       fail-fast: false
@@ -199,7 +199,11 @@ jobs:
           sudo locale-gen en_AU.UTF-8
           echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
 
+      # 1 to 5 minutes. When the download of Node.js from nodejs.org fails, nvm builds Node.js from its source, which takes more
+      # than an hour (run 39610496035, Moodle 5.3 PHP 8.4 PostgreSQL: "curl: (56) Recv failure: Connection reset by peer",
+      # "Binary download failed, trying source."): the limit stops that with the log kept.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}
@@ -393,7 +397,7 @@ jobs:
     name: Behat ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 55
 
     strategy:
       fail-fast: false
@@ -451,7 +455,11 @@ jobs:
           sudo locale-gen en_AU.UTF-8
           echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
 
+      # 1 to 5 minutes. When the download of Node.js from nodejs.org fails, nvm builds Node.js from its source, which takes more
+      # than an hour (run 39610496035, Moodle 5.3 PHP 8.4 PostgreSQL: "curl: (56) Recv failure: Connection reset by peer",
+      # "Binary download failed, trying source."): the limit stops that with the log kept.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}
@@ -533,7 +541,7 @@ jobs:
     name: Behat safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     if: inputs.scope != 'phpunit'
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     strategy:
       fail-fast: false
@@ -608,7 +616,11 @@ jobs:
           echo "$(cd ci/vendor/bin; pwd)" >> "$GITHUB_PATH"
           echo "NVM_DIR=$(brew --prefix nvm)" >> "$GITHUB_ENV"
 
+      # 1 to 5 minutes. When the download of Node.js from nodejs.org fails, nvm builds Node.js from its source, which takes more
+      # than an hour (run 39610496035, Moodle 5.3 PHP 8.4 PostgreSQL: "curl: (56) Recv failure: Connection reset by peer",
+      # "Binary download failed, trying source."): the limit stops that with the log kept.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}

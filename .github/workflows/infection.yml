@@ -92,7 +92,9 @@ jobs:
           sudo locale-gen en_AU.UTF-8
           echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
 
+      # As in ci.yml: a failed download of Node.js would build it from its source for more than an hour.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: pgsql
