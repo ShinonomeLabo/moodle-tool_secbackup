@@ -139,6 +139,19 @@ final class state_test extends \advanced_testcase {
         $this->assertNull(signing_keys::load());
     }
 
+    public function test_a_removal_or_a_registration_forgets_what_the_last_backup_and_the_last_start_found(): void {
+        foreach ([fn() => state::clear(), fn() => self::save()] as $change) {
+            self::save();
+            set_config('coremodified', 1, 'tool_secbackup');
+            set_config('lastschedule', '{"at":1,"answer":"started","cause":""}', 'tool_secbackup');
+            $change();
+            // The dialog about a modified core and the last answer of the start belong to the registration they were
+            // found under.
+            $this->assertFalse(get_config('tool_secbackup', 'coremodified'));
+            $this->assertFalse(get_config('tool_secbackup', 'lastschedule'));
+        }
+    }
+
     public function test_a_registration_again_of_the_same_site_with_the_same_key_keeps_the_key_for_names(): void {
         self::save();
         $key = self::names_key();
