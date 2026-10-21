@@ -225,9 +225,10 @@ class behat_tool_secbackup extends behat_base {
      * While the old page is replaced, safaridriver can answer a command with "no such window" (the NoSuchWindowException of
      * php-webdriver): WebKit gives up a script that runs when the old page unloads ("WindowNotFound;Callback was not called
      * before the unload event."), and the same window then shows the new page. So such an answer during the wait means that the
-     * new page has not come yet. (Moodle's own wait for pending JavaScript catches this answer as the NoSuchWindowException of
-     * Mink, which the php-webdriver driver does not throw.) The checks that Moodle makes after the actions of a step run once
-     * the new page is there.
+     * new page has not come yet. (Moodle 4.5 and 5.0 catch this answer in their wait for pending JavaScript as the
+     * NoSuchWindowException of Mink, which the php-webdriver driver does not throw; Moodle 5.1 and later catch the class of
+     * php-webdriver there, but not in the check for deprecated icons. See the comment of the job behat-safari in ci.yml.) The
+     * checks that Moodle makes after the actions of a step run once the new page is there.
      *
      * @param callable $click The click; it throws when it cannot be done (yet).
      * @param string $name What is clicked, for the message when no new page came.
@@ -241,12 +242,16 @@ class behat_tool_secbackup extends behat_base {
         // A page can be slow to load (an emulated browser on a slow machine took more than the usual 10 seconds), so the wait
         // is six times the extended time of Behat; it ends as soon as the new page is there.
         $end = microtime(true) + self::get_extended_timeout() * 6;
+        // The answer "no such window" of the last check, if it had one.
+        $lostwindow = null;
         do {
             try {
                 $arrived = (bool) $this->getSession()->evaluateScript('return typeof window.tool_secbackup_old_page === "undefined"'
                     . ' && document.readyState === "complete";');
+                $lostwindow = null;
             } catch (NoSuchWindowException $e) {
                 $arrived = false;
+                $lostwindow = $e;
             }
             if (!$arrived) {
                 usleep(100000);
@@ -254,7 +259,14 @@ class behat_tool_secbackup extends behat_base {
         } while (!$arrived && microtime(true) < $end);
         if (!$arrived) {
             // Going on would let the next step look at the old page, and a text that both pages show would pass.
-            throw new ExpectationException('"' . $name . '" did not load a new page.', $this->getSession());
+            $message = '"' . $name . '" did not load a new page.';
+            if ($lostwindow !== null) {
+                // Then the window itself may be gone, not only the new page late: the message says so, with the class that
+                // .dev/ci/behat-known-failures.sh looks for, and the answer is the previous exception.
+                $message .= ' The last check of the wait got ' . get_class($lostwindow) . ' ("no such window"): the window'
+                    . ' itself may be gone.';
+            }
+            throw new ExpectationException($message, $this->getSession(), $lostwindow);
         }
         $this->wait_for_pending_js();
         $this->look_for_exceptions();
