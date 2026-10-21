@@ -7,10 +7,12 @@
   the plugins that are not part of Moodle and the files of Moodle's code that differ from the official release, and a list
   of each generation that names every part.
 - Every chunk is encrypted on the site before it is sent: a random key for each chunk, sealed for the site's X25519 public
-  key, and XChaCha20-Poly1305 for the contents, with padding that hides the exact size. The plugin holds only the public key.
+  key, and XChaCha20-Poly1305 for the contents, with padding that hides the exact size. The plugin never holds the secret
+  key; the service keeps it as its key-custody options describe.
   The chunks go straight to the storage of the service through URLs that the service signs; the address of the storage is
   checked and pinned as for the requests to the service. A backup is complete when the service has checked every chunk and
-  returned a signed receipt.
+  returned a signed receipt. The report at the end of a backup gives the service counts without personal data (the README
+  lists them).
 - Backups start in the window that the service sets, a little after its start (a delay of its own for each site), or at once
   with the button "Back up now" of the status page or with `cli/backup.php --now`. A backup that the cron runs pauses at the
   end of its window and goes on in the next one when that one starts early enough for it to finish within 24 hours;
@@ -28,8 +30,9 @@
 - The report of a backup tells the service whether Moodle's code may have been modified: when it differs from the official
   release, and also when no official list could be compared with it (the whole code was then sent).
 - The status page shows the running backup, the last completed backup and why the latest backup stopped, with advice. The
-  site administrators get a message when backups are stopped three times in a row. Before a backup, a dialog warns when the
-  files of the site are in an external storage (such as tool_objectfs) or when Moodle's code may have been modified.
+  site administrators get a message when backups are stopped three times in a row. Each time the status page is opened, it
+  shows a warning when the files of the site are in an external storage (such as tool_objectfs), and when the last backup
+  found that Moodle's code may have been modified; scheduled backups do not wait for it.
 - The connection diagnostics also check the server load, the free memory, the database response, the temporary folder, the
   clock and Moodle's automated backup.
 - Tested also with a data directory on NFS (v3 and v4.2), with files in an S3-compatible storage through tool_objectfs, and

@@ -36,12 +36,20 @@ connection diagnostics, on a page and on the command line. Restoring a backup co
   and a list of the generation, which names every part. Symbolic links are not followed; the list names them.
 - **How it is sent.** The plugin cuts the backup into chunks of up to about 32 MiB and encrypts each chunk on the site before
   it leaves the server: a random key for each chunk, sealed for the site's public key (X25519, the key registered on the
-  platform), and the contents encrypted with XChaCha20-Poly1305. The plugin holds only the public key, so neither the site
-  nor the service can read a backup without the secret key of the site. The chunks are padded, so their sizes tell little
-  about their contents. They go straight to the storage of the service (Amazon S3), through URLs that the service signs for
-  each chunk; the service checks that every chunk arrived before it gives a receipt. Before a chunk is sent, the URL must
-  name the S3 storage of the service's region, its address must be one of Amazon S3 in that region, the connection is pinned
-  to that address, and only the bundled root certificates are trusted.
+  platform), and the contents encrypted with XChaCha20-Poly1305. The plugin never holds the secret key that opens the
+  chunks, so neither the server of the site nor the storage can read a backup; the service keeps that key as its
+  key-custody options describe, and can use it to read a backup (to restore it, for example). The chunks are padded, so
+  their sizes tell little about their contents. They go straight to the storage of the service (Amazon S3), through URLs
+  that the service signs for each chunk; the service checks that every chunk arrived before it gives a receipt. Before a
+  chunk is sent, the URL must name the S3 storage of the service's region, its address must be one of Amazon S3 in that
+  region, the connection is pinned to that address, and only the bundled root certificates are trusted.
+- **What the service receives unencrypted.** The registration sends the address of the site, the release and version of
+  Moodle, the database family and the version of the plugin. The requests of a backup and the index of the chunks carry the
+  names of the chunks (keyed hashes that reveal nothing of the contents), their sizes and SHA-256 sums, the expected size of
+  a backup and the code of the reason when a backup stops. At the end of a backup, the plugin reports counts without personal
+  data: the number of users active in the last 365 days and the number of courses, the enabled authentication methods, the
+  number of rows of each table, the bytes and the duration of the backup, the release, version and build of Moodle, the
+  database family, and whether Moodle's code may have been modified and whether the files are in an external storage.
 - **When something goes wrong**, the status page shows why the backup stopped and what to do, and names the file when a file
   of the site stopped it. When backups stop three times in a row, the site administrators get a message (the message
   provider "Backups that were stopped several times in a row"). After a backup, the status page and `cli/backup.php` say how
@@ -85,8 +93,9 @@ Site administration > Plugins > Admin tools > Shinonome LMS Backup has four page
   screen, check the fingerprint of the key, and enter the one-time registration code. The same page registers the site again
   and removes the registration.
 - **Status**: the registration and the last status request, the running backup and its stage, the last completed backup,
-  why the latest backup stopped and what to do, and the button "Back up now". A dialog warns before a backup when the files of
-  the site are in an external storage (see below) or when Moodle's code may differ from the official release.
+  why the latest backup stopped and what to do, and the button "Back up now". Each time the page is opened, it shows a
+  warning when the files of the site are in an external storage (see below), and when the last backup found that Moodle's
+  code may differ from the official release. Scheduled backups do not wait for anyone to see these warnings.
 - **Connection diagnostics**: the name resolution, the proxy and the connection to the service, SELinux and AppArmor, and the
   state of the server that a backup depends on (PHP extensions, load, memory, database response, data directory, temporary
   folder, clock, Moodle's automated backup), with advice where a check fails.
@@ -121,6 +130,7 @@ ends, past the end of the window and in steps of an hour instead of ten minutes;
 For example, for a window from 02:00 in the time zone of the server:
 
     35 2 * * * www-data /usr/bin/php /var/www/moodle/admin/tool/secbackup/cli/backup.php --quiet
+
 `diagnose.php` runs the connection diagnostics; `--endpoint` checks a connection URL before the site is registered. Both
 print their help with `--help`.
 
@@ -131,8 +141,9 @@ print their help with `--help`.
   (before the first one, it reads a part of the largest file), and stops the backup when it is below the limit of the page
   "Limits of the backup". Tested with NFS v3 and v4.2 (`.dev/nfs/README.md`).
 - **Files in an external storage** (for example `tool_objectfs` with S3): the backup reads the files through Moodle's file
-  API, so a backup reads every file from the external storage, which may cost money there. The status page asks for a
-  confirmation first. Tested with `tool_objectfs` and an S3-compatible storage (`.dev/objectfs/README.md`).
+  API, so a backup reads every file from the external storage, which may cost money there. The status page shows a warning
+  about it each time it is opened; scheduled backups do not wait for it. Tested with `tool_objectfs` and an S3-compatible
+  storage (`.dev/objectfs/README.md`).
 - **SELinux and AppArmor** confine the processes of the web server, not the command line. A backup started with the button
   and moved on by a cron that runs in the web server (`admin/cron.php` requested over HTTP) is subject to them; a backup run
   by `cli/backup.php` or by a cron on the command line usually is not. Under SELinux in enforcing mode, the web server needs
