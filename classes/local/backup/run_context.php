@@ -85,6 +85,9 @@ final class run_context {
     /** @var temp_area The temporary area. */
     public readonly temp_area $temp;
 
+    /** @var files\read_speed The speed of the reads of the file store in this step. */
+    public readonly files\read_speed $readspeed;
+
     /** @var limits The limits. */
     public readonly limits $limits;
 
@@ -178,6 +181,7 @@ final class run_context {
         $this->limits = $limits;
         $this->env = $env;
         $this->deadline = $deadline;
+        $this->readspeed = new files\read_speed();
         $this->settings = settings::current();
         [$this->endpoint, $this->pair, $this->siteid] = $link();
         $this->sitepublickey = public_key_format::parse(state::load()->encryption_key());
@@ -448,10 +452,18 @@ final class run_context {
      * read (at most once in five minutes of the run: the time of the last wait is kept with the run at once, so that the next
      * step, which may be another process, knows it).
      *
+     * Once the step has read files of the file store of one MiB or more, their speed is the speed of the file storage, and the
+     * monitor does not read a file of its own for it (the page cache of the server answers that one).
+     *
      * @throws plugin_exception With the reason (server_busy, disk_low, db_slow or nfs_slow) when a limit is passed.
      */
     public function watch(): void {
-        $sample = ($this->env['sample'])();
+        $measured = $this->readspeed->mbps();
+        $sample = ($this->env['sample'])($measured === null);
+        if ($measured !== null) {
+            $sample['nfs_mbps'] = $measured;
+            $sample['not_applicable'] = array_values(array_diff($sample['not_applicable'] ?? [], ['nfs_mbps']));
+        }
         $reason = monitor::verdict($sample, $this->limits);
         if ($reason !== null) {
             throw new plugin_exception($reason);

@@ -119,8 +119,9 @@ print their help with `--help`.
 ## Servers and storage
 
 - **A data directory on NFS** works: the plugin reads the files through it, and the connection diagnostics name the file
-  system with a warning. While a backup runs, the plugin measures the read speed and holds the backup while it is below the
-  limit of the page "Limits of the backup". Tested with NFS v3 and v4.2 (`.dev/nfs/README.md`).
+  system with a warning. While a backup runs, the plugin measures the speed of its own reads of the files of 1 MiB or more
+  (before the first one, it reads a part of the largest file), and stops the backup when it is below the limit of the page
+  "Limits of the backup". Tested with NFS v3 and v4.2 (`.dev/nfs/README.md`).
 - **Files in an external storage** (for example `tool_objectfs` with S3): the backup reads the files through Moodle's file
   API, so a backup reads every file from the external storage, which may cost money there. The status page asks for a
   confirmation first. Tested with `tool_objectfs` and an S3-compatible storage (`.dev/objectfs/README.md`).

@@ -101,8 +101,8 @@ final class runner {
      * @param client $client The client of the service.
      * @param object_transport $objects The transport of the storage.
      * @param callable|null $clock Gives the current UNIX time; null for time().
-     * @param array $seams Seams for tests, by name: limits (limits), diskspace (callable for temp_area), sample (callable that
-     *     gives a sample of the watch), sleep (callable(int)), timer (callable that gives seconds as a float, for the budget),
+     * @param array $seams Seams for tests, by name: limits (limits), diskspace (callable for temp_area), sample (callable(bool
+     *     $probe) that gives a sample of the watch, with or without the probe of the file storage), sleep (callable(int)), timer (callable that gives seconds as a float, for the budget),
      *     hostname (callable), link (callable that gives [endpoint, signing_keypair, site ID]), trust (sec_trust of the
      *     receipts), files (system_files for SELinux), windows (bool: false for the command line), log (callable(string)),
      *     tables (callable(bool $logs) as table_list::build), datarootroots (callable as dataroot_source::roots), coderoots
@@ -124,7 +124,7 @@ final class runner {
         $this->seams = $seams + [
             'limits' => $limits,
             'diskspace' => null,
-            'sample' => static fn(): array => $monitor->sample(),
+            'sample' => static fn(bool $probe = true): array => $monitor->sample($probe),
             'sleep' => static fn(int $seconds) => sleep($seconds),
             'timer' => static fn(): float => microtime(true),
             'hostname' => static fn(): string => (string) gethostname(),

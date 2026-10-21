@@ -17,11 +17,11 @@
 /**
  * Development only: measures the read speed of the file storage the way the watch of a backup run does.
  *
- * It calls the watch of the plugin (monitor::measure_nfs(), the value that the reason nfs_slow is judged by: up to 4 MiB of
- * the first stored file of 1 MiB or more, timed from the opening of the file) the given number of times in one process, and
- * prints one line "nfs_mbps <speed>" for each, then the limit of the site ("limit_mbps <limit>") and the file that was
- * read ("file <content hash> <size>"). The first read of a process reads the file from the storage when nothing caches it
- * (the caller can drop the caches of the system before); the next ones may come from the cache of the client.
+ * It calls the probe of the watch of the plugin (monitor::measure_nfs(), the value that the reason nfs_slow is judged by
+ * until a run has read files of 1 MiB or more itself: 4 MiB from a random MiB of the largest stored file of 1 MiB or more,
+ * timed from the opening of the file) the given number of times in one process, and prints one line "nfs_mbps <speed>" for
+ * each, then the limit of the site ("limit_mbps <limit>") and the file that was read ("file <content hash> <size>"). A read
+ * gets the file from the storage when nothing caches that part (the caller can drop the caches of the system before).
  *
  * Usage: php <plugin>/.dev/nfs/measure.php [--times=1]
  *
@@ -49,5 +49,10 @@ for ($i = 0; $i < (int) $options['times']; $i++) {
     cli_writeln('nfs_mbps ' . ($speed === null ? 'unknown' : sprintf('%.1f', $speed)));
 }
 cli_writeln('limit_mbps ' . sprintf('%.1f', limits::current()->minnfsmbps));
-$rows = $DB->get_records_sql('SELECT id, contenthash, filesize FROM {files} WHERE filesize >= ? ORDER BY id', [1048576], 0, 1);
+$rows = $DB->get_records_sql(
+    'SELECT id, contenthash, filesize FROM {files} WHERE filesize >= ? ORDER BY filesize DESC, id',
+    [1048576],
+    0,
+    1
+);
 cli_writeln('file ' . ($rows ? reset($rows)->contenthash . ' ' . (int) reset($rows)->filesize : 'none'));

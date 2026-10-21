@@ -132,6 +132,7 @@ final class monitor_test extends \advanced_testcase {
      * @param callable|null $disk Free space function.
      * @param \file_system|null $filesystem File system.
      * @param bool $deletebig Whether the stored files of 1 MiB or more are deleted first.
+     * @param callable|null $random Gives the MiB at which the read starts, from 0 to its argument.
      * @return monitor
      */
     private function monitor(
@@ -139,13 +140,15 @@ final class monitor_test extends \advanced_testcase {
         ?callable $clock = null,
         ?callable $disk = null,
         ?\file_system $filesystem = null,
-        bool $deletebig = true
+        bool $deletebig = true,
+        ?callable $random = null
     ): monitor {
         global $DB;
         if ($deletebig) {
             $DB->execute('DELETE FROM {files} WHERE filesize >= ?', [self::MIB]);
         }
-        return new monitor($files, self::limits(), $clock, $disk ?? self::disk(50 * self::GIB, 100 * self::GIB), $filesystem);
+        $disk ??= self::disk(50 * self::GIB, 100 * self::GIB);
+        return new monitor($files, self::limits(), $clock, $disk, $filesystem, $random);
     }
 
     /**
@@ -328,6 +331,51 @@ final class monitor_test extends \advanced_testcase {
         $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
         $this->store_file(6 * self::MIB);
         $this->assertEqualsWithDelta(8.0, $this->without_warnings(static fn(): ?float => $monitor->measure_nfs()), 1e-9);
+    }
+
+    public function test_the_largest_file_is_read(): void {
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $this->store_file(2 * self::MIB);
+        $this->store_file(3 * self::MIB);
+        $this->store_file(self::MIB);
+        $this->assertEqualsWithDelta(6.0, $monitor->measure_nfs(), 1e-9);
+    }
+
+    public function test_each_read_starts_at_a_random_mib_of_the_file_so_that_it_is_seldom_in_the_cache(): void {
+        $asked = [];
+        $starts = [2, 0];
+        $random = static function (int $max) use (&$asked, &$starts): int {
+            $asked[] = $max;
+            return array_shift($starts);
+        };
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5), null, null, true, $random);
+        $file = $this->store_file(6 * self::MIB);
+        // The content is a MiB shorter than the table says: a read from the third MiB gets three MiB, one from the first four.
+        $path = get_file_storage()->get_file_system()->get_local_path_from_storedfile($file);
+        $handle = fopen($path, 'r+b');
+        ftruncate($handle, 5 * self::MIB);
+        fclose($handle);
+        $this->assertEqualsWithDelta(6.0, $monitor->measure_nfs(), 1e-9);
+        $this->assertEqualsWithDelta(8.0, $monitor->measure_nfs(), 1e-9);
+        $this->assertSame([2, 2], $asked);
+        // A file of four MiB or less is read from its start.
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5), null, null, true, $random);
+        $this->store_file(4 * self::MIB);
+        $this->assertEqualsWithDelta(8.0, $monitor->measure_nfs(), 1e-9);
+        $this->assertSame([2, 2], $asked);
+        // By default the start is random.
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $this->store_file(7 * self::MIB);
+        $this->assertEqualsWithDelta(8.0, $monitor->measure_nfs(), 1e-9);
+    }
+
+    public function test_a_sample_without_the_probe_does_not_read_the_file_storage(): void {
+        $monitor = $this->monitor(self::healthy_files(), self::clock(0.5));
+        $this->store_file(2 * self::MIB);
+        $sample = $monitor->sample(false);
+        $this->assertNull($sample['nfs_mbps']);
+        $this->assertSame(['nfs_mbps'], $sample['not_applicable']);
+        $this->assertEqualsWithDelta(4.0, $monitor->sample()['nfs_mbps'], 1e-9);
     }
 
     public function test_a_file_of_exactly_one_mib_is_big_enough_and_a_smaller_one_is_not(): void {

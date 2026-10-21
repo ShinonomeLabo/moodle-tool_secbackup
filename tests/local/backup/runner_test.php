@@ -2398,6 +2398,26 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame($run->entries_committed(), count($entries));
     }
 
+    public function test_the_speed_of_the_runs_own_reads_of_the_file_store_is_watched(): void {
+        $probes = [];
+        $runner = $this->runner([
+            // The slowest read speed that is allowed cannot be reached.
+            'limits' => new limits(2.0, 256, 500, 1.0E9, $this->tempdir, 100, 0),
+            // The probe of the monitor finds nothing to measure: only the reads of the run can stop it.
+            'sample' => function (bool $probe = true) use (&$probes): array {
+                $probes[] = $probe;
+                return ['nfs_mbps' => null, 'not_applicable' => ['nfs_mbps']] + self::CALM;
+            },
+        ]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', $this->finish($runner, $run));
+        $this->assertSame('nfs_slow', $run->abort_code());
+        $this->assertSame('files', $run->stage());
+        // Once the run has read a file of one MiB or more, the monitor is not asked to read the file storage again.
+        $this->assertTrue($probes[0]);
+        $this->assertFalse(end($probes));
+    }
+
     public function test_every_chunk_of_the_file_store_is_committed_before_the_watch(): void {
         $run = run_record::create('manual', $this->fixture->time);
         $cut = $this->runner(['sample' => function () use ($run): array {

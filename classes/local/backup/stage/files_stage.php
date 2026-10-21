@@ -18,6 +18,7 @@ namespace tool_secbackup\local\backup\stage;
 
 use tool_secbackup\local\backup\files\file_source;
 use tool_secbackup\local\backup\files\packer;
+use tool_secbackup\local\backup\monitor;
 use tool_secbackup\local\backup\run_context;
 use tool_secbackup\local\crypto\chunk_info;
 use tool_secbackup\local\crypto\chunk_name;
@@ -85,7 +86,9 @@ final class files_stage {
             $context->run_uuid(),
             $context->site_public_key(),
             $context->siteid,
-            $context->folder
+            $context->folder,
+            // The speed of the reads is the speed of the file storage only for the file directory of Moodle.
+            monitor::local_store() ? $context->readspeed : null
         );
         $this->safe = (int) ($context->cursor()['offset'] ?? 0);
         $this->big = $context->cursor()['big'] ?? null;

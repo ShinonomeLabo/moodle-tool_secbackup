@@ -94,6 +94,9 @@ final class packer {
     /** @var int Number for the next entry. */
     private int $sequence = 0;
 
+    /** @var read_speed|null Where the reads of files of one MiB or more are measured; null when they are not. */
+    private ?read_speed $speed;
+
     /**
      * Constructor.
      *
@@ -102,6 +105,7 @@ final class packer {
      * @param string $sitepublickey Public key of the site (32 bytes).
      * @param string $siteid ID of the site.
      * @param string $tempdir Existing folder for the chunks.
+     * @param read_speed|null $speed Where the reads of files of one MiB or more are measured; null when they are not.
      * @throws \coding_exception When the key does not have 32 bytes.
      */
     public function __construct(
@@ -109,7 +113,8 @@ final class packer {
         string $runuuid,
         string $sitepublickey,
         string $siteid,
-        string $tempdir
+        string $tempdir,
+        ?read_speed $speed = null
     ) {
         // The trace of an exception shows the parameters, and #[\SensitiveParameter] hides them only from PHP 8.2 on. So the
         // key moves to the property and the parameter is unset before anything below can throw. An assignment such as
@@ -124,6 +129,7 @@ final class packer {
         $this->sitepublickey = $sitepublickey;
         $this->siteid = $siteid;
         $this->tempdir = $tempdir;
+        $this->speed = $speed;
     }
 
     /**
@@ -171,6 +177,7 @@ final class packer {
         $this->digest = hash_init('sha1');
         try {
             $digests = [];
+            $start = $this->speed?->clock();
             for ($offset = 0; $offset < $size; $offset += self::PIECE) {
                 $piece = hash_init('sha256');
                 for ($left = min(self::PIECE, $size - $offset); $left > 0; $left -= strlen($part)) {
@@ -180,6 +187,7 @@ final class packer {
                 }
                 $digests[] = hash_final($piece);
             }
+            $this->speed?->add($size, $this->speed->clock() - $start);
             self::expect_end($handle);
             if (hash_final($this->digest) !== $contenthash) {
                 throw new plugin_exception('tamper_detected');
@@ -311,7 +319,10 @@ final class packer {
      * @return chunk_info[] The pack, if this file filled it.
      */
     private function add_small(string $contenthash, $handle, int $size): array {
+        $measured = $size >= read_speed::MIN_FILE ? $this->speed : null;
+        $start = $measured?->clock();
         $data = self::read_small($handle, $size);
+        $measured?->add(strlen($data), $measured->clock() - $start);
         if (strlen($data) !== $size || sha1($data) !== $contenthash) {
             throw new plugin_exception('tamper_detected');
         }

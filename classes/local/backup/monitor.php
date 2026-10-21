@@ -67,6 +67,12 @@ final class monitor {
     /** @var int|null ID of the file that the speed is measured with; 0 when there is none; null before the first choice. */
     private ?int $fileid = null;
 
+    /** @var int The size of that file in the table. */
+    private int $filesize = 0;
+
+    /** @var callable Gives the MiB of the file at which a read starts, from 0 to its argument. */
+    private $random;
+
     /**
      * Constructor.
      *
@@ -75,19 +81,34 @@ final class monitor {
      * @param callable|null $clock Function () that returns the time in seconds as a float; microtime(true) when null.
      * @param callable|null $diskspace Function (string $folder) that returns [free bytes, total bytes]; the disk when null.
      * @param \file_system|null $filesystem File system of Moodle; the one of the site when null.
+     * @param callable|null $random Function (int $max) that gives the MiB of the file at which a read of the speed starts, from
+     *     0 to $max; random_int() when null.
      */
     public function __construct(
         system_files $files,
         limits $limits,
         ?callable $clock = null,
         ?callable $diskspace = null,
-        ?\file_system $filesystem = null
+        ?\file_system $filesystem = null,
+        ?callable $random = null
     ) {
         $this->files = $files;
         $this->limits = $limits;
         $this->clock = $clock ?? static fn(): float => microtime(true);
         $this->diskspace = $diskspace ?? [temp_area::class, 'disk_space'];
         $this->filesystem = $filesystem;
+        $this->random = $random ?? static fn(int $max): int => random_int(0, $max);
+    }
+
+    /**
+     * Whether the files of the site are in the file directory of Moodle (file_system_filedir), the only file system whose
+     * read speed is the speed of a disk or a network share (an external file system, such as an object store, is not judged).
+     *
+     * @param \file_system|null $filesystem The file system; the one of the site when null.
+     * @return bool
+     */
+    public static function local_store(?\file_system $filesystem = null): bool {
+        return get_class($filesystem ?? get_file_storage()->get_file_system()) === \file_system_filedir::class;
     }
 
     /**
@@ -124,14 +145,16 @@ final class monitor {
      * space.
      *
      * not_applicable lists the keys that cannot apply to this site, so that a null there is not "unreadable": nfs_mbps when the
-     * file system is not the local one (an object store, for example) or when no file of 1 MiB or more is stored.
+     * file system is not the local one (an object store, for example) or when no file of 1 MiB or more is stored, and when the
+     * file storage is not probed (the run measures its own reads, read_speed).
      *
+     * @param bool $probe Whether to read a file of the file storage for its speed.
      * @return array{load_per_core: ?float, memory_available_bytes: ?int, db_ms: ?float, disk_free_bytes: ?int,
      *     disk_total_bytes: ?int, nfs_mbps: ?float, not_applicable: string[]}
      */
-    public function sample(): array {
+    public function sample(bool $probe = true): array {
         [$free, $total] = $this->disk_space();
-        [$nfs, $nfsapplies] = $this->probe_nfs();
+        [$nfs, $nfsapplies] = $probe ? $this->probe_nfs() : [null, false];
         return [
             'load_per_core' => $this->load_per_core(),
             'memory_available_bytes' => $this->memory_available_bytes(),
@@ -235,8 +258,10 @@ final class monitor {
     /**
      * Measures the speed of the file storage and says whether it can be measured on this site at all.
      *
-     * The file is chosen by one query that is not indexed, so it is done once for the life of the monitor, also when there is
-     * no such file. A chosen file that has been removed since is forgotten and a new one is chosen the next time.
+     * The largest file is read, 4 MiB from a MiB of it that is chosen at random each time, so that a read seldom gets what the
+     * page cache of the server holds from the read before. The file is chosen by one query that is not indexed, so it is done
+     * once for the life of the monitor, also when there is no such file. A chosen file that has been removed since is
+     * forgotten and a new one is chosen the next time.
      *
      * @return array{0: ?float, 1: bool} The speed in MiB per second, and false when the speed does not apply to this site
      *     (the file system is not the local one, or no file of 1 MiB or more is stored).
@@ -244,17 +269,19 @@ final class monitor {
     private function probe_nfs(): array {
         global $DB;
         $filesystem = $this->filesystem ?? get_file_storage()->get_file_system();
-        if (get_class($filesystem) !== \file_system_filedir::class) {
+        if (!self::local_store($filesystem)) {
             return [null, false];
         }
         if ($this->fileid === null) {
             $rows = $DB->get_records_sql(
-                'SELECT id FROM {files} WHERE filesize >= ? ORDER BY id',
+                'SELECT id, filesize FROM {files} WHERE filesize >= ? ORDER BY filesize DESC, id',
                 [self::NFS_MIN_FILE_BYTES],
                 0,
                 1
             );
-            $this->fileid = $rows ? (int) key($rows) : 0;
+            $row = reset($rows);
+            $this->fileid = $row ? (int) $row->id : 0;
+            $this->filesize = $row ? (int) $row->filesize : 0;
         }
         if ($this->fileid === 0) {
             return [null, false];
@@ -269,7 +296,9 @@ final class monitor {
             // The clock starts before the file is opened: the time to open it, on a network disk, is part of the speed.
             $start = ($this->clock)();
             $handle = $filesystem->get_content_file_handle($file);
-            $content = $handle ? stream_get_contents($handle, self::NFS_READ_BYTES) : '';
+            $last = intdiv(max(0, $this->filesize - self::NFS_READ_BYTES), self::MIB);
+            $offset = $last > 0 ? ($this->random)($last) * self::MIB : 0;
+            $content = $handle ? stream_get_contents($handle, self::NFS_READ_BYTES, $offset) : '';
             $seconds = ($this->clock)() - $start;
             if ($handle) {
                 fclose($handle);

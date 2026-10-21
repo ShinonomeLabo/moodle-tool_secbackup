@@ -311,6 +311,29 @@ final class packer_test extends \advanced_testcase {
         $this->assertSame([], $packer->take_entries());
     }
 
+    public function test_the_reads_of_files_of_one_mib_or_more_are_measured(): void {
+        $ticks = 0.0;
+        $speed = new read_speed(static function () use (&$ticks): float {
+            $ticks += 0.25;
+            return $ticks;
+        });
+        $packer = new packer(self::key(), self::RUN, sodium_crypto_box_publickey(self::pair()), self::SITE, $this->dir, $speed);
+        // A file below one MiB is mostly the time of opening it: not measured.
+        $small = str_repeat('s', self::MIB - 1);
+        $packer->add(sha1($small), self::stream($small), strlen($small));
+        $this->assertNull($speed->mbps());
+        $one = str_repeat('o', self::MIB);
+        $packer->add(sha1($one), self::stream($one), self::MIB);
+        // One MiB read between two looks at the clock, a quarter of a second apart.
+        $this->assertEqualsWithDelta(4.0, $speed->mbps(), 1e-9);
+        [$path, $hash] = $this->big_file(5 * self::MIB);
+        $handle = fopen($path, 'rb');
+        $packer->big_digests($hash, $handle, 5 * self::MIB);
+        fclose($handle);
+        // The whole big file is one read: six MiB in all, in a quarter of a second each.
+        $this->assertEqualsWithDelta(12.0, $speed->mbps(), 1e-9);
+    }
+
     public function test_a_small_file_with_other_content_is_tamper_detected_and_not_packed(): void {
         $packer = $this->packer();
         $good = 'a good file';
