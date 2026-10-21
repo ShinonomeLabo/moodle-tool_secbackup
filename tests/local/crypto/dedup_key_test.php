@@ -31,8 +31,8 @@ final class dedup_key_test extends \advanced_testcase {
 
     public function test_the_owner_is_the_site_id_and_the_fingerprint_of_the_encryption_key(): void {
         $key = str_repeat("\x01", 32);
-        $this->assertSame('11111111-2222-4333-8444-555555555555 ' . fingerprint::of($key),
-            dedup_key::owner('11111111-2222-4333-8444-555555555555', $key));
+        $owner = dedup_key::owner('11111111-2222-4333-8444-555555555555', $key);
+        $this->assertSame('11111111-2222-4333-8444-555555555555 ' . fingerprint::of($key), $owner);
     }
 
     public function test_a_key_of_another_registration_is_replaced_and_belongs_to_the_new_one(): void {
