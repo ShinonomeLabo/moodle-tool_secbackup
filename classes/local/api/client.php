@@ -475,13 +475,14 @@ final class client {
         if ($data['run_id'] !== $runid) {
             throw self::invalid(200, 'run_id');
         }
-        // The patterns end with \z: $ also matches before a final line feed.
+        // The patterns end with \z: $ also matches before a final line feed. A failure code is recorded as the reason of the
+        // stop, in a column of 40 characters.
         if (!is_string($data['status']) || preg_match('/^[a-z_]{1,40}\z/', $data['status']) !== 1) {
             throw self::invalid(200, 'status');
         }
         if (
             $data['failure_code'] !== null && (!is_string($data['failure_code'])
-                || preg_match('/^[a-z_]{1,64}\z/', $data['failure_code']) !== 1)
+                || preg_match('/^[a-z_]{1,40}\z/', $data['failure_code']) !== 1)
         ) {
             throw self::invalid(200, 'failure_code');
         }

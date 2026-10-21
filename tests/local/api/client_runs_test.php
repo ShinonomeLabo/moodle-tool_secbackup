@@ -1524,7 +1524,7 @@ final class client_runs_test extends \advanced_testcase {
             'status as a number' => [json_encode(['status' => 5] + $ok)],
             'failure code with digits' => [json_encode(['failure_code' => 'verify1'] + $ok)],
             'failure code with a line feed' => [json_encode(['failure_code' => "expired\n"] + $ok)],
-            'failure code too long' => [json_encode(['failure_code' => str_repeat('a', 65)] + $ok)],
+            'failure code too long for the record' => [json_encode(['failure_code' => str_repeat('a', 41)] + $ok)],
             'failure code as a number' => [json_encode(['failure_code' => 5] + $ok)],
             'receipt as a string' => [json_encode(['receipt' => 'x'] + $ok)],
             'receipt as a list' => [json_encode(['receipt' => [1, 2]] + $ok)],
@@ -1545,11 +1545,11 @@ final class client_runs_test extends \advanced_testcase {
 
     public function test_a_run_state_with_a_failure_code_and_a_receipt_is_kept_as_it_came(): void {
         $envelope = ['v' => 1, 'kid' => 'x', 'payload' => 'y', 'sig' => 'z'];
-        $body = json_encode(['run_id' => self::RUN, 'status' => 'failed', 'failure_code' => str_repeat('a', 64),
+        $body = json_encode(['run_id' => self::RUN, 'status' => 'failed', 'failure_code' => str_repeat('a', 40),
             'receipt' => $envelope]);
         $state = self::answering([new Response(200, [], $body)])
             ->run_state(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN);
-        $this->assertSame(str_repeat('a', 64), $state->failure_code());
+        $this->assertSame(str_repeat('a', 40), $state->failure_code());
         $this->assertSame($envelope, $state->receipt());
     }
 
