@@ -181,6 +181,24 @@ final class dns_guard_test extends \advanced_testcase {
         $this->assertSame(['cloudflare', 'google'], dns_guard::create()->resolver_names());
     }
 
+    public function test_create_checks_the_addresses_against_the_stored_list(): void {
+        // 198.51.100.0/24 is a documentation range: the bundled list does not have it, the stored one does.
+        $report = new dns_report(['cloudflare' => ['198.51.100.7'], 'google' => ['198.51.100.8']], null);
+        $this->assertSame('dns_outside_aws', dns_guard::create()->problem($report, aws_ranges::SERVICE_CLOUDFRONT));
+        set_config('endpoint', 'https://backup.example.com/api/backup/v1', 'tool_secbackup');
+        set_config('awsranges', json_encode([
+            'syncToken' => '2',
+            'createDate' => '2026-10-20-00-00-00',
+            'services' => [
+                'CLOUDFRONT' => ['13.225.0.0/16', '192.0.2.0/24', '198.51.100.0/24', '198.18.0.0/15', '100.64.0.0/10'],
+                'S3' => ['3.5.152.0/21', '192.0.0.0/24', '192.88.99.0/24', '192.175.48.0/24', '233.252.0.0/24'],
+            ],
+        ]), 'tool_secbackup');
+        set_config('awsrangesseq', 2, 'tool_secbackup');
+        set_config('awsrangesendpoint', 'https://backup.example.com/api/backup/v1', 'tool_secbackup');
+        $this->assertNull(dns_guard::create()->problem($report, aws_ranges::SERVICE_CLOUDFRONT));
+    }
+
     public function test_the_error_codes_are_language_strings(): void {
         $codes = ['dns_doh_failed', 'dns_doh_unavailable', 'dns_not_found', 'dns_os_failed', 'dns_os_mismatch',
             'dns_outside_aws'];
