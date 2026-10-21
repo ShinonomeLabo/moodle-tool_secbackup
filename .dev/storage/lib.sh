@@ -30,10 +30,13 @@ storage_plugin() { echo "$(storage_docroot)/admin/tool/secbackup"; }
 # Runs PHP in the folder of the site with no memory limit (the scripts of the plugin and of Moodle find config.php from there).
 storage_php() { (cd "$(storage_docroot)" && php -d memory_limit=-1 "$@"); }
 
-# storage_moodle <branch>: clones Moodle and copies the tracked files of this repository into it as the plugin.
+# storage_moodle <branch>: clones Moodle, installs its Composer dependencies (the dummy data of .dev/env/generate_site_data.php
+# needs the testing generators, which need PHPUnit; the jobs of ci.yml install the same with moodle-plugin-ci) and copies the
+# tracked files of this repository into it as the plugin.
 storage_moodle() {
     local branch="$1" plugin
     git clone --quiet --depth 1 --branch "$branch" https://github.com/moodle/moodle.git "$secbk_moodle"
+    composer install --no-interaction --no-progress --quiet --working-dir="$secbk_moodle"
     plugin="$(storage_plugin)"
     mkdir -p "$plugin"
     git -C "$secbk_repo" ls-files -z | tar -C "$secbk_repo" --null -T - -cf - | tar -C "$plugin" -xf -
@@ -50,6 +53,9 @@ storage_install() {
         --dbtype=pgsql --dbhost=127.0.0.1 --dbname=moodle --dbuser=postgres --dbpass= --fullname="secbackup storage" \
         --shortname=storage --adminpass="$(cat "$SECBK_STORAGE_DIR/adminpass")" --adminemail=admin@example.com > /dev/null
     storage_config "$(cat <<'PHP'
+// No mail leaves this machine; the dummy users get an address that is valid.
+$CFG->noemailever = true;
+$CFG->noreplyaddress = 'noreply@example.com';
 // tool_secbackup development settings: the fake backup service.
 define('TOOL_SECBACKUP_DEVELOPER', [
     'trustedkeys' => ['PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw='],
