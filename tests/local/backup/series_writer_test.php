@@ -277,6 +277,21 @@ final class series_writer_test extends \advanced_testcase {
         $this->assertSame([], $writer->unreadable());
     }
 
+    public function test_the_entries_that_are_taken_are_forgotten(): void {
+        $writer = $this->writer();
+        for ($chunk = 0; $chunk < 3; $chunk++) {
+            $this->put('c' . $chunk, 'file of chunk ' . $chunk);
+            $writer->add('dataroot', $this->base, 'c' . $chunk);
+            $this->assertSame([], $writer->take_entries());
+            $infos = $writer->flush();
+            // Each time only the file of the newest chunk, and nothing is kept after it is taken.
+            $entries = $writer->take_entries();
+            $this->assertSame(['c' . $chunk], array_column($entries, 'path'));
+            $this->assertSame([$infos[0]->name], array_column($entries, 'chunk'));
+            $this->assertSame([], $writer->entries());
+        }
+    }
+
     public function test_code_is_chunks_of_type_3_with_the_label_in_the_entries_and_the_name(): void {
         $this->put('plugin/version.php', '<?php // x');
         $writer = $this->writer('code');

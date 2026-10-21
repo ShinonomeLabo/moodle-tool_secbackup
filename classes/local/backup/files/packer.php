@@ -270,7 +270,8 @@ final class packer {
     }
 
     /**
-     * The entries of the generation list for the files that are in a chunk, in the order the files were added in.
+     * The entries of the generation list for the files that are in a chunk and that take_entries() has not handed out, in
+     * the order the files were added in.
      *
      * A small file has its entry when its pack is written. The entry of a file of one piece or more:
      * {"t":"file","contenthash","size","chunk","offset","length","piece","pieces"}. For a small file, offset and length are
@@ -281,6 +282,24 @@ final class packer {
      */
     public function entries(): array {
         return array_values(array_filter($this->entries, static fn(?array $entry): bool => $entry !== null));
+    }
+
+    /**
+     * Hands out the entries (as entries() has them) of the files up to the first one that waits for a pack, and forgets
+     * them: a step that packs millions of files keeps only the entries of the files that wait.
+     *
+     * @return array[] The entries, in the order the files were added in.
+     */
+    public function take_entries(): array {
+        $taken = [];
+        foreach ($this->entries as $sequence => $entry) {
+            if ($entry === null) {
+                break;
+            }
+            $taken[] = $entry;
+            unset($this->entries[$sequence]);
+        }
+        return $taken;
     }
 
     /**

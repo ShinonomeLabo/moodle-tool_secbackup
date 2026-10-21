@@ -273,6 +273,44 @@ final class packer_test extends \advanced_testcase {
         $this->assertSame([sha1($small), $hash], array_column($packer->entries(), 'contenthash'));
     }
 
+    public function test_the_entries_that_are_taken_are_forgotten(): void {
+        $packer = $this->packer();
+        $taken = [];
+        for ($pack = 0; $pack < 3; $pack++) {
+            foreach (['first', 'second'] as $name) {
+                $content = $name . ' file of pack ' . $pack;
+                $packer->add(sha1($content), self::stream($content), strlen($content));
+            }
+            // The files wait for their pack: nothing is taken.
+            $this->assertSame([], $packer->take_entries());
+            $packer->flush();
+            $entries = $packer->take_entries();
+            // Each time only the files of the newest pack, and nothing is kept after they are taken.
+            $this->assertSame([sha1('first file of pack ' . $pack), sha1('second file of pack ' . $pack)],
+                array_column($entries, 'contenthash'));
+            $this->assertSame([], $packer->entries());
+            $taken[] = $entries[0]['chunk'];
+        }
+        $this->assertCount(3, array_unique($taken));
+    }
+
+    public function test_the_entries_are_taken_up_to_the_first_file_that_waits(): void {
+        $packer = $this->packer();
+        [$path, $hash] = $this->big_file(5 * self::MIB);
+        $handle = fopen($path, 'rb');
+        $digests = $packer->big_digests($hash, $handle, 5 * self::MIB);
+        $small = 'a small file';
+        $packer->add(sha1($small), self::stream($small), strlen($small));
+        rewind($handle);
+        $packer->big_piece($hash, $handle, 5 * self::MIB, 0, $digests[0]);
+        fclose($handle);
+        // The small file waits for its pack and comes first: the piece after it is not taken before it.
+        $this->assertSame([], $packer->take_entries());
+        $packer->flush();
+        $this->assertSame([sha1($small), $hash], array_column($packer->take_entries(), 'contenthash'));
+        $this->assertSame([], $packer->take_entries());
+    }
+
     public function test_a_small_file_with_other_content_is_tamper_detected_and_not_packed(): void {
         $packer = $this->packer();
         $good = 'a good file';

@@ -66,9 +66,6 @@ final class tree_stage {
     /** @var array[] The files that were added and whose entries are not written: source, position, root and path. */
     private array $waiting = [];
 
-    /** @var int Entries of the writer that are written. */
-    private int $drained = 0;
-
     /** @var int Names of the writer that could not be read and are written. */
     private int $unread = 0;
 
@@ -322,7 +319,7 @@ final class tree_stage {
                 return true;
             }
             $this->context->numbered($chunk);
-            $this->drain_entries();
+            $this->context->add_entries($this->writer->take_entries());
             $this->big['piece'] = $piece + 1;
             if ($piece + 1 === $pieces) {
                 $this->big = null;
@@ -375,15 +372,6 @@ final class tree_stage {
     }
 
     /**
-     * Writes the entries that the writer has made since the last time.
-     */
-    private function drain_entries(): void {
-        $entries = $this->writer->entries();
-        $this->context->add_entries(array_slice($entries, $this->drained));
-        $this->drained = count($entries);
-    }
-
-    /**
      * Takes the chunks that the writer finished and the entries and names that came with them, and commits when a chunk was
      * finished.
      *
@@ -394,9 +382,8 @@ final class tree_stage {
             $this->context->numbered($chunk);
         }
         $done = [];
-        $entries = $this->writer->entries();
-        $new = array_slice($entries, $this->drained);
-        $this->drain_entries();
+        $new = $this->writer->take_entries();
+        $this->context->add_entries($new);
         foreach ($new as $entry) {
             $done[$entry['root'] . ':' . $entry['path']] = true;
         }

@@ -2278,6 +2278,26 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame($this->stored_chunks(), $sizes);
     }
 
+    public function test_every_chunk_of_the_file_store_is_committed_before_the_watch(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $cut = $this->runner(['sample' => function () use ($run): array {
+            if ($run->stage() === 'files') {
+                throw new \RuntimeException('The process was stopped.');
+            }
+            return self::CALM;
+        }]);
+        $this->assertSame('continue', $cut->step($run, 600));
+        $this->assertSame('files', $run->stage());
+        // The first pack or piece is committed with its entries before the watch stops the step.
+        $this->assertGreaterThan(0, $run->progress()['cursor']['offset']);
+        $this->assertGreaterThan(0, $run->entries_committed());
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        foreach ($this->hashes as $name => $hash) {
+            $this->assertCount($name === 'missing' ? 0 : 1,
+                $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash), $name);
+        }
+    }
+
     public function test_a_step_that_fails_after_a_big_content_was_withdrawn_is_gone_on_with(): void {
         $hash = $this->store_file('two.bin', random_bytes(packer::PIECE + 100));
         // A small file after it in the order of the content hash, which the step packs before its next commit.

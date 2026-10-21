@@ -28,9 +28,10 @@ use tool_secbackup\local\crypto\chunk_writer;
  * content hash.
  *
  * One packer per step. The small files wait in the packer for a pack; before a big file the packer is flushed, so that
- * whenever no small file waits, the entries of the packer are the entries of every file added so far, in order. The point that
- * a later step goes on from is the last file after which nothing waits: a step that ends while small files wait for a pack
- * that there is no room for leaves them to the next step.
+ * whenever no small file waits, the entries of the packer are the entries of every file added since they were last taken, in
+ * order. The point that a later step goes on from is the last file after which nothing waits: it is committed after every pack
+ * and every piece, and a step that ends while small files wait for a pack that there is no room for leaves them to the next
+ * step.
  *
  * A big file is handed out one piece at a time, so that the temporary folder holds one of its pieces beside what waits within
  * the budget: a first read checks the file against its content hash and takes the SHA-256 of every piece (packer::big_digests()),
@@ -57,9 +58,6 @@ final class files_stage {
 
     /** @var file_source Where the contents are read from. */
     private file_source $source;
-
-    /** @var int Entries of the packer that are written. */
-    private int $drained = 0;
 
     /** @var bool Whether small files wait in the packer. */
     private bool $pending = false;
@@ -178,7 +176,7 @@ final class files_stage {
         } else if ($chunks === []) {
             $this->pending = true;
         } else {
-            $this->take($chunks);
+            $this->take($chunks, $after);
         }
         if (!$this->pending) {
             $this->safe = $after;
@@ -212,7 +210,8 @@ final class files_stage {
         }
         $present = $this->context->present();
         $start = $this->big['piece'];
-        for ($piece = $start; $piece < count($this->big['digests']); $piece++) {
+        $pieces = count($this->big['digests']);
+        for ($piece = $start; $piece < $pieces; $piece++) {
             if ($piece > $start && !$this->can_go_on()) {
                 return false;
             }
@@ -220,7 +219,6 @@ final class files_stage {
             $stored = $present->size_of($name);
             if ($stored !== null && $stored > chunk_writer::HEADER) {
                 $this->context->known($name, $stored);
-                $pieces = count($this->big['digests']);
                 $this->context->add_entries([self::stored_entry($hash, $size, $name, $stored, $piece, $pieces)]);
                 $chunk = null;
             } else {
@@ -239,12 +237,15 @@ final class files_stage {
                     return true;
                 }
                 $this->context->object($chunk);
-                $this->drain_entries();
+                $this->context->add_entries($this->packer->take_entries());
             }
             $this->big['piece'] = $piece + 1;
-            if ($piece + 1 < count($this->big['digests'])) {
-                $this->commit();
+            if ($piece + 1 === $pieces) {
+                $this->big = null;
+                $this->safe = $after;
             }
+            // Committed before the watch, as after every pack.
+            $this->commit();
             if ($chunk !== null) {
                 $this->context->watch();
             }
@@ -273,8 +274,7 @@ final class files_stage {
     private function flush(int $safe): bool {
         $room = $this->context->make_room(run_context::chunk_bound(packer::PACK_AT + packer::FILE_LIMIT));
         if ($room) {
-            $this->take($this->packer->flush());
-            $this->safe = $safe;
+            $this->take($this->packer->flush(), $safe);
         }
         return $room;
     }
@@ -333,29 +333,24 @@ final class files_stage {
     }
 
     /**
-     * Takes the chunks that the packer finished, and writes the entries that came with them.
+     * Takes the chunks that the packer finished, writes the entries that came with them, and commits when a pack was finished.
      *
-     * Nothing waits in the packer once it has finished a chunk: its entries are then complete and in order.
+     * Nothing waits in the packer once it has finished a chunk: its entries are then complete and in order, and the packer
+     * forgets them. The commit after every pack keeps what a step that stops (or runs out of memory) loses to one pack.
      *
      * @param chunk_info[] $chunks The chunks.
+     * @param int $safe The offset in the journal after the last file in them.
      */
-    private function take(array $chunks): void {
+    private function take(array $chunks, int $safe): void {
         foreach ($chunks as $chunk) {
             $this->context->object($chunk);
         }
         $this->pending = false;
-        $this->drain_entries();
+        $this->context->add_entries($this->packer->take_entries());
+        $this->safe = $safe;
         if ($chunks !== []) {
+            $this->commit();
             $this->context->watch();
         }
-    }
-
-    /**
-     * Writes the entries that the packer has made since the last time. Nothing waits in the packer then.
-     */
-    private function drain_entries(): void {
-        $entries = $this->packer->entries();
-        $this->context->add_entries(array_slice($entries, $this->drained));
-        $this->drained = count($entries);
     }
 }

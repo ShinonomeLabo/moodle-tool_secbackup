@@ -195,7 +195,8 @@ final class series_writer {
     }
 
     /**
-     * The entries of the generation list for the files that are in a finished chunk, in the order the files were added in.
+     * The entries of the generation list for the files that are in a finished chunk and that take_entries() has not handed
+     * out, in the order the files were added in.
      *
      * One entry for each file piece: {"t":label,"root","path","size" (of the whole file),"sha256" (of the whole file),"chunk",
      * "offset","length","piece","pieces"}. The offset and the length are those of the item in chunk_info::$items.
@@ -204,6 +205,18 @@ final class series_writer {
      */
     public function entries(): array {
         return $this->entries;
+    }
+
+    /**
+     * Hands out the entries that entries() has, and forgets them: a step that writes millions of files keeps none of their
+     * entries once they are taken.
+     *
+     * @return array[]
+     */
+    public function take_entries(): array {
+        $taken = $this->entries;
+        $this->entries = [];
+        return $taken;
     }
 
     /**
