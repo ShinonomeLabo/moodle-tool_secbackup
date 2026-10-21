@@ -181,6 +181,48 @@ final class manifest_builder_test extends \advanced_testcase {
         $this->assertSame("{\"n\":1}\n{\"n\":2}\n{\"n\":5}\n", file_get_contents($folder . '/entries.jsonl'));
     }
 
+    public function test_a_builder_restored_from_the_committed_figures_cuts_without_reading(): void {
+        [$builder, $folder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $builder->append(['n' => 2]);
+        $this->assertSame(2, $builder->commit());
+        $this->assertSame(16, $builder->bytes());
+        $builder->append(['n' => 3]);
+        $builder->commit();
+        file_put_contents($folder . '/entries.jsonl', '{"n":4,"half', FILE_APPEND);
+        $restored = new manifest_builder($folder, 2, 16);
+        $this->assertSame(2, $restored->commit());
+        $this->assertSame(16, $restored->bytes());
+        $this->assertSame("{\"n\":1}\n{\"n\":2}\n", file_get_contents($folder . '/entries.jsonl'));
+        $restored->append(['n' => 5]);
+        $this->assertSame(3, $restored->commit());
+        $this->assertSame("{\"n\":1}\n{\"n\":2}\n{\"n\":5}\n", file_get_contents($folder . '/entries.jsonl'));
+        // The figures are trusted as the journals' are: the lines before them are not read, not even counted.
+        file_put_contents($folder . '/entries.jsonl', 'not lines at all');
+        $this->assertSame(1, (new manifest_builder($folder, 1, 3))->commit());
+        $this->assertSame('not', file_get_contents($folder . '/entries.jsonl'));
+        // Nothing committed: whatever a stopped step left is dropped, and a missing file is an empty list.
+        $this->assertSame(0, (new manifest_builder($folder, 0, 0))->commit());
+        $this->assertSame('', file_get_contents($folder . '/entries.jsonl'));
+        $this->assertSame(0, (new manifest_builder(make_request_directory(), 0, 0))->commit());
+    }
+
+    public function test_a_builder_shorter_than_its_committed_figures_is_refused(): void {
+        [$builder, $folder] = $this->builder();
+        $builder->append(['n' => 1]);
+        $builder->commit();
+        foreach ([[$folder, 2, 50], [make_request_directory(), 1, 8]] as [$dir, $lines, $bytes]) {
+            try {
+                new manifest_builder($dir, $lines, $bytes);
+                $this->fail('No exception');
+            } catch (plugin_exception $e) {
+                $this->assertSame('temp_write_failed', $e->errorcode);
+                $this->assertSame('entries_short', $e->debuginfo);
+            }
+        }
+        $this->assertSame("{\"n\":1}\n", file_get_contents($folder . '/entries.jsonl'));
+    }
+
     public function test_a_file_that_holds_fewer_lines_than_were_committed_is_a_failure(): void {
         [$builder, $folder] = $this->builder();
         $builder->append(['n' => 1]);

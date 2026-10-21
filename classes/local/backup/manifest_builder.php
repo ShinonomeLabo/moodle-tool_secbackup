@@ -56,14 +56,34 @@ final class manifest_builder {
     private $handle = null;
 
     /**
-     * Constructor: counts the lines that a run left in the folder, and drops a last line that was cut.
+     * Constructor.
+     *
+     * Without figures it counts the lines that a run left in the folder, and drops a last line that was cut. With the figures
+     * that a run committed it cuts the file to them at once, without reading it, as a journal does: a list of millions of
+     * lines is not read at every step.
      *
      * @param string $tempdir Temporary folder of the run.
-     * @throws plugin_exception With temp_write_failed when a cut line cannot be dropped.
+     * @param int|null $lines The committed number of lines, or null to count them.
+     * @param int|null $bytes The committed bytes of those lines; given with $lines.
+     * @throws plugin_exception With temp_write_failed when a cut line cannot be dropped, or the file is shorter than the figures.
      */
-    public function __construct(string $tempdir) {
+    public function __construct(string $tempdir, ?int $lines = null, ?int $bytes = null) {
         $this->tempdir = rtrim($tempdir, '/');
-        $this->scan();
+        if ($lines === null || $bytes === null) {
+            $this->scan();
+            return;
+        }
+        $path = $this->path();
+        clearstatcache(true, $path);
+        $size = is_file($path) ? (int) filesize($path) : 0;
+        if ($size < $bytes) {
+            throw new plugin_exception('temp_write_failed', null, 'entries_short');
+        }
+        if ($size > $bytes && !error_silencer::run(static fn() => self::cut($path, $bytes), $warning)) {
+            throw new plugin_exception('temp_write_failed', null, 'entries_truncate');
+        }
+        $this->lines = $lines;
+        $this->bytes = $bytes;
     }
 
     /**
@@ -83,6 +103,15 @@ final class manifest_builder {
         }
         $this->lines++;
         $this->bytes += strlen($line);
+    }
+
+    /**
+     * The bytes of the complete lines.
+     *
+     * @return int
+     */
+    public function bytes(): int {
+        return $this->bytes;
     }
 
     /**

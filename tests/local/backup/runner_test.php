@@ -2278,6 +2278,30 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame($this->stored_chunks(), $sizes);
     }
 
+    public function test_the_entries_are_committed_with_their_bytes_and_a_step_goes_on_from_them(): void {
+        $run = run_record::create('manual', $this->fixture->time);
+        $folder = $this->tempdir . '/run-' . $run->id();
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        $checked = 0;
+        for ($i = 0; $i < 200 && $run->stage() !== 'manifest'; $i++) {
+            $this->assertSame('continue', $runner->step($run, 1));
+            if ($run->entries_committed() > 0) {
+                clearstatcache();
+                $this->assertSame([$run->entries_committed(), filesize($folder . '/entries.jsonl')], $run->progress()['entries']);
+                // What a stopped step left after the commit is dropped by the next one.
+                file_put_contents($folder . '/entries.jsonl', '{"t":"file","half', FILE_APPEND);
+                $checked++;
+            }
+            if ($run->next_attempt() !== null && $run->next_attempt() > $this->fixture->time) {
+                $this->fixture->set_time($run->next_attempt());
+            }
+        }
+        $this->assertGreaterThan(1, $checked);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        [, $entries] = $this->manifest($run->run_uuid());
+        $this->assertSame($run->entries_committed(), count($entries));
+    }
+
     public function test_every_chunk_of_the_file_store_is_committed_before_the_watch(): void {
         $run = run_record::create('manual', $this->fixture->time);
         $cut = $this->runner(['sample' => function () use ($run): array {

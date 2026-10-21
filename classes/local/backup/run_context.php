@@ -112,7 +112,10 @@ final class run_context {
     /** @var string|null The key for the names of the chunks, read when it is needed. */
     private ?string $dedupkey = null;
 
-    /** @var array The progress of the run: run, journals, cursor, tosend and commits (the number of commits so far). */
+    /**
+     * @var array The progress of the run: run, journals, entries (the committed lines and bytes of the entries, or null),
+     *     cursor, tosend and commits (the number of commits so far).
+     */
     private array $progress;
 
     /** @var journal[] The journals by name. */
@@ -183,6 +186,7 @@ final class run_context {
         $this->progress = [
             'run' => is_array($progress['run'] ?? null) ? $progress['run'] : [],
             'journals' => is_array($progress['journals'] ?? null) ? $progress['journals'] : [],
+            'entries' => is_array($progress['entries'] ?? null) ? $progress['entries'] : null,
             'cursor' => is_array($progress['cursor'] ?? null) ? $progress['cursor'] : [],
             'tosend' => is_array($progress['tosend'] ?? null) ? $progress['tosend'] : [],
             'commits' => is_int($progress['commits'] ?? null) ? $progress['commits'] : 0,
@@ -199,11 +203,26 @@ final class run_context {
         );
         $this->uploader->resume($run);
         $this->uploader->go_on_from($this->progress['commits']);
-        $this->entries = new manifest_builder($this->folder);
-        $this->entries->truncate_to($run->entries_committed());
+        $this->open_entries();
         $this->open_journals();
         $this->queue_waiting();
         $this->remove_leftovers();
+    }
+
+    /**
+     * Opens the entries of the list of the generation and cuts them to the committed figures: by the bytes, without reading
+     * the file, when the last commit holds them; else by counting the lines (a run that has not committed any).
+     */
+    private function open_entries(): void {
+        $figures = $this->progress['entries'];
+        if (
+            $figures !== null && ($figures[0] ?? null) === $this->run->entries_committed() && is_int($figures[1] ?? null)
+        ) {
+            $this->entries = new manifest_builder($this->folder, $figures[0], $figures[1]);
+            return;
+        }
+        $this->entries = new manifest_builder($this->folder);
+        $this->entries->truncate_to($this->run->entries_committed());
     }
 
     /**
@@ -319,6 +338,7 @@ final class run_context {
      */
     public function commit(array $cursor, ?string $stage = null): void {
         $entries = $this->entries->commit();
+        $this->progress['entries'] = [$entries, $this->entries->bytes()];
         foreach ($this->journals as $name => $journal) {
             $this->progress['journals'][$name] = [$journal->commit(), $journal->bytes()];
         }
