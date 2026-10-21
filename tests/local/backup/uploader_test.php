@@ -720,6 +720,87 @@ final class uploader_test extends \advanced_testcase {
         $this->assertSame(0, $uploader->pending());
     }
 
+    /**
+     * An item of a saved queue.
+     *
+     * @param chunk_info $chunk The chunk.
+     * @param int $attempts Failed sends.
+     * @param mixed $commit The commit that holds it; null for an item without one.
+     * @return array
+     */
+    private static function item(chunk_info $chunk, int $attempts, mixed $commit): array {
+        return ['kind' => 'object', 'name' => $chunk->name, 'path' => $chunk->path, 'size' => $chunk->size,
+            'sha256' => $chunk->sha256base64, 'attempts' => $attempts] + ($commit === null ? [] : ['commit' => $commit]);
+    }
+
+    public function test_the_chunks_of_a_commit_that_never_came_are_taken_out_and_keep_their_failed_sends(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $kept = self::chunk($folder, 1);
+        $stale = self::chunk($folder, 2);
+        $old = self::chunk($folder, 3);
+        $fresh = self::chunk($folder, 4);
+        $odd = self::chunk($folder, 5);
+        $items = [
+            self::item($kept, 0, 2),
+            self::item($stale, 2, 3),
+            // A queue that a step of an earlier version saved has no commit: its chunks are held by a commit.
+            self::item($old, 1, null),
+            self::item($fresh, 0, 3),
+            self::item($odd, 0, -1),
+            self::item($odd, 0, 'x'),
+        ];
+        $forgotten = ['object|' . $stale->name => 1, 'object|' . $fresh->name => 1, 'bad' => 'x', '5' => 2];
+        file_put_contents($folder . '/uploads.json', json_encode(['v' => 1, 'items' => $items, 'forgotten' => $forgotten]));
+        $uploader->resume($run);
+        $uploader->go_on_from(2);
+        $this->assertSame([$kept->name, $old->name], $uploader->queued_names());
+        $saved = $this->saved($folder);
+        $this->assertSame(['object|' . $stale->name => 2, 'object|' . $fresh->name => 1], $saved['forgotten']);
+        // The files are left to the run, which removes every file that nothing waits for.
+        $this->assertFileExists($stale->path);
+        // Made again with the same name, a chunk goes on with the sends of the earlier one that failed.
+        $uploader->queue($stale, 'object');
+        $uploader->queue($fresh, 'object');
+        $saved = $this->saved($folder);
+        $this->assertSame([0, 1, 2, 1], array_column($saved['items'], 'attempts'));
+        $this->assertSame([2, 0, 3, 3], array_column($saved['items'], 'commit'));
+        $this->assertSame([], $saved['forgotten']);
+        // The next step goes on from the same commit again: nothing is taken out twice.
+        $uploader->resume($run);
+        $uploader->go_on_from(3);
+        $this->assertSame([$kept->name, $old->name, $stale->name, $fresh->name], $uploader->queued_names());
+    }
+
+    public function test_a_step_that_stops_before_its_commit_leaves_only_the_chunks_of_commits_that_came(): void {
+        [$uploader, $run, $folder] = $this->start();
+        $uploader->go_on_from(4);
+        $first = self::chunk($folder, 1);
+        $recorded = self::chunk($folder, 2);
+        $uploader->queue($first, 'object');
+        // A numbered chunk that the last commit recorded is held by that commit.
+        $uploader->queue($recorded, 'object', true);
+        $this->assertSame([5, 4], array_column($this->saved($folder)['items'], 'commit'));
+        $uploader->committed(5);
+        $later = self::chunk($folder, 3);
+        $uploader->queue($later, 'object');
+        // The same chunk again, at its path or at another, stays with the commit that holds it.
+        $uploader->queue($first, 'object');
+        $copy = $folder . '/copy';
+        copy($first->path, $copy);
+        $uploader->queue(new chunk_info($copy, $first->name, $first->size, $first->sha256base64, []), 'object');
+        $this->assertFileDoesNotExist($copy);
+        $this->assertSame([5, 4, 6], array_column($this->saved($folder)['items'], 'commit'));
+        // The step stops: the next one goes on from commit 5, and the chunk queued after it is taken out.
+        $next = ($this->another)();
+        $next->resume($run);
+        $next->go_on_from(5);
+        $this->assertSame([$first->name, $recorded->name], $next->queued_names());
+        // Taken out without a failed send, a chunk leaves nothing behind once the queue is empty.
+        $next->drain($run, true);
+        $this->assertSame(0, $next->pending());
+        $this->assertSame([], $this->saved($folder)['forgotten']);
+    }
+
     public function test_a_queue_that_cannot_be_saved_is_a_failure_to_write(): void {
         [$uploader, , $folder] = $this->start();
         mkdir($folder . '/uploads.json.part');

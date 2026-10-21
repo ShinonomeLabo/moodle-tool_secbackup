@@ -562,6 +562,33 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame($this->stored_chunks(), $sizes);
     }
 
+    public function test_a_block_that_a_stopped_step_queued_and_the_next_step_made_otherwise_is_not_sent(): void {
+        global $DB;
+        $run = run_record::create('manual', $this->fixture->time);
+        $stopped = false;
+        // The watch after the first block of the database (the table course) stops the step, as a failure of the process does.
+        $sample = function () use ($run, &$stopped): array {
+            if (!$stopped && $run->stage() === 'db') {
+                $stopped = true;
+                throw new \RuntimeException('The process was stopped.');
+            }
+            return self::CALM;
+        };
+        $this->assertSame('continue', $this->runner(['sample' => $sample])->step($run, 600));
+        $this->assertTrue($stopped);
+        $this->assertSame('db', $run->stage());
+        $this->assertSame([], $this->stored_chunks(), 'Nothing was sent before the step stopped.');
+        // The table changes before the next step: the block that the stopped step made is not the one of the next snapshot.
+        $DB->set_field('course', 'fullname', 'Changed between the steps', ['id' => SITEID]);
+        $this->assertSame('done', $this->finish($this->runner(), $run), (string) $run->abort_code());
+        // Only the chunks of the index reach the storage: the block of the stopped step is removed, not sent.
+        [, $sizes] = $this->index($run->run_uuid());
+        $this->assertSame($sizes, $this->stored_chunks());
+        $reserved = $this->fixture->service->state['runs'][$run->run_uuid()]['reserved'];
+        $this->assertSame(array_sum($sizes) + strlen($this->stored('manifests/' . $run->run_uuid()))
+            + strlen($this->stored('indexes/' . $run->run_uuid())), $reserved);
+    }
+
     public function test_a_run_pauses_at_the_end_of_the_window_and_goes_on_in_the_next(): void {
         $run = run_record::create('schedule', $this->fixture->time);
         $runner = $this->runner(['timer' => $this->fast_timer()]);
@@ -1579,10 +1606,34 @@ final class runner_test extends \advanced_testcase {
         foreach ($failed as $stage => $path) {
             $key = substr($path, strlen('/_s3/'));
             $this->assertArrayHasKey($key, $objects, $stage);
-            // Sent again after 15 minutes; a block of the database that the stage made again is sent once more, and the
-            // storage answers that it has it.
-            $this->assertSame($stage === 'db' ? 3 : 2, $puts[$key], $stage);
+            // Sent again after 15 minutes. A block of the database waits for no commit: the next step takes it out of the queue
+            // and makes it again, and the block made again is the one that is sent.
+            $this->assertSame(2, $puts[$key], $stage);
         }
+    }
+
+    public function test_a_block_whose_sends_keep_failing_stops_the_run_although_each_step_makes_it_again(): void {
+        $paths = [];
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->fixture->intercept = function (RequestInterface $request) use ($run, &$paths) {
+            if ($request->getMethod() === 'PUT' && $run->stage() === 'db') {
+                $paths[] = $request->getUri()->getPath();
+                return new Response(500);
+            }
+            return null;
+        };
+        $runner = $this->runner([
+            'windows' => false,
+            'limits' => $this->limits(0),
+            'diskspace' => fn(string $folder): array => [0, 1000],
+        ]);
+        $this->assertSame('aborted', $this->finish($runner, $run));
+        $this->assertSame('upload_failed', $run->abort_code());
+        // The first block of the database, tried three times in three steps: each step made it again with the same name, and
+        // the sends that failed before counted.
+        $this->assertCount(3, $paths);
+        $this->assertCount(1, array_unique($paths));
+        $this->assertSame(['continue', 'continue', 'aborted'], array_slice($this->results, -3));
     }
 
     public function test_a_moodle_program_without_a_version_file_is_described_by_the_settings_of_the_site(): void {

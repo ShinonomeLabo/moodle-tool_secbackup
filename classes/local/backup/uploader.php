@@ -39,6 +39,11 @@ use tool_secbackup\local\plugin_exception;
  * send, pauses the run and says until when; a stop that the run cannot recover from is an exception whose error code is the
  * reason for stopping the run.
  *
+ * Every chunk in the queue notes the commit of the run that holds it: the next one when it is queued (the one after
+ * committed()), or the last one for a chunk that a commit recorded already. A step that goes on (go_on_from()) takes out the
+ * chunks of a commit that never came: their step stopped, and the step that goes on makes again, from its own reading, what the
+ * last commit does not hold.
+ *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -129,8 +134,14 @@ final class uploader {
      *      an argument: a trace shows the arguments, and the URLs are secrets. */
     private array $targets = [];
 
-    /** @var array[] The chunks that wait: kind, name, path, size, sha256, attempts. */
+    /** @var array[] The chunks that wait: kind, name, path, size, sha256, attempts, commit. */
     private array $queue = [];
+
+    /** @var int The number of commits of the run so far, as the run said last. */
+    private int $commits = 0;
+
+    /** @var int[] Failed sends of chunks that were taken out of the queue, by kind and name, for when they are made again. */
+    private array $forgotten = [];
 
     /** @var int|null Nothing is tried before this time. */
     private ?int $retryat = null;
@@ -240,10 +251,11 @@ final class uploader {
      *
      * @param chunk_info $chunk The chunk, as the writer returned it. Its file is in the folder of the run.
      * @param string $kind object, manifest or index.
+     * @param bool $committed Whether the last commit of the run recorded the chunk already; otherwise the next commit holds it.
      * @throws \coding_exception For another kind, or a file that is not there.
      * @throws plugin_exception With temp_write_failed when the queue cannot be saved.
      */
-    public function queue(chunk_info $chunk, string $kind): void {
+    public function queue(chunk_info $chunk, string $kind, bool $committed = false): void {
         if (!in_array($kind, ['object', 'manifest', 'index'], true) || !is_file($chunk->path)) {
             throw new \coding_exception('A chunk is an object, the manifest or the index, and its file is there.');
         }
@@ -256,14 +268,20 @@ final class uploader {
             'size' => $chunk->size,
             'sha256' => $chunk->sha256base64,
             'attempts' => 0,
+            'commit' => $committed ? $this->commits : $this->commits + 1,
         ];
         $same = array_keys(array_filter($this->queue, static fn(array $q): bool => $q['kind'] === $kind
             && $q['name'] === $item['name']));
         if ($same === []) {
+            // A chunk that a stopped step queued, and that this step makes again, goes on with the sends that failed.
+            $item['attempts'] = $this->forgotten[self::key($item)] ?? 0;
+            unset($this->forgotten[self::key($item)]);
             $this->queue[] = $item;
         } else if ($kind === 'object') {
+            $item['commit'] = min($item['commit'], $this->queue[$same[0]]['commit']);
             // A chunk that waits has this name, so its plain text is the same. A file of another path is not needed.
             if ($this->queue[$same[0]]['path'] !== $item['path']) {
+                $this->queue[$same[0]]['commit'] = $item['commit'];
                 $this->discard($item['path']);
                 $this->save();
                 return;
@@ -295,8 +313,55 @@ final class uploader {
     public function resume(run_record $run): void {
         $this->loaded = false;
         $this->queue = [];
+        $this->forgotten = [];
         $this->retryat = null;
         $this->load($this->temp->for_run($run->id()));
+    }
+
+    /**
+     * Goes on from the last commit of the run: the chunks that a step queued for a commit that never came are taken out.
+     *
+     * Their step stopped before its commit. The step that goes on makes again what the last commit does not hold, from what it
+     * reads itself: a block of a table whose rows changed meanwhile gets another name, and the chunk that waits would be stored
+     * without being in any list of a generation. A chunk that is made again with the same name is queued again; the sends of
+     * the earlier one that failed count for it. The files are left to the run, which removes every file that nothing waits for.
+     *
+     * @param int $commits The number of commits of the run so far.
+     * @throws plugin_exception With temp_write_failed when the queue cannot be saved.
+     */
+    public function go_on_from(int $commits): void {
+        $this->commits = $commits;
+        $kept = [];
+        foreach ($this->queue as $item) {
+            if ($item['commit'] <= $commits) {
+                $kept[] = $item;
+            } else if ($item['attempts'] > 0) {
+                $this->forgotten[self::key($item)] = max($item['attempts'], $this->forgotten[self::key($item)] ?? 0);
+            }
+        }
+        if (count($kept) !== count($this->queue)) {
+            $this->queue = $kept;
+            $this->save();
+        }
+    }
+
+    /**
+     * Notes that the run committed: the chunks that were queued since the commit before are now held by a commit.
+     *
+     * @param int $commits The number of commits of the run so far.
+     */
+    public function committed(int $commits): void {
+        $this->commits = $commits;
+    }
+
+    /**
+     * The key of a chunk of the queue among the chunks that were taken out: the kind, and the name of an object.
+     *
+     * @param array $item The chunk.
+     * @return string
+     */
+    private static function key(array $item): string {
+        return $item['kind'] . '|' . ($item['name'] ?? '');
     }
 
     /**
@@ -655,10 +720,15 @@ final class uploader {
         $kept = [];
         foreach ($data['items'] as $item) {
             if (self::valid_item($item, $folder) && is_file($item['path'])) {
-                $kept[] = $item;
+                $kept[] = $item + ['commit' => 0];
             }
         }
         $this->queue = $kept;
+        foreach (is_array($data['forgotten'] ?? null) ? $data['forgotten'] : [] as $key => $attempts) {
+            if (is_string($key) && is_int($attempts) && $attempts > 0) {
+                $this->forgotten[$key] = $attempts;
+            }
+        }
         if ($this->sentbytes === 0 && is_int($data['sentbytes'] ?? null) && is_int($data['senttime'] ?? null)) {
             $this->sentbytes = max(0, $data['sentbytes']);
             $this->senttime = max(0, $data['senttime']);
@@ -691,7 +761,8 @@ final class uploader {
             && is_string($item['path'] ?? null) && dirname($item['path']) === $folder
             && is_int($item['size'] ?? null) && $item['size'] > 0
             && is_string($item['sha256'] ?? null) && preg_match('/^[A-Za-z0-9+\/]{43}=\z/', $item['sha256']) === 1
-            && is_int($item['attempts'] ?? null) && $item['attempts'] >= 0;
+            && is_int($item['attempts'] ?? null) && $item['attempts'] >= 0
+            && (!array_key_exists('commit', $item) || (is_int($item['commit']) && $item['commit'] >= 0));
     }
 
     /**
@@ -702,14 +773,15 @@ final class uploader {
     private function save(): void {
         $path = $this->folder . '/' . self::QUEUE_FILE;
         $learned = $this->sentbytes > 0 || $this->life !== self::CONTRACT_LIFE;
-        if ($this->queue === [] && $this->leftovers === [] && !$learned) {
+        if ($this->queue === [] && $this->leftovers === [] && $this->forgotten === [] && !$learned) {
             error_silencer::run(static fn() => is_file($path) && unlink($path), $warning);
             return;
         }
         $json = json_encode(
             [
                 'v' => 1, 'retryat' => $this->retryat, 'items' => $this->queue, 'leftovers' => $this->leftovers,
-                'sentbytes' => $this->sentbytes, 'senttime' => $this->senttime, 'life' => $this->life,
+                'forgotten' => (object) $this->forgotten, 'sentbytes' => $this->sentbytes, 'senttime' => $this->senttime,
+                'life' => $this->life,
             ],
             JSON_UNESCAPED_SLASHES
         );

@@ -36,11 +36,13 @@ use tool_secbackup\local\plugin_exception;
  * makes the files safe on the disk and then writes the stage, the progress and the number of entries in one update.
  *
  * When a step begins, everything that was written after the last commit is dropped: the entries and every journal are cut to
- * their committed figures, and every file of the folder that is not kept (the queue, the entries, the present list) and not
- * waiting to be sent is removed. Chunks whose names are made from their content (blocks of tables, pieces of files, packs)
- * may wait to be sent before their entries are committed: a later step that makes them again makes the same name for the same
- * content. A numbered chunk of the rest of the data root or of code waits only after the commit that holds its entries
- * (tosend), so that its number is never used again for other content.
+ * their committed figures, the chunks that were queued after it are taken out of the queue, and every file of the folder that
+ * is not kept (the queue, the entries, the present list) and not waiting to be sent is removed. Chunks whose names are made
+ * from their content (blocks of tables, pieces of files, packs) are queued as they are made, and may be sent before their
+ * entries are committed. When their step stops before its commit, the step that goes on makes them again: the same name for
+ * the same content, and another name for content that changed meanwhile (the rows of a table), so that no chunk is stored that
+ * no list of a generation holds. A numbered chunk of the rest of the data root or of code waits only after the commit that
+ * holds its entries (tosend), so that its number is never used again for other content.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -106,7 +108,7 @@ final class run_context {
     /** @var string|null The key for the names of the chunks, read when it is needed. */
     private ?string $dedupkey = null;
 
-    /** @var array The progress of the run: run, journals, cursor and tosend. */
+    /** @var array The progress of the run: run, journals, cursor, tosend and commits (the number of commits so far). */
     private array $progress;
 
     /** @var journal[] The journals by name. */
@@ -179,6 +181,7 @@ final class run_context {
             'journals' => is_array($progress['journals'] ?? null) ? $progress['journals'] : [],
             'cursor' => is_array($progress['cursor'] ?? null) ? $progress['cursor'] : [],
             'tosend' => is_array($progress['tosend'] ?? null) ? $progress['tosend'] : [],
+            'commits' => is_int($progress['commits'] ?? null) ? $progress['commits'] : 0,
         ];
         $this->uploader = new uploader(
             $client,
@@ -191,6 +194,7 @@ final class run_context {
             fn(): int => max(0, (int) $this->get('estimate', 0) - $this->run->bytes_uploaded() - $this->uploader->pending_bytes())
         );
         $this->uploader->resume($run);
+        $this->uploader->go_on_from($this->progress['commits']);
         $this->entries = new manifest_builder($this->folder);
         $this->entries->truncate_to($run->entries_committed());
         $this->open_journals();
@@ -220,7 +224,8 @@ final class run_context {
     private function queue_waiting(): void {
         foreach ($this->progress['tosend'] as $item) {
             if (is_file($item['path']) && dirname($item['path']) === $this->folder) {
-                $this->uploader->queue(new chunk_info($item['path'], $item['name'], $item['size'], $item['sha256'], []), 'object');
+                $chunk = new chunk_info($item['path'], $item['name'], $item['size'], $item['sha256'], []);
+                $this->uploader->queue($chunk, 'object', true);
             }
         }
     }
@@ -320,9 +325,11 @@ final class run_context {
         $this->progress['tosend'] = array_map(static fn(chunk_info $c): array => [
             'name' => $c->name, 'path' => $c->path, 'size' => $c->size, 'sha256' => $c->sha256base64,
         ], $this->tosend);
+        $this->progress['commits']++;
         $this->run->commit($stage ?? $this->run->stage(), $this->progress, $entries, $this->now());
+        $this->uploader->committed($this->progress['commits']);
         foreach ($this->tosend as $chunk) {
-            $this->uploader->queue($chunk, 'object');
+            $this->uploader->queue($chunk, 'object', true);
         }
         $this->tosend = [];
     }
