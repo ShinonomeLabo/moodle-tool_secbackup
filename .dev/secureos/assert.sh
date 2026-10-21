@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Compares the summary of check.sh with expect.txt and fails when a result differs. Development only; CI runs the same.
-# Usage: assert.sh <real|standin> <summary.txt> <state>...      (the states that ran: selinux, standard, confined)
+# Usage: assert.sh <real|standin> <summary.txt> <state>...      (the states that ran: selinux, standard, confined, run)
 # Fails when the summary is missing, unreadable or empty, when nothing was checked, when a line has no expectation, when a
 # result differs, and when a case of a named state (every case of expect.txt whose name starts with selinux-, standard-,
-# or confined-/nonet-) or a check of a case that ran has no result.
+# confined-/nonet- or run-) or a check of a case that ran has no result.
 # A row of expect.txt that names "<case>@<template>" (for example nonet-web-stream@debian13) holds for that template only
 # and wins over the row of the plain case; the template is read from machine.txt next to the summary.
 set -uo pipefail
@@ -50,6 +50,7 @@ for state in "$@"; do
         selinux) prefixes="$prefixes selinux-" ;;
         standard) prefixes="$prefixes standard-" ;;
         confined) prefixes="$prefixes confined- nonet-" ;;
+        run) prefixes="$prefixes run-" ;;
         *) echo "assert.sh: unknown state $state" >&2; exit 2 ;;
     esac
 done

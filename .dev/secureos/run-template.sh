@@ -10,7 +10,9 @@
 #        arguments of limactl, curl and php; the machine is deleted at the end, but a machine kept with -k holds it.
 #   -m   which expectations to check: standin, real (needs a URL) or both. Default: real when there is a URL, else standin.
 #   -s   the state of the access control to test: selinux (Rocky Linux, AlmaLinux), standard or confined (Debian, Ubuntu), or
-#        all (default: every state that fits the machine). The job in CI runs one state in each machine.
+#        all (default: every state that fits the machine). The job in CI runs one state in each machine. The state run is not
+#        part of all: a whole backup run from the web server (run-check.sh) instead of the connection diagnostics, on any
+#        template.
 #   -p   host port forwarded to the web server of the VM (default 18200).
 #   -k   keep the VM at the end. -r   replace a VM of the same name; without it the script stops, so that it never deletes a
 #        VM that someone else made.
@@ -60,6 +62,7 @@ case "$template:$state" in
     debian*:all | ubuntu*:all) states="standard confined" ;;
     debian*:standard | ubuntu*:standard) states=standard ;;
     debian*:confined | ubuntu*:confined) states=confined ;;
+    rocky*:run | almalinux*:run | debian*:run | ubuntu*:run) states=run ;;
     *) echo "run-template.sh: the state $state does not fit $template" >&2; exit 2 ;;
 esac
 if [ "$replace" = no ] && vm_exists "$SECBK_VM"; then
@@ -107,16 +110,19 @@ limactl shell "$SECBK_VM" sudo bash -s -- "$port" < "$here/provision.sh" || exit
 step "copy the plugin"
 "$here/sync-plugin.sh" || exit 1
 
+# The state run has a script of its own; it writes its summary where check.sh does, and assert.sh compares it the same way.
+checker="$here/check.sh"
+[ "$state" != run ] || checker="$here/run-check.sh"
 status=ok
 if [ "$mode" = standin ] || [ "$mode" = both ]; then
     step "check with the stand-in"
-    "$here/check.sh" "$state" || status=failed
+    "$checker" "$state" || status=failed
     step "assert (stand-in)"
     "$here/assert.sh" standin "$here/out/$SECBK_VM/standin/summary.txt" $states || { [ "$status" = failed ] || status=mismatch; }
 fi
 if [ "$mode" = real ] || [ "$mode" = both ]; then
     step "check with the real service"
-    "$here/check.sh" "$state" "$url" || status=failed
+    "$checker" "$state" "$url" || status=failed
     step "assert (real service)"
     "$here/assert.sh" real "$here/out/$SECBK_VM/real/summary.txt" $states || { [ "$status" = failed ] || status=mismatch; }
 fi

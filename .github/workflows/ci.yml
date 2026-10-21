@@ -732,7 +732,8 @@ jobs:
   # The access control that the OS ships, tested in real virtual machines (Lima with QEMU and KVM, on the x86_64 runner):
   # SELinux on Rocky Linux and AlmaLinux, AppArmor on Debian and Ubuntu. Each job builds one machine from the distribution's
   # own packages, copies the plugin in, runs the connection diagnostics from the web server and from the command line in each
-  # state of the access control, and compares the results with .dev/secureos/expect.txt. The same script runs on a Mac
+  # state of the access control, and compares the results with .dev/secureos/expect.txt. The two rows of the state run make a
+  # whole backup run from the web server instead (.dev/secureos/run-check.sh), denied and allowed. The same script runs on a Mac
   # (.dev/secureos/README.md). The secret SECBK_SECUREOS_ENDPOINT holds the connection URL of a real service. Without it (a
   # fork, or until a maintainer sets it) the stand-in expectations are checked. The log has the summary lines (case, check,
   # result), never the URL or any detail text, and the job uploads no artifact.
@@ -740,7 +741,7 @@ jobs:
     name: Secure OS ${{ matrix.template }} ${{ matrix.state }}
     if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.state == 'run' && 60 || 45 }}
 
     strategy:
       fail-fast: false
@@ -758,6 +759,8 @@ jobs:
           - {template: ubuntu-22.04, state: confined}
           - {template: ubuntu-24.04, state: standard}
           - {template: ubuntu-24.04, state: confined}
+          - {template: rocky-9, state: run}
+          - {template: ubuntu-24.04, state: run}
 
     steps:
       - name: Check out the repository
