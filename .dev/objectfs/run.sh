@@ -96,7 +96,23 @@ result "filedir: $(find "$dataroot/filedir" -type f ! -name warning.txt | wc -l)
 while read -r left; do
     result "filedir keeps: $left"
 done < <(find "$dataroot/filedir" -type f ! -name warning.txt -printf '%f %s bytes\n')
-result "bucket: $(aws --endpoint-url http://127.0.0.1:9000 s3 ls --recursive "s3://$bucket" | wc -l) objects"
+bucket_objects="$(aws --endpoint-url http://127.0.0.1:9000 s3 ls --recursive "s3://$bucket" | wc -l)"
+result "bucket: $bucket_objects objects"
+# The precondition of the claim "the backup read the files through the file API": every distinct content of one byte or more is
+# external in tool_objectfs, no such file is left in filedir, and the bucket holds at least that many objects. If a task of
+# tool_objectfs did nothing, the run stops here, before the backup, instead of passing with local files.
+contents="$(storage_php -r 'define("CLI_SCRIPT", true); require "config.php";
+    echo $DB->count_records_sql("SELECT COUNT(DISTINCT contenthash) FROM {files} WHERE filesize > 0");')"
+external="$(storage_php -r 'define("CLI_SCRIPT", true); require "config.php";
+    echo $DB->count_records_sql("SELECT COUNT(DISTINCT f.contenthash) FROM {files} f
+        JOIN {tool_objectfs_objects} o ON o.contenthash = f.contenthash WHERE f.filesize > 0 AND o.location = 2");')"
+local_left="$(find "$dataroot/filedir" -type f ! -name warning.txt -size +0c | wc -l)"
+result "precondition: $contents contents, $external external, $local_left non-empty files in filedir, $bucket_objects in the bucket"
+if [ "${contents:-0}" -le 0 ] || [ "${external:-0}" -ne "$contents" ] || [ "$local_left" -ne 0 ] \
+    || [ "$bucket_objects" -lt "$contents" ]; then
+    echo "tool_objectfs did not move every content to the bucket and delete the local copies; stopping before the backup" >&2
+    exit 1
+fi
 
 echo "== The status page, and the backup started with its button"
 storage_web_start

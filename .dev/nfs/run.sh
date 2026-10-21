@@ -55,6 +55,14 @@ for i in 1 2 3; do
 done
 storage_php "$(storage_plugin)/.dev/nfs/measure.php" --times=3 | tee "$SECBK_STORAGE_DIR/measure-warm.txt"
 result "warm (one process): $(sed -n 's/^nfs_mbps //p' "$SECBK_STORAGE_DIR/measure-warm.txt" | paste -sd ' ' -) MiB/s"
+# Every extracted speed must be a positive number; an empty or zero value means that the measurement did not work.
+for file in "$SECBK_STORAGE_DIR"/measure-cold-?.txt "$SECBK_STORAGE_DIR/measure-warm.txt"; do
+    speeds="$(sed -n 's/^nfs_mbps //p' "$file")"
+    if [ -z "$speeds" ] || ! printf '%s\n' "$speeds" | awk '$1 !~ /^[0-9]+([.][0-9]+)?$/ || $1 + 0 <= 0 { bad = 1 } END { exit bad }'; then
+        echo "no positive nfs_mbps in $file: '$speeds'" >&2
+        exit 1
+    fi
+done
 result "limit (minnfsmbps) $(sed -n 's/^limit_mbps //p' "$SECBK_STORAGE_DIR/measure-warm.txt") MiB/s"
 read -r _ hash bytes < <(grep '^file ' "$SECBK_STORAGE_DIR/measure-warm.txt")
 result "file read: $bytes bytes"

@@ -162,6 +162,6 @@ cli_writeln('files in the backup: ' . count($inbackup) . ', decrypted with SHA-1
     . $checked . ', not matching: ' . count($bad));
 cli_writeln('files listed as missing: ' . count($missing) . ', files of the site in neither: ' . count($notbacked)
     . ', files in the backup that the site does not have: ' . count($extra));
-$ok = $bad === [] && $notbacked === [] && $extra === [] && $missing === [] && $checked === count($sitefiles);
+$ok = $bad === [] && $notbacked === [] && $extra === [] && $missing === [] && $checked === count($sitefiles) && $checked > 0;
 cli_writeln('result: ' . ($ok ? 'ok' : 'mismatch'));
 exit($ok ? 0 : 1);
