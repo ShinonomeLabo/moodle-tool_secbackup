@@ -97,6 +97,14 @@ jobs:
           php .dev/coverage/tests/run.php
           php .dev/coverage/tests/badge.php
 
+      # The mutation testing runs by hand (.github/workflows/infection.yml); a new source file that no shard holds would drop
+      # out of it, so the shards are checked on every run.
+      - name: Test the tools of the mutation testing and check its shards
+        if: ${{ !cancelled() }}
+        run: |
+          php .dev/infection/tests/run.php
+          php .dev/infection/shards.php check
+
   inventory:
     name: UI inventory
     runs-on: ubuntu-24.04

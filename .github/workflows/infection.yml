@@ -1,0 +1,181 @@
+name: Infection
+
+# Mutation testing of the security parts of the plugin (the source folders of .dev/infection/infection.json5), with the same
+# configuration as .dev/infection/run.sh on a development machine: Infection 0.29.14, Moodle 5.3, PHP 8.4, PostgreSQL, one
+# thread, only the tests that cover a mutant. A whole run takes hours, so it is split into the shards of
+# .dev/infection/shards.txt, one job each, and the last job adds their counts up into one covered code MSI, which must reach
+# minCoveredMsi of infection.json5 (.dev/infection/merge.php). Every escaped mutant is listed in the summary of the run, for
+# the review in .dev/infection/REVIEW.md. Manual only: the run takes long, and the code it tests changes seldom.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  shards:
+    name: List the shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.list.outputs.shards }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      # The check fails when a PHP file of the source folders is in no shard or in two, so that none drops out unseen.
+      - name: Check and list the shards
+        id: list
+        run: |
+          php .dev/infection/shards.php check
+          echo "shards=$(php .dev/infection/shards.php list)" >> "$GITHUB_OUTPUT"
+
+  mutate:
+    name: Infection ${{ matrix.shard }}
+    needs: shards
+    runs-on: ubuntu-24.04
+    # GitHub stops a job after six hours. The step that runs Infection has a shorter limit, so that a run that stalls fails
+    # in that step and its log is kept.
+    timeout-minutes: 330
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shards.outputs.shards) }}
+
+    services:
+      db:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+          persist-credentials: false
+
+      # pcov gives Infection the coverage of the first run of the tests, as on the development machine.
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          ini-values: max_input_vars=5000
+          coverage: pcov
+
+      - name: Install moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo "$(cd ci/bin; pwd)" >> "$GITHUB_PATH"
+          echo "$(cd ci/vendor/bin; pwd)" >> "$GITHUB_PATH"
+          sudo locale-gen en_AU.UTF-8
+          echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
+
+      - name: Install Moodle with the plugin
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+        env:
+          DB: pgsql
+          MOODLE_BRANCH: MOODLE_503_STABLE
+
+      # The same settings and fake service as the PHPUnit run of ci.yml.
+      - name: Add the development settings and start the fake service
+        run: |
+          moodle-plugin-ci add-config 'define("TOOL_SECBACKUP_DEVELOPER", ["trustedkeys" => ["PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw="], "allowhttp" => true, "allowprivatehosts" => true, "skipnetworkchecks" => true]);'
+          nohup php -S 127.0.0.1:8099 plugin/.dev/fakesec/router.php > "$RUNNER_TEMP/fakesec.log" 2>&1 &
+          for _ in $(seq 1 20); do
+            if php -r 'exit(@file_get_contents("http://127.0.0.1:8099/_fake/state") === false ? 1 : 0);'; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/fakesec.log"
+          exit 1
+
+      # The version of .dev/env/setup.sh: the ignore entries of infection.json5 name mutants of its mutators.
+      - name: Install Infection
+        run: composer create-project -n --no-dev --prefer-dist infection/infection:0.29.14 "$RUNNER_TEMP/infection"
+
+      # Infection runs in the plugin's copy in Moodle, with the plugin's phpunit.xml. Only the path of PHPUnit differs from
+      # the configuration of the development machine, so the configuration is copied with that path changed; the grep stops
+      # the job if the path in infection.json5 changed and the copy kept the old one.
+      - name: Run Infection on the shard ${{ matrix.shard }}
+        timeout-minutes: 300
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
+          php "$root/admin/tool/phpunit/cli/util.php" --buildcomponentconfigs > /dev/null
+          cd "$root/admin/tool/secbackup"
+          phpunit="$GITHUB_WORKSPACE/moodle/vendor/bin/phpunit"
+          sed "s#\"customPath\": \"/var/www/html/vendor/bin/phpunit\"#\"customPath\": \"$phpunit\"#" \
+            .dev/infection/infection.json5 > .dev/infection/infection.ci.json5
+          grep -q "\"customPath\": \"$phpunit\"" .dev/infection/infection.ci.json5
+          mkdir -p .dev/infection/out
+          filter="$(php .dev/infection/shards.php filter "$SHARD")"
+          # The floor is for the sum of the shards (job merge), not for one shard.
+          php "$RUNNER_TEMP/infection/bin/infection" --configuration=.dev/infection/infection.ci.json5 --threads=1 \
+            --only-covering-test-cases --show-mutations --no-progress --min-covered-msi=0 --filter="$filter"
+
+      - name: Keep the logs of the shard
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$root"/admin/tool/secbackup/.dev/infection/out/* "$RUNNER_TEMP/out/"
+
+      - name: Upload the logs of the shard
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: infection-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+
+  merge:
+    name: Covered code MSI of all shards
+    needs: mutate
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Download the logs of every shard
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: infection-*
+          path: ${{ runner.temp }}/infection
+
+      # A shard without its logs stops the merge (exit code 2), so a missing part cannot raise the score.
+      - name: Add up the shards
+        run: php .dev/infection/merge.php --markdown="$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/infection"

@@ -1,0 +1,47 @@
+# The parts of the Infection run of .github/workflows/infection.yml: one job for each shard, so that no job comes near the
+# time limit of GitHub. Each line is a shard name and one file of the source folders of infection.json5. Every PHP file of
+# those folders is on exactly one line (.dev/infection/shards.php check, run by the job rules of ci.yml): a new file that is
+# not added here fails that check, so it cannot drop out of the mutation testing unseen.
+# The files are grouped so that the shards have a similar number of lines.
+api-client classes/local/api/client.php
+api-answers classes/local/api/capacity_result.php
+api-answers classes/local/api/core_manifest_ref.php
+api-answers classes/local/api/instruction.php
+api-answers classes/local/api/receipt.php
+api-answers classes/local/api/run_start.php
+api-answers classes/local/api/run_state.php
+api-answers classes/local/api/status_result.php
+api-answers classes/local/api/upload_target.php
+api-requests classes/local/api/api_exception.php
+api-requests classes/local/api/enroll_result.php
+api-requests classes/local/api/enrollment_request.php
+api-requests classes/local/api/request_signer.php
+crypto-writer classes/local/crypto/chunk_writer.php
+crypto-reader classes/local/crypto/chunk_info.php
+crypto-reader classes/local/crypto/chunk_name.php
+crypto-reader classes/local/crypto/chunk_reader.php
+crypto-reader classes/local/crypto/dedup_key.php
+crypto-reader classes/local/crypto/padme.php
+crypto-keys classes/local/crypto/artifact_signature.php
+crypto-keys classes/local/crypto/base64url.php
+crypto-keys classes/local/crypto/fingerprint.php
+crypto-keys classes/local/crypto/key_exception.php
+crypto-keys classes/local/crypto/public_key_format.php
+crypto-keys classes/local/crypto/signing_keypair.php
+crypto-keys classes/local/crypto/signing_keys.php
+net-object classes/local/net/guarded_options.php
+net-object classes/local/net/object_transport.php
+net-object classes/local/net/object_url.php
+net-transport classes/local/net/aws_ranges.php
+net-transport classes/local/net/response.php
+net-transport classes/local/net/transport.php
+net-transport classes/local/net/transport_exception.php
+net-dns classes/local/net/dns_guard.php
+net-dns classes/local/net/dns_report.php
+net-dns classes/local/net/doh_resolver.php
+net-dns classes/local/net/proxy_settings.php
+trust-endpoint classes/local/endpoint/endpoint.php
+trust-endpoint classes/local/endpoint/endpoint_exception.php
+trust-endpoint classes/local/trust/developer_settings.php
+trust-endpoint classes/local/trust/envelope_exception.php
+trust-endpoint classes/local/trust/sec_trust.php

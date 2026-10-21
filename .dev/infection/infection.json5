@@ -25,8 +25,8 @@
         // and has its row in REVIEW.md, which says why. When the code moves, the line no longer matches and the mutant comes back.
         "CastInt": {
             "ignore": [
-                "tool_secbackup\\local\\net\\aws_ranges::network::113",
-                "tool_secbackup\\local\\net\\transport::retry_after::244"
+                "tool_secbackup\\local\\net\\aws_ranges::network::265",
+                "tool_secbackup\\local\\net\\transport::retry_after::201"
             ]
         },
         "CastString": {
@@ -34,18 +34,18 @@
                 "tool_secbackup\\local\\api\\enrollment_request::for_this_site::78",
                 "tool_secbackup\\local\\api\\enrollment_request::release_text::90",
                 "tool_secbackup\\local\\api\\enrollment_request::release_text::91",
-                "tool_secbackup\\local\\api\\request_signer::headers::113",
+                "tool_secbackup\\local\\api\\request_signer::headers::120",
                 "tool_secbackup\\local\\crypto\\fingerprint::normalize::57",
-                "tool_secbackup\\local\\net\\aws_ranges::bundled::64",
-                "tool_secbackup\\local\\net\\transport::send::133",
+                "tool_secbackup\\local\\net\\aws_ranges::bundled::81",
+                "tool_secbackup\\local\\net\\transport::send::122",
                 "tool_secbackup\\local\\trust\\sec_trust::current::67",
                 "tool_secbackup\\local\\trust\\sec_trust::key_ids::88"
             ]
         },
         "DecrementInteger": {
             "ignore": [
-                "tool_secbackup\\local\\net\\transport::failure::222",
-                "tool_secbackup\\local\\net\\transport::failure::224",
+                "tool_secbackup\\local\\net\\guarded_options::failure::112",
+                "tool_secbackup\\local\\net\\guarded_options::failure::114",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
             ]
         },
@@ -60,7 +60,7 @@
         "IncrementInteger": {
             "ignore": [
                 "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
-                "tool_secbackup\\local\\net\\transport::send::201",
+                "tool_secbackup\\local\\net\\transport::send::186",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
             ]
         },
@@ -74,12 +74,14 @@
             "ignore": ["tool_secbackup\\local\\trust\\sec_trust::current::67"]
         },
         "UnwrapTrim": {
-            "ignore": ["tool_secbackup\\local\\net\\transport::retry_after::244"]
+            "ignore": ["tool_secbackup\\local\\net\\transport::retry_after::201"]
         }
     },
     "logs": {
-        // Relative to this folder.
+        // Relative to this folder. The JSON logs are what .dev/infection/merge.php adds up for the shards on GitHub.
         "text": "out/infection.log",
-        "summary": "out/summary.log"
+        "summary": "out/summary.log",
+        "summaryJson": "out/summary.json",
+        "json": "out/infection.json"
     }
 }
