@@ -589,7 +589,17 @@ final class runner_test extends \advanced_testcase {
             + strlen($this->stored('indexes/' . $run->run_uuid())), $reserved);
     }
 
+    /**
+     * Gives the settings of two windows a day (02:00 and 14:00 in Tokyo): the next window starts long before a run expires, so
+     * a run that pauses at the end of its window goes on in the next one.
+     */
+    private static function twice_a_day(): void {
+        $body = \tool_secbackup\tests\instruction_factory::settings_body(['runs_per_day' => 2]);
+        settings::apply(\tool_secbackup\tests\instruction_factory::make('settings', 2, $body));
+    }
+
     public function test_a_run_pauses_at_the_end_of_the_window_and_goes_on_in_the_next(): void {
+        self::twice_a_day();
         $run = run_record::create('schedule', $this->fixture->time);
         $runner = $this->runner(['timer' => $this->fast_timer()]);
         while ($run->stage() !== 'files') {
@@ -608,6 +618,33 @@ final class runner_test extends \advanced_testcase {
         $this->fixture->set_time($next['start']);
         $this->assertSame('done', $this->finish($runner, $run, 1));
         $this->assertSame('completed', $run->status());
+    }
+
+    public function test_a_run_whose_next_window_starts_too_late_to_finish_before_it_expires_stops_at_the_end_of_its_window(): void {
+        // Once a day: the next window starts at 02:14, less than an hour before the 24 hours and 10 minutes after 03:00.
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        while ($run->stage() !== 'files') {
+            $this->assertSame('continue', $runner->step($run, 1));
+        }
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:00'));
+        $this->assertSame('aborted', $runner->step($run, 1));
+        $this->assertSame('window_ended', $run->abort_code());
+        // The service is told at once, and the next window starts a new run.
+        $this->assertSame('window_ended', $this->fixture->service->state['runs'][$run->run_uuid()]['failure_code']);
+        $this->assertNull(run_record::active());
+    }
+
+    public function test_a_run_whose_step_fails_after_its_window_when_the_next_one_starts_too_late_is_stopped(): void {
+        $this->refuse_the_report();
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner();
+        for ($i = 0; $i < 50 && ($run->stage() !== 'complete' || $run->next_attempt() === null); $i++) {
+            $runner->step($run, 600);
+        }
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:01'));
+        $this->assertSame('aborted', $runner->step($run, 600));
+        $this->assertSame('window_ended', $run->abort_code());
     }
 
     public function test_a_run_that_misses_two_windows_in_a_row_is_stopped(): void {
@@ -655,6 +692,7 @@ final class runner_test extends \advanced_testcase {
     }
 
     public function test_the_command_line_goes_on_with_a_run_that_waits_for_its_window(): void {
+        self::twice_a_day();
         $run = run_record::create('schedule', $this->fixture->time);
         $runner = $this->runner(['timer' => $this->fast_timer()]);
         $runner->step($run, 1);
@@ -1518,6 +1556,7 @@ final class runner_test extends \advanced_testcase {
     }
 
     public function test_the_window_can_end_while_the_files_are_added(): void {
+        self::twice_a_day();
         // A second big file: a content always follows the first big one, whose chunk is the first of the stage.
         get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
             'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
@@ -1537,6 +1576,7 @@ final class runner_test extends \advanced_testcase {
     }
 
     public function test_the_window_can_end_while_the_data_root_is_added(): void {
+        self::twice_a_day();
         file_put_contents($this->dataroot . '/big.bin', random_bytes(series_writer::FILE_LIMIT + 10));
         $run = run_record::create('schedule', $this->fixture->time);
         $runner = $this->runner(['sample' => function () use ($run): array {
@@ -1929,7 +1969,8 @@ final class runner_test extends \advanced_testcase {
         $this->refuse_the_report();
         $run = run_record::create('manual', $this->fixture->time);
         $started = $this->fixture->time;
-        $runner = $this->runner();
+        // The command line drives it: no window stops it before it expires.
+        $runner = $this->runner(['windows' => false]);
         for ($i = 0; $i < 50 && ($run->stage() !== 'complete' || $run->next_attempt() === null); $i++) {
             $runner->step($run, 600);
         }

@@ -70,6 +70,13 @@ final class runner {
      */
     public const EXPIRES_AFTER = 87000;
 
+    /**
+     * @var int Seconds that a run must have between the start of its next window and the time it expires, to wait for that
+     *     window. With less (once a day, the next window starts about 24 hours after this one), the run could not finish there:
+     *     it is stopped at the end of its window with window_ended, and the next window starts a new run.
+     */
+    public const NEXT_WINDOW_MARGIN = 3600;
+
     /** @var client The client of the service. */
     private client $client;
 
@@ -164,9 +171,10 @@ final class runner {
      * first, so a copy that is stale does no harm.
      *
      * Every failure is bounded. A reason stops the run; a busy service makes it wait as long as the service asks; any other
-     * error makes it wait RETRY_AFTER seconds (or, past the end of its window, for its next window: two windows missed stop it
-     * with window_ended). A run that has no verified receipt EXPIRES_AFTER seconds after it started is stopped with expired,
-     * the reason with which the service fails it, which is not told back.
+     * error makes it wait RETRY_AFTER seconds (or, past the end of its window, for its next window: two windows missed, or a
+     * next window that starts too late for the run to finish before it expires, stop it with window_ended). A run that has no
+     * verified receipt EXPIRES_AFTER seconds after it started is stopped with expired, the reason with which the service fails
+     * it, which is not told back.
      *
      * @param run_record $run The run; it is read again from the table.
      * @param int $budgetseconds Seconds that the step may take (the stage of the database takes what it needs).
@@ -420,13 +428,15 @@ final class runner {
      *
      * @param run_context $context The step.
      * @param int $now The current time.
-     * @return array|null The next window (start and end), or null when the run has missed two windows.
+     * @return array|null The next window (start and end), or null when the run has missed two windows or the next window
+     *     starts too late for the run to finish before it expires (NEXT_WINDOW_MARGIN).
      */
     private function miss_window(run_context $context, int $now): ?array {
         $next = schedule::next_slot($context->settings, $context->siteid, (int) $context->get('window_end'));
         $misses = $context->run->window_misses() + ($now >= $next['end'] ? 2 : 1);
         $context->run->set_window_misses($misses);
-        return $misses >= 2 ? null : $next;
+        $late = $next['start'] > $context->run->started_at() + self::EXPIRES_AFTER - self::NEXT_WINDOW_MARGIN;
+        return $misses >= 2 || $late ? null : $next;
     }
 
     /**

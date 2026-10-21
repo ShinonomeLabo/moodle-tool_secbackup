@@ -13,8 +13,9 @@
   returned a signed receipt.
 - Backups start in the window that the service sets, a little after its start (a delay of its own for each site), or at once
   with the button "Back up now" of the status page or with `cli/backup.php --now`. A backup that the cron runs pauses at the
-  end of its window and goes on in the next one; one that two windows did not finish is stopped. A failed step is tried again,
-  and an upload three times, before the backup is stopped.
+  end of its window and goes on in the next one when that one starts early enough for it to finish within 24 hours;
+  otherwise (one window a day) it is stopped at the end of its window, and one that two windows did not finish is stopped.
+  A failed step is tried again, and an upload three times, before the backup is stopped.
 - Before a start and while a backup runs, the plugin checks the server against the limits of the new page "Limits of the
   backup" (load per CPU core, free memory, database response, read speed of the file storage, free space for temporary
   files, upload speed) and waits while they are exceeded. A backup does not start while Moodle's automated course backup is

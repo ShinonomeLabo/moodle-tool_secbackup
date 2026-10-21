@@ -18,8 +18,12 @@ connection diagnostics, on a page and on the command line. Restoring a backup co
   upload speed limit and whether the logs are included. The plugin starts a backup in the window, a little after its start
   (a delay of its own for each site, at most a quarter of the window and at most 30 minutes, so that the sites of one window
   do not all start at once). The button "Back up now" of the status page and `cli/backup.php --now` start one at once, in or
-  out of the window. A backup that the cron runs pauses at the end of its window and goes on in the next one; one that is not
-  finished at the end of the second window is stopped. `cli/backup.php` does not pause.
+  out of the window. A backup that the cron runs pauses at the end of its window and goes on in the next one when that one
+  starts early enough for the backup to finish within the 24 hours that the service allows a backup (with several windows a
+  day). Otherwise (with one window a day, the next one starts about 24 hours later) it is stopped at the end of its window,
+  and the next window starts a new backup, which does not send again the files of the file directory that the storage has.
+  A backup that is not finished at the end of the second window is stopped too. `cli/backup.php` does not pause (see
+  "Command line" for large sites).
 - **Before a start**, the plugin checks that the site is registered and has received the settings, that no backup runs,
   that Moodle's automated course backup is not working, that the clock of the server is within 5 minutes of the service's,
   that a backup would have 256 MB of memory or more, and that the server is within the limits of the page "Limits of the
@@ -101,6 +105,14 @@ are in `public/admin/tool/secbackup/cli/`.
 `backup.php` goes on with the running backup until it ends, also past the end of the window; with `--now` it starts one when
 none is running, in or out of the window. A step that fails is tried again after 5 minutes. Exit codes: 0 the backup is
 complete, 1 it was stopped or the service did not start it, 2 no backup was run. The cron runs backups without it.
+
+A large site whose backup does not finish within its window can run `backup.php` from the cron of the system, as the user
+that runs Moodle's cron, once a day 35 minutes after the start of the window (the schedule starts the backup at most 30
+minutes after the start). Without `--now` it takes over the backup that the schedule started and goes on with it until it
+ends, past the end of the window and in steps of an hour instead of ten minutes; when none was started, it does nothing.
+For example, for a window from 02:00 in the time zone of the server:
+
+    35 2 * * * www-data /usr/bin/php /var/www/moodle/admin/tool/secbackup/cli/backup.php --quiet
 `diagnose.php` runs the connection diagnostics; `--endpoint` checks a connection URL before the site is registered. Both
 print their help with `--help`.
 
