@@ -40,7 +40,6 @@ require_once($CFG->libdir . '/clilib.php');
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
-use tool_secbackup\local\crypto\dedup_key;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\enrollment\state;
 
@@ -103,8 +102,7 @@ function secbk_dev_open(array $fake, string $key, string $name, array $context):
 
 $context = [$folder, $secretkey, $publickey, $siteid];
 $prefix = 'sites/' . $siteid . '/';
-$dedupkey = dedup_key::load_or_create();
-$manifestname = chunk_name::manifest($dedupkey, $runid);
+$manifestname = chunk_name::manifest($runid);
 $reader = secbk_dev_open($fake, $prefix . 'manifests/' . $runid, $manifestname, $context);
 $lines = explode("\n", rtrim((string) gzdecode($reader->read_item(chunk_writer::HEADER)), "\n"));
 $header = json_decode((string) array_shift($lines), true);
