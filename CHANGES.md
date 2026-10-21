@@ -22,7 +22,9 @@
 - Before a start and while a backup runs, the plugin checks the server against the limits of the new page "Limits of the
   backup" (load per CPU core, free memory, database response, read speed of the file storage, free space for temporary
   files, upload speed) and waits while they are exceeded. A backup does not start while Moodle's automated course backup is
-  working, when the clock is 5 minutes or more off, or with less than 256 MB of memory.
+  working, when the clock is 5 minutes or more off, or with less than 256 MB of memory. The temporary folder of that page,
+  which a backup leaves out, cannot be the data directory itself or a folder in it that already holds files, and cannot be
+  changed while a backup runs.
 - The report of a backup tells the service whether Moodle's code may have been modified: when it differs from the official
   release, and also when no official list could be compared with it (the whole code was then sent).
 - The status page shows the running backup, the last completed backup and why the latest backup stopped, with advice. The

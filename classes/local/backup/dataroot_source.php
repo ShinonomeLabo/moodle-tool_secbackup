@@ -42,15 +42,10 @@ final class dataroot_source {
         $real = realpath($CFG->dataroot);
         $excluded = self::FIXED;
         if ($real !== false) {
-            $settings = [
-                $CFG->tempdir ?? null, $CFG->cachedir ?? null, $CFG->localcachedir ?? null, $CFG->backuptempdir ?? null,
-                $CFG->trashdir ?? null, limits::current()->tempdir,
-            ];
-            foreach ($settings as $path) {
-                $inside = self::inside($real, $path);
-                if ($inside !== null) {
-                    $excluded[] = $inside;
-                }
+            $excluded = self::left_out($real);
+            $inside = self::inside($real, limits::current()->tempdir);
+            if ($inside !== null) {
+                $excluded[] = $inside;
             }
         }
         $excluded = array_values(array_unique($excluded));
@@ -61,6 +56,57 @@ final class dataroot_source {
             $roots['secret'] = [$secret, []];
         }
         return $roots;
+    }
+
+    /**
+     * Where a folder for the temporary files of a backup lies for the backup of the data directory, which leaves it out.
+     *
+     * @param string $path Absolute folder.
+     * @return string|null dataroot for the data directory itself, backedup for an existing folder in it that a backup holds
+     *     (one that is not in a folder that is always left out), or null for any other folder, also one that does not exist.
+     */
+    public static function place_of(string $path): ?string {
+        global $CFG;
+        $real = realpath($CFG->dataroot);
+        if ($real === false) {
+            return null;
+        }
+        if (realpath($path) === $real) {
+            return 'dataroot';
+        }
+        $inside = self::inside($real, $path);
+        if ($inside === null) {
+            return null;
+        }
+        foreach (self::left_out($real) as $folder) {
+            if ($inside === $folder || str_starts_with($inside, $folder . '/')) {
+                return null;
+            }
+        }
+        return 'backedup';
+    }
+
+    /**
+     * The folders of the data directory that a backup leaves out whatever the plugin's settings: the fixed ones and the folders
+     * of the temporary, cache and trash files of Moodle that are inside it.
+     *
+     * @param string $real The real path of the data directory.
+     * @return string[] Relative paths with "/".
+     */
+    private static function left_out(string $real): array {
+        global $CFG;
+        $excluded = self::FIXED;
+        $settings = [
+            $CFG->tempdir ?? null, $CFG->cachedir ?? null, $CFG->localcachedir ?? null, $CFG->backuptempdir ?? null,
+            $CFG->trashdir ?? null,
+        ];
+        foreach ($settings as $path) {
+            $inside = self::inside($real, $path);
+            if ($inside !== null) {
+                $excluded[] = $inside;
+            }
+        }
+        return $excluded;
     }
 
     /**

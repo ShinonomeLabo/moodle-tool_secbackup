@@ -193,6 +193,85 @@ final class limit_setting_test extends \advanced_testcase {
         $this->assertSame('123', get_config('tool_secbackup', 'maxdbms'));
     }
 
+    public function test_the_data_directory_itself_is_refused(): void {
+        global $CFG;
+        set_config('tempdir', '/var/tmp/known', 'tool_secbackup');
+        $error = get_string('setting_error_dataroot', 'tool_secbackup');
+        foreach ([$CFG->dataroot, $CFG->dataroot . '/', realpath($CFG->dataroot)] as $value) {
+            // The backup of the data directory would hold the temporary files of the run itself.
+            $this->assertSame($error, self::folder()->write_setting($value), $value);
+        }
+        $this->assertSame('/var/tmp/known', get_config('tool_secbackup', 'tempdir'));
+    }
+
+    public function test_a_folder_of_the_data_directory_that_holds_files_is_refused(): void {
+        global $CFG;
+        set_config('tempdir', '/var/tmp/known', 'tool_secbackup');
+        check_dir_exists($CFG->dataroot . '/coursework/2026');
+        file_put_contents($CFG->dataroot . '/coursework/2026/essay.txt', 'x');
+        $error = get_string('setting_error_datafolder', 'tool_secbackup');
+        foreach ([$CFG->dataroot . '/coursework', $CFG->dataroot . '/coursework/2026/'] as $value) {
+            // The folder is left out of the backup, and its files with it.
+            $this->assertSame($error, self::folder()->write_setting($value), $value);
+        }
+        $this->assertSame('/var/tmp/known', get_config('tool_secbackup', 'tempdir'));
+    }
+
+    public function test_a_new_or_empty_folder_of_the_data_directory_is_saved(): void {
+        global $CFG;
+        $this->assertSame('', self::folder()->write_setting($CFG->dataroot . '/secbk-new'));
+        $this->assertSame($CFG->dataroot . '/secbk-new', get_config('tool_secbackup', 'tempdir'));
+        check_dir_exists($CFG->dataroot . '/secbk-empty');
+        $this->assertSame('', self::folder()->write_setting($CFG->dataroot . '/secbk-empty'));
+        $this->assertSame($CFG->dataroot . '/secbk-empty', get_config('tool_secbackup', 'tempdir'));
+    }
+
+    public function test_a_folder_with_files_in_a_folder_that_the_backup_leaves_out_is_saved(): void {
+        global $CFG;
+        check_dir_exists($CFG->tempdir . '/tool_secbackup');
+        file_put_contents($CFG->tempdir . '/tool_secbackup/left', 'x');
+        $this->assertSame('', self::folder()->write_setting($CFG->tempdir . '/tool_secbackup'));
+        $this->assertSame($CFG->tempdir . '/tool_secbackup', get_config('tool_secbackup', 'tempdir'));
+    }
+
+    public function test_the_saved_folder_is_saved_again_with_the_files_of_the_plugin_in_it(): void {
+        global $CFG;
+        check_dir_exists($CFG->dataroot . '/secbk/run-1');
+        set_config('tempdir', $CFG->dataroot . '/secbk', 'tool_secbackup');
+        // The page writes every setting when it is saved, also the ones that did not change.
+        $this->assertSame('', self::folder()->write_setting($CFG->dataroot . '/secbk'));
+        $this->assertSame('', self::folder()->write_setting($CFG->dataroot . '/secbk/'));
+    }
+
+    public function test_the_folder_is_not_changed_while_a_backup_runs(): void {
+        set_config('tempdir', '/var/tmp/known', 'tool_secbackup');
+        $run = run_record::create('manual', time());
+        $running = get_string('setting_error_running', 'tool_secbackup');
+        $this->assertSame($running, self::folder()->write_setting('/var/tmp/other'));
+        $this->assertSame($running, self::folder()->write_setting(''));
+        $this->assertSame('/var/tmp/known', get_config('tool_secbackup', 'tempdir'));
+        // The page saves the folder again unchanged, and the numbers can be changed.
+        $this->assertSame('', self::folder()->write_setting('/var/tmp/known'));
+        $this->assertSame('', self::number('maxdbms', 1.0, true)->write_setting('600'));
+        $run->pause(time(), time() + 60);
+        $this->assertSame($running, self::folder()->write_setting('/var/tmp/other'));
+        $run->finish(time());
+        $this->assertSame('', self::folder()->write_setting('/var/tmp/other'));
+        $this->assertSame('/var/tmp/other', get_config('tool_secbackup', 'tempdir'));
+    }
+
+    public function test_the_default_folder_is_not_changed_while_a_backup_runs(): void {
+        run_record::create('schedule', time());
+        $this->assertSame(get_string('setting_error_running', 'tool_secbackup'), self::folder()->write_setting('/var/tmp/other'));
+        $this->assertSame('', self::folder()->write_setting(''));
+    }
+
+    public function test_the_description_says_that_another_folder_keeps_a_backup_on_its_server(): void {
+        $en = get_string_manager()->get_string('setting_tempdir_desc', 'tool_secbackup', null, 'en');
+        $this->assertStringContainsString('only that server goes on with', $en);
+        $this->assertStringContainsString('new or empty', $en);
+    }
+
     public function test_an_empty_folder_is_saved_and_means_the_default(): void {
         set_config('tempdir', '/var/tmp/secbk', 'tool_secbackup');
         $this->assertSame('', self::folder()->write_setting(''));

@@ -93,7 +93,9 @@ Site administration > Plugins > Admin tools > Shinonome LMS Backup has four page
 - **Limits of the backup**: the highest server load per CPU core (2), the least available memory (256 MB), the slowest
   database response (500 ms), the slowest file storage read speed (5 MB per second), the budget of the temporary files (0: the
   default above), an upload speed limit of this site (0: none; the service's limit applies as well) and the temporary folder.
-  The defaults suit most sites.
+  The defaults suit most sites. A backup leaves its temporary folder out, so the page refuses the data directory itself and a
+  folder inside it that already holds files (a new or empty one is accepted), and it refuses a change of the folder while a
+  backup runs.
 
 The schedule (the window, the number of backups a day, the logs) is set on the platform screen and comes with the status
 request.

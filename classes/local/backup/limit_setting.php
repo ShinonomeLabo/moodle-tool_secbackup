@@ -74,12 +74,38 @@ final class limit_setting extends \admin_setting_configtext {
             $error = $this->integer ? 'setting_error_whole' : 'setting_error_decimal';
             return get_string($error, 'tool_secbackup', (string) $this->min);
         }
-        if ($data === '') {
+        $place = null;
+        if ($data !== '') {
+            if (!limits::usable_directory($data)) {
+                return get_string('setting_error_directory', 'tool_secbackup');
+            }
+            if (limits::inside_dirroot($data)) {
+                return get_string('setting_error_dirroot', 'tool_secbackup');
+            }
+            $place = dataroot_source::place_of($data);
+            if ($place === 'dataroot') {
+                return get_string('setting_error_dataroot', 'tool_secbackup');
+            }
+        }
+        // The page writes every setting when it is saved: the saved folder holds the files of the plugin, and is kept.
+        if (rtrim($data, '/\\') === rtrim((string) $this->get_setting(), '/\\')) {
             return true;
         }
-        if (!limits::usable_directory($data)) {
-            return get_string('setting_error_directory', 'tool_secbackup');
+        // A running backup keeps its temporary files in the folder that it started with, and would miss them.
+        if (run_record::active() !== null) {
+            return get_string('setting_error_running', 'tool_secbackup');
         }
-        return limits::inside_dirroot($data) ? get_string('setting_error_dirroot', 'tool_secbackup') : true;
+        return $place === 'backedup' && !self::is_empty($data)
+            ? get_string('setting_error_datafolder', 'tool_secbackup') : true;
+    }
+
+    /**
+     * Whether a path is a folder that holds nothing; a folder that cannot be read is not taken as empty.
+     *
+     * @param string $path The path.
+     * @return bool
+     */
+    private static function is_empty(string $path): bool {
+        return is_dir($path) && is_readable($path) && !(new \FilesystemIterator($path))->valid();
     }
 }

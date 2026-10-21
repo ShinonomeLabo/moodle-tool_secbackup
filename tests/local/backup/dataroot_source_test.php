@@ -165,6 +165,25 @@ final class dataroot_source_test extends \advanced_testcase {
         $this->assertSame(['dataroot'], array_keys(dataroot_source::roots()));
     }
 
+    public function test_the_place_of_a_folder_for_the_temporary_files(): void {
+        global $CFG;
+        $real = $this->dataroot();
+        mkdir($real . '/coursework');
+        mkdir($real . '/temp/tool_secbackup', 0777, true);
+        mkdir($real . '/cache/x', 0777, true);
+        $this->assertSame('dataroot', dataroot_source::place_of($real));
+        $this->assertSame('dataroot', dataroot_source::place_of($real . '/'));
+        $this->assertSame('backedup', dataroot_source::place_of($real . '/coursework'));
+        // Folders that every backup leaves out, and folders that do not exist yet or lie elsewhere.
+        $this->assertNull(dataroot_source::place_of($real . '/temp/tool_secbackup'));
+        $this->assertNull(dataroot_source::place_of($real . '/cache'));
+        $this->assertNull(dataroot_source::place_of($real . '/cache/x'));
+        $this->assertNull(dataroot_source::place_of($real . '/new'));
+        $this->assertNull(dataroot_source::place_of(realpath(make_request_directory())));
+        $CFG->dataroot = $real . '/missing';
+        $this->assertNull(dataroot_source::place_of($real . '/coursework'));
+    }
+
     public function test_the_data_directory_that_does_not_exist_leaves_the_names_as_they_are(): void {
         global $CFG;
         $this->dataroot();
