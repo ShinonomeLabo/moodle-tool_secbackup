@@ -27,7 +27,9 @@
 
 require_once(__DIR__ . '/../../../../../lib/behat/behat_base.php');
 
+use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\ExpectationException;
+use Facebook\WebDriver\Exception\NoSuchWindowException;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\endpoint\endpoint;
@@ -156,7 +158,9 @@ class behat_tool_secbackup extends behat_base {
         $tab = array_shift($nodes);
         $link = array_pop($nodes);
 
-        // The click may meet a page that the step before has not finished leaving, so it is tried again.
+        // The click may meet a page that the step before has not finished leaving, so it is tried again. Moodle's step makes
+        // its checks after the click; when they meet the page that is being replaced, the attempt is tried again and clicks
+        // "Site administration" once more, which the new page has too.
         $this->click_and_wait_for_new_page(function (): void {
             $this->execute('behat_navigation::i_select_from_primary_navigation', [get_string('administrationsite')]);
         }, 'Site administration');
@@ -179,24 +183,30 @@ class behat_tool_secbackup extends behat_base {
      * so an element can be missing at first, or can be gone from the old page when it is clicked. The attempt starts again
      * with a new search, until the time of Behat for slow steps is over.
      *
+     * A click that loads a page is the last command of its attempt: the checks that Moodle makes after the click of a step
+     * (pending JavaScript, exceptions, deprecated styles and icons) wait until the new page is there
+     * (click_and_wait_for_new_page()).
+     *
      * @param string $xpath The element.
      * @param string $message What to say when the element did not come.
      * @param bool $loadspage Whether the click loads a new page, which is then waited for.
      * @param string $name What is clicked, for the message when no new page came.
      */
     private function click_when_present(string $xpath, string $message, bool $loadspage, string $name = ''): void {
-        $attempt = function () use ($xpath, $message): void {
+        $find = function () use ($xpath, $message): NodeElement {
             $node = $this->getSession()->getPage()->find('xpath', $xpath);
             if ($node === null) {
                 throw new ExpectationException($message, $this->getSession());
             }
-            $this->execute('behat_general::i_click_on', [$node, 'NodeElement']);
+            return $node;
         };
         if ($loadspage) {
-            $this->click_and_wait_for_new_page($attempt, $name);
+            $this->click_and_wait_for_new_page(function () use ($find): void {
+                $find()->click();
+            }, $name);
         } else {
-            $this->spin(function () use ($attempt): bool {
-                $attempt();
+            $this->spin(function () use ($find): bool {
+                $this->execute('behat_general::i_click_on', [$find(), 'NodeElement']);
                 return true;
             }, false, self::get_extended_timeout());
         }
@@ -206,7 +216,17 @@ class behat_tool_secbackup extends behat_base {
      * Runs a click that loads a new page, again and again until it could be done, and returns when the new page has
      * replaced the old one.
      *
-     * A marker is put on the old page before each attempt; the new page does not have it.
+     * A marker is put on the old page before each attempt; the new page does not have it. An attempt is tried again only
+     * when it threw, so the click is the last command of the attempt: an attempt that clicked and then failed on the page
+     * that was being replaced would be tried again on the new page, where the element is not, and the step would fail with
+     * the first exception although the page had come. (The click of the primary navigation in
+     * i_open_in_site_administration() is Moodle's step, which checks after the click; trying it again is harmless there.)
+     *
+     * While the old page is replaced, safaridriver can answer a command with "no such window" (the NoSuchWindowException of
+     * php-webdriver) for a moment; the same window then shows the new page. So such an answer during the wait means that the
+     * new page has not come yet. (Moodle's own wait for pending JavaScript catches this answer as the NoSuchWindowException of
+     * Mink, which the php-webdriver driver does not throw.) The checks that Moodle makes after the actions of a step run once
+     * the new page is there.
      *
      * @param callable $click The click; it throws when it cannot be done (yet).
      * @param string $name What is clicked, for the message when no new page came.
@@ -219,15 +239,26 @@ class behat_tool_secbackup extends behat_base {
         }, false, self::get_extended_timeout());
         // A page can be slow to load (an emulated browser on a slow machine took more than the usual 10 seconds), so the wait
         // is six times the extended time of Behat; it ends as soon as the new page is there.
-        $arrived = $this->getSession()->wait(
-            self::get_extended_timeout() * 6 * 1000,
-            '(typeof window.tool_secbackup_old_page === "undefined" && document.readyState === "complete")'
-        );
+        $end = microtime(true) + self::get_extended_timeout() * 6;
+        do {
+            try {
+                $arrived = (bool) $this->getSession()->evaluateScript('return typeof window.tool_secbackup_old_page === "undefined"'
+                    . ' && document.readyState === "complete";');
+            } catch (NoSuchWindowException $e) {
+                $arrived = false;
+            }
+            if (!$arrived) {
+                usleep(100000);
+            }
+        } while (!$arrived && microtime(true) < $end);
         if (!$arrived) {
             // Going on would let the next step look at the old page, and a text that both pages show would pass.
             throw new ExpectationException('"' . $name . '" did not load a new page.', $this->getSession());
         }
         $this->wait_for_pending_js();
+        $this->look_for_exceptions();
+        $this->look_for_deprecated_styles();
+        $this->look_for_deprecated_icons();
     }
 
     /**
@@ -286,7 +317,7 @@ class behat_tool_secbackup extends behat_base {
     /**
      * Sends settings whose window of one hour starts some seconds from now.
      *
-     * @param int $offset Seconds from now to the start of the window; negative to make it contain now.
+     * @param int $offset Seconds from now to the start of the window, which is then rounded down to the hour or the half hour.
      */
     private function give_settings(int $offset): void {
         // The service sends times on the hour or the half hour.
