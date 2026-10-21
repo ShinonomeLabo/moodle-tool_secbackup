@@ -57,7 +57,14 @@ run 0 "$php" "$plugin/cli/diagnose.php"
 # The command waits and tries again while a check of the server fails; 15 minutes are many times what a run of this site needs.
 run 0 timeout 900 "$php" "$plugin/cli/backup.php" --now
 cat "$work/output"
-if grep -n -E "$pattern" "$work/output"; then
+# One message of Moodle itself is expected: email_to_user() calls debugging() when $CFG->noemailever is set, which the
+# config.php of moodle-plugin-ci does, and the registration sends a message to the site administrators. A site that sends mail
+# does not show it.
+grep -n -E "$pattern" "$work/output" > "$work/found" || true
+# shellcheck disable=SC2016
+grep -v -x -E '[0-9]+:\+\+ Not sending email due to \$CFG->noemailever config setting \+\+' "$work/found" > "$work/unexpected" || true
+if [ -s "$work/unexpected" ]; then
+    cat "$work/unexpected"
     echo "The lines above are PHP messages or debugging() messages of the scripts." >&2
     failed=1
 fi
