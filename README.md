@@ -115,7 +115,8 @@ print their help with `--help`.
   the boolean `httpd_can_network_relay` (or `httpd_can_network_connect`) to reach the service and its storage on port 443;
   when SELinux blocks a backup, it stops with a reason that names SELinux, and the connection diagnostics give the advice.
   Under AppArmor, a profile of the web server that denies the network stops the backup as a failed network check; the
-  diagnostics show the AppArmor rules. Tested in virtual machines with Rocky Linux, AlmaLinux, Debian and Ubuntu
+  diagnostics show the AppArmor rules. The connection diagnostics were tested in virtual machines with Rocky Linux,
+  AlmaLinux, Debian and Ubuntu, and whole backups from the web server with Rocky Linux 9 and Ubuntu 24.04
   (`.dev/secureos/README.md`).
 - **Several web servers** share Moodle's temporary folder, which holds the temporary files of a backup by default, so any of
   them goes on with a running backup. When "Temporary folder" on the page "Limits of the backup" names a folder of one server,

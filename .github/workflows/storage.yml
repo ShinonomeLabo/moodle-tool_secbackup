@@ -56,6 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up PHP 8.4
+        timeout-minutes: 10
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.4'
@@ -65,7 +66,9 @@ jobs:
       - name: Create the database
         run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
 
+      # 3 to 4 minutes on GitHub (run 39581833297).
       - name: Back up a site whose data directory is on NFS v${{ matrix.nfs }}
+        timeout-minutes: 30
         env:
           NFS_VERSION: ${{ matrix.nfs }}
         run: bash .dev/nfs/run.sh "$NFS_VERSION" MOODLE_503_STABLE
@@ -120,6 +123,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up PHP 8.3
+        timeout-minutes: 10
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.3'
@@ -131,7 +135,9 @@ jobs:
 
       # MinIO no longer distributes its server, so the image is Bitnami's legacy build of MinIO RELEASE.2025-04-22T22-12-26Z
       # (no longer updated), pinned by tag and digest (.dev/objectfs/README.md).
+      # About 3 minutes on GitHub (run 39581833297).
       - name: Back up a site whose files are in MinIO through tool_objectfs
+        timeout-minutes: 30
         env:
           SECBK_MINIO_IMAGE: bitnamilegacy/minio:2025.4.22-debian-12-r2@sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01
         run: bash .dev/objectfs/run.sh MOODLE_405_STABLE
@@ -178,12 +184,15 @@ jobs:
           persist-credentials: false
 
       - name: Set up Lima
+        timeout-minutes: 10
         uses: lima-vm/lima-actions/setup@55627e31b78637bf254a8b2a14da8ea7d12564e5 # v1.1.0
         with:
           version: v2.2.1
           ssh: false
 
+      # 5 to 10 minutes on GitHub (run 39581833297).
       - name: A backup run in ${{ matrix.template }}
+        timeout-minutes: 45
         env:
           TEMPLATE: ${{ matrix.template }}
         run: bash .dev/secureos/run-template.sh -s run "$TEMPLATE"

@@ -16,10 +16,10 @@ The default branch of the repository is `main`.
 |---|---|
 | `rules` | The commit rules (tests of the hooks, every commit of the history, the title and description of a pull request), the files of every commit, their names and the tags (`.dev/hooks/check-contents.sh`), the check that no development script can be run from the web, the tests of the coverage tools and of the badge, and the tests of the tools of the mutation testing with the check of its shards (below). |
 | `inventory` | `tests/behat/inventory.txt` against the code (below), and the tests of that check. It needs no secret, so a pull request from a fork gets it. |
-| `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination; then the command line scripts once more with developer debugging, after a registration with the fake service, with a whole run of `cli/backup.php --now` (`.dev/ci/backup-developer-debug.sh`: a PHP message or a `debugging()` message in the output fails it). Nothing in it is optional: Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
+| `test` | One job for each combination of Moodle, PHP and database (18 in all, below): every check of moodle-plugin-ci, PHPUnit, Behat in Chrome and the command line scripts, with the coverage of the combination; then the command line scripts once more with developer debugging, after a registration with the fake service, with a whole run of `cli/backup.php --now` (`.dev/ci/backup-developer-debug.sh`: a PHP message or a `debugging()` message in the output fails it). Nothing in it is optional but the PHP Mess Detector, whose step reports and does not fail the job (`continue-on-error`): Behat runs in every combination and a scenario has to pass the first time (`--auto-rerun 0`). |
 | `behat` | Behat in Firefox and in Edge on Moodle 4.5, 5.0, 5.1, 5.2 and 5.3, each with PostgreSQL and MariaDB: 20 jobs, with the newest PHP of the Moodle version. The same install as `test`, without the coverage; `moodle-plugin-ci behat --profile <browser> --selenium selenium/standalone-<browser>:4 --auto-rerun 0`. The Edge profile is added to `config.php` by the job (moodle-plugin-ci knows only chrome and firefox). On failure the Behat dump is uploaded (`Behat Faildump <browser> ...`; no artifact name but the coverage ones starts with `coverage-run-`). |
 | `behat-safari` | Behat in Safari on a macOS runner (below): the same ten Moodle and database pairs, 10 jobs. |
-| `secureos` | Twelve jobs: the access control that the operating system ships, in real virtual machines (Lima with QEMU and KVM). `rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10` (SELinux), and `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04` (AppArmor) in the states `standard` and `confined`. Each runs `.dev/secureos/run-template.sh -s <state> <template>`; the secret `SECBK_SECUREOS_ENDPOINT` (the connection URL of a real service) selects the real expectations, and without it the stand-in's are checked. See `.dev/secureos/README.md`. |
+| `secureos` | Fourteen jobs: the access control that the operating system ships, in real virtual machines (Lima with QEMU and KVM). `rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10` (SELinux), and `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04` (AppArmor) in the states `standard` and `confined`, which run the connection diagnostics; and `rocky-9` and `ubuntu-24.04` in the state `run`, which make a whole backup run from the web server (`.dev/secureos/run-check.sh`). Each runs `.dev/secureos/run-template.sh -s <state> <template>`; the secret `SECBK_SECUREOS_ENDPOINT` (the connection URL of a real service) selects the real expectations, and without it the stand-in's are checked. See `.dev/secureos/README.md`. |
 | `coverage` | Checks that one artifact `coverage-run-<Moodle>-<PHP>-<database>` arrived for each row of the matrix of `test`, with its PHPUnit report, and no other (`.dev/ci/check-coverage-runs.sh`; no other artifact name may start with `coverage-run-`), merges the coverage of all combinations, writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
 
 Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 55, `test` 130,
@@ -32,6 +32,7 @@ limits of their own, which in each job add up to less than the limit of the job:
 | `test` | Install Moodle with the plugin 20 minutes (a failed download of Node.js makes nvm build it from its source for more than an hour), PHPUnit tests 40, PHPUnit trace tests with OPcache 5, Behat features 25, Command line scripts 5, The backup on the command line with developer debugging 20 (115 of 130) |
 | `behat` | Install Moodle with the plugin 20, Behat features 25 (45 of 55) |
 | `behat-safari` | Install Moodle with the plugin 20, Behat features 35 (55 of 75) |
+| `secureos` | Set up Lima 10, the test of the access control 30, or 45 in the state `run` (40 of 45, 55 of 60) |
 
 A stall in one of these fails that step with its log. The other steps (the set-up of PHP and moodle-plugin-ci, the database
 and safaridriver of the Safari job, the static checks, the two installs of the site in `test`, the uploads) have no limit
@@ -120,7 +121,7 @@ Homebrew still has and the Moodle version supports (PostgreSQL 13 is no longer i
 PostgreSQL 15 there, where `ci.yml`'s services use 13 and 14; PostgreSQL 15, 16 and 17 and MariaDB 10.11 and 11.4 are the same as in
 the other jobs; MariaDB 10.6 for Moodle 4.5 is Homebrew's 10.6.x instead of 10.6.7, and the formula `mariadb@10.6` is deprecated since
 2026-06-01 (no disable date yet), so that row needs a look when Homebrew drops it); `sudo safaridriver --enable` allows the automation; `safaridriver -p 4444`
-and PHP's own web server (`php -S localhost:8000`, four workers) are started by the job, and `moodle-plugin-ci behat` is told
+and PHP's own web server (`php -S localhost:8000`, one process: see the comment of the step) are started by the job, and `moodle-plugin-ci behat` is told
 not to start Selenium in Docker (`MOODLE_START_BEHAT_SERVERS=NO`). The Safari profile (`wd_host` without `/wd/hub`) is added to
 `config.php` by the job. This job cannot run outside GitHub: the local Safari run (`SECBK_BROWSER=safari`) uses another set-up
 (Docker, relays), so it proves the scenarios in Safari but not these job steps. Their first run is on GitHub.
@@ -178,7 +179,7 @@ A tag can be moved by whoever controls the repository of an action, so a tag is 
 
 1. List the releases: `git ls-remote --tags https://github.com/<owner>/<repo>` and pick the newest.
 2. Take its commit. For an annotated tag it is the line that ends with `^{}`; for a lightweight tag it is the line of the tag.
-3. Write the commit and the release into every `uses:` line of that action in both workflow files.
+3. Write the commit and the release into every `uses:` line of that action in every workflow file of `.github/workflows`.
 4. If the action is a composite action, read its `action.yml` at that commit: the actions it calls must be pinned to commits too.
 5. Run actionlint (below).
 

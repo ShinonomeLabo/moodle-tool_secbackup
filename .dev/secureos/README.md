@@ -12,7 +12,10 @@ plugin inside them, from the web server and from the command line.
 
 Everything comes from the distribution: Apache with php-fpm, PHP, PostgreSQL (over the Unix socket, peer authentication as
 the web user). Only on Rocky Linux and AlmaLinux are EPEL and CRB enabled, for an extension that AppStream lacks
-(`sodium`; see the table of versions). Moodle is 4.5 on the older version of each pair, and on the newer one the newest
+(`sodium`; see the table of versions). Every command that reads the mirrors of the distribution (`dnf`, `apt-get`) is tried
+up to three times, a minute apart, and the source package of PHP is read from the source repository of PHP's own repository
+only (a run once failed on a mirror of `epel-source` with a bad certificate, which that package does not need). Moodle is 4.5 on
+the older version of each pair, and on the newer one the newest
 5.x stable branch whose `environment.xml` accepts the PHP and PostgreSQL of the distribution (so 5.1 and later, which serve
 from `public/`, are covered too).
 
@@ -281,8 +284,9 @@ page shows, or `completed` for the last completed backup), `mac` (the label of p
 `httpd_can_network_connect`; the real service and its storage are on port 443, where `httpd_can_network_relay` is enough (the
 cases of `check.sh` above).
 
-The job `secureos` of `ci.yml` has two rows of this state, `rocky-9` and `ubuntu-24.04` (60 minutes each); the job `secureos` of
-the manual workflow `.github/workflows/storage.yml` runs the same two alone.
+The job `secureos` of `ci.yml` has two rows of this state, `rocky-9` and `ubuntu-24.04` (60 minutes each, of which the step of the
+test may take 45); the job `secureos` of the manual workflow `.github/workflows/storage.yml` runs the same two alone, with the
+same limits.
 
 ### Results of the state `run`
 

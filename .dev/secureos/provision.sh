@@ -28,6 +28,21 @@ errorlog="$dataroot/secbk-php-errors.log"
 extrarepos=none
 extensions="curl dom gd iconv intl json mbstring openssl pgsql simplexml soap sodium xml zip zlib ctype"
 
+# Runs a command that reads the mirrors of the distribution, up to three times, a minute apart: a mirror that fails for a
+# while (an expired certificate, a sync in progress) is usually not the one that the next attempt gets. Anything else that
+# fails fails the same way three times, and then stops the script.
+from_mirrors() {
+    local attempt
+    for attempt in 1 2 3; do
+        if "$@"; then
+            return 0
+        fi
+        [ "$attempt" = 3 ] || { echo "a mirror of the distribution failed (attempt $attempt of 3); again in 60 s" >&2; sleep 60; }
+    done
+    echo "the mirrors of the distribution failed three times: $*" >&2
+    return 1
+}
+
 # The newest stream of a dnf module, or nothing when the distribution has no such module.
 newest_stream() {
     { dnf -q module list "$1" 2> /dev/null || true; } | awk -v name="$1" '$1 == name { print $2 }' | sort -V | tail -n 1
@@ -40,7 +55,7 @@ newest_stream() {
 build_sodium() {
     local work repos repo installed modules
     work="$(mktemp -d)"
-    dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
+    from_mirrors dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
     # The whole output is read first: a pipe into head can fail when head ends before dnf does (SIGPIPE under pipefail).
     repos="$(dnf -q repoquery --qf '%{repoid}\n' php-common)"
     repo="${repos%%$'\n'*}"
@@ -49,7 +64,9 @@ build_sodium() {
     (
         set -e
         cd "$work"
-        dnf -y --enablerepo="$repo-source" download --source php
+        # Only the repository of PHP and its source repository: dnf download --source would also enable the source repository
+        # of every other enabled one (EPEL's too), whose mirrors are not needed here and can fail.
+        from_mirrors dnf -y --disablerepo='*' --enablerepo="$repo" --enablerepo="$repo-source" download --source php
         signature="$(rpm -K ./php-*.src.rpm)"
         echo "$signature" >&2
         if [[ "$signature" != *'signatures OK'* || "$signature" =~ NOKEY|BAD|'NOT OK' ]]; then
@@ -78,13 +95,16 @@ build_sodium() {
 
 install_el() {
     local phpstream pgstream
-    dnf -y install dnf-plugins-core
+    from_mirrors dnf -y install dnf-plugins-core
     phpstream="$(newest_stream php)"
     pgstream="$(newest_stream postgresql)"
-    [ -z "$phpstream" ] || { dnf -y module reset php; dnf -y module enable "php:$phpstream"; }
-    [ -z "$pgstream" ] || { dnf -y module reset postgresql; dnf -y module enable "postgresql:$pgstream"; }
+    [ -z "$phpstream" ] || { from_mirrors dnf -y module reset php; from_mirrors dnf -y module enable "php:$phpstream"; }
+    [ -z "$pgstream" ] || {
+        from_mirrors dnf -y module reset postgresql
+        from_mirrors dnf -y module enable "postgresql:$pgstream"
+    }
     # php-fpm only: the "php" package is mod_php, which would run PHP inside Apache. A package AppStream lacks is skipped.
-    dnf -y install --setopt=strict=0 httpd git rsync curl php-cli php-fpm php-pgsql php-intl php-mbstring php-xml php-zip \
+    from_mirrors dnf -y install --setopt=strict=0 httpd git rsync curl php-cli php-fpm php-pgsql php-intl php-mbstring php-xml php-zip \
         php-gd php-soap php-opcache php-sodium postgresql-server policycoreutils-python-utils audit setroubleshoot-server
     # Whatever AppStream did not provide comes from EPEL and CRB, and only that.
     local missing=() unbuilt=() ext
@@ -92,7 +112,7 @@ install_el() {
         php -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$ext" || missing+=("$ext")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
-        dnf -y install epel-release
+        from_mirrors dnf -y install epel-release
         dnf config-manager --set-enabled crb epel
         for ext in "${missing[@]}"; do
             dnf -y install "php-$ext" || unbuilt+=("$ext")
@@ -110,8 +130,8 @@ install_el() {
 install_deb() {
     local phpver
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get -y install apache2 git rsync curl postgresql apparmor apparmor-utils php-cli php-fpm php-pgsql php-intl php-mbstring \
+    from_mirrors apt-get update
+    from_mirrors apt-get -y install apache2 git rsync curl postgresql apparmor apparmor-utils php-cli php-fpm php-pgsql php-intl php-mbstring \
         php-xml php-zip php-gd php-soap php-curl
     phpver="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
     apt-get -y install "php$phpver-opcache" || true

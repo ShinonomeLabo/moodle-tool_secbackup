@@ -880,13 +880,16 @@ jobs:
 
       # Installs QEMU and Lima. The download of Lima is verified with `gh attestation verify` and the token of this job.
       - name: Set up Lima
+        timeout-minutes: 10
         uses: lima-vm/lima-actions/setup@55627e31b78637bf254a8b2a14da8ea7d12564e5 # v1.1.0
         with:
           version: v2.2.1
           ssh: false
 
-      # No set -x here: the connection URL is in the environment of this step.
+      # 4 to 6 minutes (14 for the state run of rocky-9, which builds the sodium extension). No set -x here: the connection
+      # URL is in the environment of this step.
       - name: Test the access control of ${{ matrix.template }} (${{ matrix.state }})
+        timeout-minutes: ${{ matrix.state == 'run' && 45 || 30 }}
         env:
           SECBK_SECUREOS_ENDPOINT: ${{ secrets.SECBK_SECUREOS_ENDPOINT }}
           TEMPLATE: ${{ matrix.template }}
