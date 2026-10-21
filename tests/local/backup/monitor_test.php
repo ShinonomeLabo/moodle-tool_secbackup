@@ -497,8 +497,8 @@ final class monitor_test extends \advanced_testcase {
     public function test_the_cause_names_the_load_and_the_memory_apart(): void {
         $this->assertSame('load', monitor::cause(self::sample(['load_per_core' => 2.01]), self::limits()));
         $this->assertSame('memory', monitor::cause(self::sample(['memory_available_bytes' => 1]), self::limits()));
-        $this->assertSame('load', monitor::cause(self::sample(['load_per_core' => 3.0, 'memory_available_bytes' => 1]),
-            self::limits()));
+        $both = self::sample(['load_per_core' => 3.0, 'memory_available_bytes' => 1]);
+        $this->assertSame('load', monitor::cause($both, self::limits()));
         $this->assertSame('disk_low', monitor::cause(self::sample(['disk_free_bytes' => 1]), self::limits()));
         $this->assertSame('db_slow', monitor::cause(self::sample(['db_ms' => 900.0]), self::limits()));
         $this->assertSame('nfs_slow', monitor::cause(self::sample(['nfs_mbps' => 1.0]), self::limits()));

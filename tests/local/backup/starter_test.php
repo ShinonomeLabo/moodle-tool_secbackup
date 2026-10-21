@@ -222,8 +222,9 @@ final class starter_test extends \advanced_testcase {
     }
 
     public function test_a_kept_answer_that_cannot_be_read_is_none(): void {
-        foreach (['', 'not json', '[]', '{"at":"x","answer":"busy","cause":null}', '{"at":1,"answer":5,"cause":null}',
-                '{"at":1,"answer":"busy","cause":7}', '{"at":1,"answer":"busy"}'] as $value) {
+        $values = ['', 'not json', '[]', '{"at":"x","answer":"busy","cause":null}', '{"at":1,"answer":5,"cause":null}',
+            '{"at":1,"answer":"busy","cause":7}', '{"at":1,"answer":"busy"}'];
+        foreach ($values as $value) {
             set_config('lastschedule', $value, 'tool_secbackup');
             $this->assertNull(starter::last_scheduled(), $value);
         }

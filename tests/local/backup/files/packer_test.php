@@ -286,8 +286,8 @@ final class packer_test extends \advanced_testcase {
             $packer->flush();
             $entries = $packer->take_entries();
             // Each time only the files of the newest pack, and nothing is kept after they are taken.
-            $this->assertSame([sha1('first file of pack ' . $pack), sha1('second file of pack ' . $pack)],
-                array_column($entries, 'contenthash'));
+            $expected = [sha1('first file of pack ' . $pack), sha1('second file of pack ' . $pack)];
+            $this->assertSame($expected, array_column($entries, 'contenthash'));
             $this->assertSame([], $packer->entries());
             $taken[] = $entries[0]['chunk'];
         }

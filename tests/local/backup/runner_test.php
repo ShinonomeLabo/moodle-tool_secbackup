@@ -2433,8 +2433,8 @@ final class runner_test extends \advanced_testcase {
         $this->assertGreaterThan(0, $run->entries_committed());
         $this->assertSame('done', $this->finish($this->runner(), $run));
         foreach ($this->hashes as $name => $hash) {
-            $this->assertCount($name === 'missing' ? 0 : 1,
-                $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash), $name);
+            $entries = $this->entries_of($run->run_uuid(), 'file', 'contenthash', $hash);
+            $this->assertCount($name === 'missing' ? 0 : 1, $entries, $name);
         }
     }
 
