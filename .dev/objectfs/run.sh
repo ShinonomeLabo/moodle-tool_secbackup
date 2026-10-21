@@ -4,11 +4,12 @@
 # trusts the user postgres on 127.0.0.1 (the job objectfs of .github/workflows/storage.yml; the runner image has them all).
 # Usage: .dev/objectfs/run.sh [Moodle branch, default MOODLE_405_STABLE]
 #
-# The storage is MinIO in a container on 127.0.0.1:9000, with credentials made for the run (never printed). tool_objectfs is
-# not part of the plugin: it is fetched at the commit below, which supports Moodle 4.4 and 4.5 (its version.php says
-# supported = [404, 405]), and needs no other plugin there (Moodle 4.4 and later have the AWS SDK). After the site and
-# dummy data (size S): config.php names the file system of tool_objectfs, its tasks copy every file to MinIO and delete the
-# local copies, and the locations are counted (in the table of tool_objectfs, in the folder filedir and in the bucket). Then,
+# The storage is MinIO in a container on 127.0.0.1:9000 (Bitnami's legacy build, see below), with credentials made for the
+# run (never printed). tool_objectfs is not part of the plugin: it is fetched at the commit below, which supports Moodle 4.4
+# and 4.5 (its version.php says supported = [404, 405]), and needs no other plugin there (Moodle 4.4 and later have the AWS
+# SDK). After the site and dummy data (size S): config.php names the file system of tool_objectfs, its tasks copy every
+# file to MinIO and delete the local copies, and the locations are counted (in the table of tool_objectfs, in the folder
+# filedir and in the bucket). Then,
 # against the fake backup service: the status page in Chrome (.dev/objectfs/screen.sh) must show the warning of an external
 # file store before the backup is started with its button, cli/backup.php goes on with that backup until it ends, and the
 # files of the backup are checked (.dev/fakesec/verify.php): with no local copy left, they can only have been read through
@@ -16,7 +17,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 branch="${1:-MOODLE_405_STABLE}"
-minio_image=minio/minio:RELEASE.2025-04-22T22-12-26Z
+# MinIO no longer distributes its server (the image minio/minio is gone from Docker Hub, quay.io wants a login, and the
+# binaries of dl.min.io answer 410). This is Bitnami's legacy build of the same release, RELEASE.2025-04-22T22-12-26Z, which
+# is no longer updated; it is pinned by its digest as well as its tag. SECBK_MINIO_IMAGE may name another image of MinIO.
+minio_tag=bitnamilegacy/minio:2025.4.22-debian-12-r2
+minio_digest=sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01
+minio_image="${SECBK_MINIO_IMAGE:-$minio_tag@$minio_digest}"
 objectfs_commit=e2ac620651c5ecdec003f1133a3a38e87195d4c9
 bucket=secbk-objectfs
 # shellcheck source-path=SCRIPTDIR source=../storage/lib.sh
@@ -28,14 +34,16 @@ echo "== MinIO"
 AWS_ACCESS_KEY_ID="secbk$(openssl rand -hex 6)"
 AWS_SECRET_ACCESS_KEY="$(openssl rand -hex 24)"
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION=us-east-1
+# The image of Bitnami starts the server itself (its entry point), with the data in the container.
 docker run -d --name secbk-minio -p 127.0.0.1:9000:9000 -e MINIO_ROOT_USER="$AWS_ACCESS_KEY_ID" \
-    -e MINIO_ROOT_PASSWORD="$AWS_SECRET_ACCESS_KEY" -e MINIO_DOMAIN=localhost "$minio_image" server /data > /dev/null
-for _ in $(seq 1 60); do
+    -e MINIO_ROOT_PASSWORD="$AWS_SECRET_ACCESS_KEY" -e MINIO_DOMAIN=localhost "$minio_image" > /dev/null
+for _ in $(seq 1 120); do
     if curl -fs -o /dev/null http://127.0.0.1:9000/minio/health/live; then break; fi
     sleep 1
 done
 aws --endpoint-url http://127.0.0.1:9000 s3api create-bucket --bucket "$bucket" > /dev/null
-result "minio $minio_image ($(docker image inspect --format '{{.Size}}' "$minio_image") bytes)"
+result "minio $minio_image ($(docker image inspect --format '{{.Size}}' "$minio_image") bytes unpacked)"
+result "minio server $(docker exec secbk-minio minio --version 2> /dev/null | head -n 1)"
 
 echo "== Moodle ($branch) with tool_objectfs"
 storage_moodle "$branch"
@@ -43,7 +51,8 @@ objectfs="$(storage_docroot)/admin/tool/objectfs"
 git init --quiet "$objectfs"
 git -C "$objectfs" fetch --quiet --depth 1 https://github.com/catalyst/moodle-tool_objectfs.git "$objectfs_commit"
 git -C "$objectfs" checkout --quiet FETCH_HEAD
-result "tool_objectfs $(git -C "$objectfs" rev-parse HEAD) $(sed -n 's/^\$plugin->version *= *\([0-9]*\).*/\1/p' "$objectfs/version.php")"
+version="$(sed -n 's/^\$plugin->version *= *\([0-9]*\).*/\1/p' "$objectfs/version.php")"
+result "tool_objectfs $(git -C "$objectfs" rev-parse HEAD) $version"
 storage_install "$dataroot"
 result "moodle $(storage_php -r 'define("CLI_SCRIPT", true); require "config.php"; echo $CFG->release;')"
 storage_php "$(storage_plugin)/.dev/env/generate_site_data.php" --size=S

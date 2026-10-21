@@ -11,12 +11,19 @@ runner (whose image has them). Nothing in this directory is part of the plugin p
 
 | Step | What happens |
 |---|---|
-| Storage | MinIO in a container on `127.0.0.1:9000`, with credentials made for the run and never printed; one bucket made with the AWS CLI. |
+| Storage | MinIO in a container on `127.0.0.1:9000`, with credentials made for the run and never printed; one bucket made with the AWS CLI. The image is `bitnamilegacy/minio:2025.4.22-debian-12-r2`, pinned by its digest `sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01` (below). |
 | Site | Moodle 4.5 from git with the plugin and `tool_objectfs` at a pinned commit (`e2ac620`, branch `MOODLE_404_STABLE`, whose `version.php` says `supported = [404, 405]`; Moodle 4.4 and later bring the AWS SDK, so `local_aws` is not needed). Dummy data of size S. |
 | Files moved | `config.php` names `\tool_objectfs\s3_file_system` as the file system of the site and forces the settings of `tool_objectfs` (every file of one byte or more is copied at once, and its local copy is deleted at once). The tasks `check_objects_location`, `push_objects_to_storage` and `delete_local_objects` run once each; the locations in the table of `tool_objectfs`, the files left in `filedir` and the objects in the bucket are counted. |
 | Status page | `screen.sh` drives Chrome with ChromeDriver over the WebDriver protocol (curl and jq only): it logs in, opens the status page, waits for the dialog, compares its text with the English strings `modal_external_title` and `modal_external` of the plugin (with the platform name of the fake service), saves `1-modal.png`, closes the dialog with OK, presses "Back up now" and waits for the answer `start_started` (`2-started.png`). |
 | Backup | `cli/backup.php` (without `--now`) goes on with the backup that the button started, until it ends. |
 | Check | `.dev/fakesec/verify.php`: every file of the backup, decrypted, has the SHA-1 of its content hash and the size of the site, and the backup holds every content of the site. With no local copy left in `filedir`, the files can only have been read from the bucket, through the file API. |
+
+**Why the image of Bitnami.** MinIO no longer distributes its server: on 2026-10-21 the image `minio/minio` was gone from Docker
+Hub (`repository does not exist`), `quay.io/minio/minio` asked for a login, and the archived binaries of `dl.min.io` answered
+`410 Gone`. `bitnamilegacy/minio` is Bitnami's legacy build of the same MinIO release (`RELEASE.2025-04-22T22-12-26Z`), on
+Docker Hub, no longer updated (about 100 MB compressed for amd64). It is pinned by tag and digest in `run.sh` and in the
+workflow, and it is downloaded only on the GitHub runner. It is a test double of an S3 storage here, never something that a
+site needs. Its own entry point starts the server, so `run.sh` gives it no command.
 
 The results are written to `$SECBK_STORAGE_DIR/results.txt` (default `$RUNNER_TEMP/secbk-storage`), which the job prints and
 keeps as an artifact with the two screenshots and the output of the check.

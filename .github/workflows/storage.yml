@@ -129,7 +129,11 @@ jobs:
       - name: Create the database
         run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
 
+      # MinIO no longer distributes its server, so the image is Bitnami's legacy build of MinIO RELEASE.2025-04-22T22-12-26Z
+      # (no longer updated), pinned by tag and digest (.dev/objectfs/README.md).
       - name: Back up a site whose files are in MinIO through tool_objectfs
+        env:
+          SECBK_MINIO_IMAGE: bitnamilegacy/minio:2025.4.22-debian-12-r2@sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01
         run: bash .dev/objectfs/run.sh MOODLE_405_STABLE
 
       - name: Show the results
