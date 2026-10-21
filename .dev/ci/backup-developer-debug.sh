@@ -4,9 +4,9 @@
 # service first (.dev/fakesec/prepare.php), so that cli/diagnose.php checks a registered site and cli/backup.php --now makes a
 # whole run to the end.
 # The site must run with developer debugging: $CFG->debug = E_ALL and $CFG->debugdisplay = 1, as the config.php that
-# moodle-plugin-ci writes has. A canary (a debugging() call at the developer level and an undefined variable, in a script that
-# loads the same config.php) must be found by the check first, so that neither a site without developer debugging nor a check
-# that sees nothing can pass.
+# moodle-plugin-ci writes has. A canary (debugging() calls at the developer level, one of them with a message of two lines,
+# and an undefined variable, in a script that loads the same config.php) must be found by the check first, so that neither a
+# site without developer debugging nor a check that sees nothing can pass.
 # The job test of ci.yml runs it on the site itself (not on the PHPUnit or the Behat site), after the other command line
 # scripts, because it leaves the site registered. It is not run on a development site, where it would replace a registration
 # made by hand.
@@ -19,23 +19,27 @@ plugin="$docroot/admin/tool/secbackup"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# The lines that PHP writes for a message with display_errors (Warning: ... on line N) or log_errors (PHP Warning: ...), and
-# the first line that debugging() writes on the command line (++ message ++).
-pattern='^(PHP )?(Warning|Notice|Deprecated|Strict Standards|Fatal error|Parse error|Recoverable fatal error|Core Warning|Compile Warning|User Warning|User Notice|User Deprecated|User Error): .* on line [0-9]+$|^\+\+ .* \+\+$'
+# The first line that PHP writes for a message with display_errors (Warning: ...) or log_errors (PHP Warning: ...), and the
+# first line that debugging() writes on the command line (++ message ++). Only the start of the line is matched: a message
+# with a line feed in it ends on a later line (" on line N", " ++"). No line of the normal output of the scripts starts this
+# way (checked on all 18 combinations of CI run 39622090686: the lines start with a word, "[" or "==").
+pattern='^(PHP )?(Warning|Notice|Deprecated|Strict Standards|Fatal error|Parse error|Recoverable fatal error|Core Warning|Compile Warning|User Warning|User Notice|User Deprecated|User Error): |^\+\+ '
 
 cat > "$work/canary.php" <<PHP
 <?php
 define('CLI_SCRIPT', true);
 require('$moodle/config.php');
 debugging('canary of backup-developer-debug.sh', DEBUG_DEVELOPER);
+debugging("canary of two lines\\nof backup-developer-debug.sh", DEBUG_DEVELOPER);
 echo \$canary_undefined;
 PHP
 "$php" "$work/canary.php" > "$work/canary.out" 2>&1 || true
 grep -E "$pattern" "$work/canary.out" > "$work/canary.found" || true
-if ! grep -q -E '^\+\+ canary of backup-developer-debug.sh \+\+$' "$work/canary.found" \
+if ! grep -q -x -F '++ canary of backup-developer-debug.sh ++' "$work/canary.found" \
+        || ! grep -q -x -F '++ canary of two lines' "$work/canary.found" \
         || ! grep -q 'canary_undefined' "$work/canary.found"; then
     cat "$work/canary.out"
-    echo "The check did not find the debugging() message and the warning of the canary above: either the site does not run" \
+    echo "The check did not find the debugging() messages and the warning of the canary above: either the site does not run" \
         "with developer debugging (\$CFG->debug = E_ALL, \$CFG->debugdisplay = 1) or the check could not find other messages." >&2
     exit 1
 fi

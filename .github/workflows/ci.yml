@@ -131,11 +131,13 @@ jobs:
   test:
     name: Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     runs-on: ubuntu-24.04
-    # The long steps (the install, PHPUnit, Behat, the backup with developer debugging) have limits of their own, which add up
-    # to less than this one: a step that stalls fails with its log kept. When GitHub stops the job itself, the log of the
-    # running step is lost (run 39493954359: PHPUnit of Moodle 5.1 PHP 8.4 MariaDB stalled until the limit of 60 minutes of the
-    # job, and its log was gone).
-    timeout-minutes: 120
+    # The steps that run the plugin's tests or its scripts (the install, PHPUnit, the trace tests with OPcache, Behat, the
+    # command line scripts, the backup with developer debugging) have limits of their own, 115 minutes together, so that a
+    # stall in one of them fails that step with its log kept. When GitHub stops the job itself, the log of the running step is
+    # lost (run 39493954359: PHPUnit of Moodle 5.1 PHP 8.4 MariaDB stalled until the limit of 60 minutes of the job, and its
+    # log was gone). The other steps (the set-up, the static checks, the two installs of the site) take a few minutes in all
+    # and have no limit of their own.
+    timeout-minutes: 130
 
     strategy:
       fail-fast: false
@@ -288,6 +290,7 @@ jobs:
       # (.dev/ci/phpunit-opcache.sh says why): the traces are checked as a web server with OPcache would make them.
       - name: PHPUnit trace tests with OPcache
         if: ${{ !cancelled() }}
+        timeout-minutes: 5
         working-directory: moodle
         run: bash "$GITHUB_WORKSPACE/plugin/.dev/ci/phpunit-opcache.sh" "$RUNNER_TEMP/opcache"
 
@@ -316,6 +319,7 @@ jobs:
       # (.dev/ci/diagnose-open-basedir.sh says what it checks).
       - name: Command line scripts
         if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: |
           if [ -d moodle/public ]; then dir=moodle/public/admin/tool/secbackup/cli; else dir=moodle/admin/tool/secbackup/cli; fi
           cli="$dir/diagnose.php"
@@ -487,9 +491,7 @@ jobs:
         env:
           TIMEOUT_FACTOR: ${{ env.SECBK_BEHAT_TIMEOUT_FACTOR || '2' }}
         run: |
-          if [ -n "$TIMEOUT_FACTOR" ]; then
-            moodle-plugin-ci add-config "\$CFG->behat_increasetimeout = $TIMEOUT_FACTOR;"
-          fi
+          moodle-plugin-ci add-config "\$CFG->behat_increasetimeout = $TIMEOUT_FACTOR;"
           # shellcheck disable=SC2016
           moodle-plugin-ci add-config '$CFG->behat_profiles["edge"] = ["browser" => "MicrosoftEdge", "wd_host" => "http://localhost:4444/wd/hub", "capabilities" => ["browserName" => "MicrosoftEdge"]];'
           if [ -d moodle/public ]; then cli=moodle/public/admin/tool/behat/cli; else cli=moodle/admin/tool/behat/cli; fi
@@ -532,10 +534,15 @@ jobs:
   # got "WindowNotFound;Callback was not called before the unload event." from WebKit, which safaridriver answered as "no
   # such window"; the wait went on and the job passed. Three were in the step "I open ... in site administration"
   # of the plugin, which now waits through the answer (click_and_wait_for_new_page() in tests/behat/behat_tool_secbackup.php).
-  # The fourth was in a step of Moodle ("I follow "Preferences" in the user menu"): Moodle's wait for pending JavaScript
-  # catches the answer as Mink's NoSuchWindowException, which the php-webdriver driver does not throw, so the steps of Moodle
-  # can still fail this way. safaridriver runs with --diagnose: every job counts these answers in its log and shows the
-  # commands that got them, and when Behat fails, the failure is named in the summary of the run
+  # The fourth was in a step of Moodle on Moodle 4.5 ("I follow "Preferences" in the user menu"). Moodle 4.5 and 5.0 import
+  # Mink's NoSuchWindowException (lib/behat/classes/behat_session_trait.php:31) and catch it in
+  # wait_for_pending_js_in_session() (:873) and look_for_exceptions() (:1016), but the php-webdriver driver throws the class
+  # of php-webdriver, so those catches never apply there. From Moodle 5.1 on the file imports the class of php-webdriver
+  # (public/lib/behat/classes/behat_session_trait.php:33) and both catch it (:883, :1022). On every version,
+  # look_for_deprecated_icons() (:1073 in 4.5 and 5.0, :1080 from 5.1), which execute() runs after every action of a step
+  # (:1157, :1164), runs a script with no such catch. So the steps of Moodle can still fail this way: on 4.5 and 5.0 in the
+  # three checks, from 5.1 in the last one. safaridriver runs with --diagnose: every job counts these answers in its log and
+  # shows the commands that got them, and when Behat fails, the failure is named in the summary of the run
   # (.dev/ci/behat-known-failures.sh); the job fails all the same.
   behat-safari:
     name: Behat safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}

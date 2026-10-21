@@ -22,13 +22,21 @@ The default branch of the repository is `main`.
 | `secureos` | Twelve jobs: the access control that the operating system ships, in real virtual machines (Lima with QEMU and KVM). `rocky-9`, `rocky-10`, `almalinux-9`, `almalinux-10` (SELinux), and `debian-12`, `debian-13`, `ubuntu-22.04`, `ubuntu-24.04` (AppArmor) in the states `standard` and `confined`. Each runs `.dev/secureos/run-template.sh -s <state> <template>`; the secret `SECBK_SECUREOS_ENDPOINT` (the connection URL of a real service) selects the real expectations, and without it the stand-in's are checked. See `.dev/secureos/README.md`. |
 | `coverage` | Checks that one artifact `coverage-run-<Moodle>-<PHP>-<database>` arrived for each row of the matrix of `test`, with its PHPUnit report, and no other (`.dev/ci/check-coverage-runs.sh`; no other artifact name may start with `coverage-run-`), merges the coverage of all combinations, writes `coverage-summary.json` (the artifact `coverage-summary`) and fails unless every line of every shipped file ran. |
 
-Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 55, `test` 120,
-`behat-safari` 75, `secureos` 45 (60 for the state `run`) and the badge job 10. The long steps have limits of their own:
-the install 20 minutes (a failed download of Node.js makes nvm build it from its source for more than an hour), PHPUnit 40,
-Behat 25 (Chrome, Firefox, Edge) or 35 (Safari), the backup with developer debugging 20. When GitHub
-stops a job at its own limit, the log of the step that was running is lost (a PHPUnit step that stalled in run 39493954359
-left no log), so the limits of the steps of `test` add up to less than the limit of the job, and a step that stalls fails
-with its log. On GitHub (2026-10-20) the `test` jobs took 19 to 41 minutes (PHPUnit 11 to 24, Behat 5 to 11), a `behat` job 6
+Every job has `timeout-minutes` (in `badges.yml` too): `rules` 15, `inventory` 10, `coverage` 15, `behat` 55, `test` 130,
+`behat-safari` 75, `secureos` 45 (60 for the state `run`) and the badge job 10. When GitHub stops a job at its own limit, the
+log of the step that was running is lost (a PHPUnit step that stalled in run 39493954359 left no log), so these steps have
+limits of their own, which in each job add up to less than the limit of the job:
+
+| Job | Steps with a limit of their own |
+|---|---|
+| `test` | Install Moodle with the plugin 20 minutes (a failed download of Node.js makes nvm build it from its source for more than an hour), PHPUnit tests 40, PHPUnit trace tests with OPcache 5, Behat features 25, Command line scripts 5, The backup on the command line with developer debugging 20 (115 of 130) |
+| `behat` | Install Moodle with the plugin 20, Behat features 25 (45 of 55) |
+| `behat-safari` | Install Moodle with the plugin 20, Behat features 35 (55 of 75) |
+
+A stall in one of these fails that step with its log. The other steps (the set-up of PHP and moodle-plugin-ci, the database
+and safaridriver of the Safari job, the static checks, the two installs of the site in `test`, the uploads) have no limit
+of their own: they take a few minutes in all, and a stall in one of them would stop the job at its limit without the log of
+that step. On GitHub (2026-10-20) the `test` jobs took 19 to 41 minutes (PHPUnit 11 to 24, Behat 5 to 11), a `behat` job 6
 to 10 minutes, a `behat-safari` job 7 to 16. Under act, which is slower than a GitHub runner (amd64 emulated on Apple
 silicon), the `test` job took 44 minutes (the install 7 minutes, PHPUnit 14, Behat 12), a `behat` job 22 minutes (Firefox) or
 26 (Edge, with Behat 14 of them), `inventory` 2 minutes. `rules` and `coverage` take a few minutes at most. A hung job is
@@ -39,8 +47,10 @@ the jobs `behat` and `behat-safari` in `ci.yml` have the evidence: safaridriver 
 being replaced (4 of 188 Safari jobs from 2026-10-19 to 2026-10-21; the steps of the plugin now wait through it), and a front
 page that did not finish its JavaScript in 10 seconds before the first step of a scenario (2 of about 220 Edge jobs, both
 Moodle 5.3 with MariaDB; the time limits of Behat are now doubled for Edge on GitHub). When the Behat
-step of a job fails, the next step (`.dev/ci/behat-known-failures.sh`) names either of them in the summary of the run. The job
-fails all the same: a scenario is never run again to make a run green.
+step of a job fails, the next step (`.dev/ci/behat-known-failures.sh`) names either of them in the summary of the run, with
+how many of the failures that Behat lists it explains and how many others there are, so that a known name never covers a
+failure of the plugin (`bash .dev/hooks/tests/run.sh` tests this). The job fails all the same: a scenario is never run again
+to make a run green.
 
 **Mutation testing** runs in its own manual workflow, `.github/workflows/infection.yml`: Infection with the configuration of
 `.dev/infection/run.sh`, split into the shards of `.dev/infection/shards.txt`, one job each, and a last job that adds them up
