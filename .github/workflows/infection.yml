@@ -133,6 +133,17 @@ jobs:
           sed "s#\"customPath\": \"/var/www/html/vendor/bin/phpunit\"#\"customPath\": \"$phpunit\"#" \
             .dev/infection/infection.json5 > .dev/infection/infection.ci.json5
           grep -q "\"customPath\": \"$phpunit\"" .dev/infection/infection.ci.json5
+          # Infection checks phpunit.xml against the schema that the file names, a URL of schema.phpunit.de. When that host
+          # did not answer (HTTP 522 in run 39644975901), every shard stopped before its first mutant. PHPUnit keeps the
+          # schemas of its versions in its folder, so the URL is replaced with the file of the same version (a relative path:
+          # Infection reads it from the folder of phpunit.xml). The greps stop the job if the URL or the file is not found.
+          version="$(sed -n 's#.*xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/\([0-9.]*\)/phpunit.xsd".*#\1#p' phpunit.xml)"
+          schema="$GITHUB_WORKSPACE/moodle/vendor/phpunit/phpunit/schema/$version.xsd"
+          [ -n "$version" ]
+          [ -f "$schema" ]
+          relative="$(realpath --relative-to=. "$schema")"
+          sed -i "s#https://schema.phpunit.de/$version/phpunit.xsd#$relative#" phpunit.xml
+          grep -q "xsi:noNamespaceSchemaLocation=\"$relative\"" phpunit.xml
           mkdir -p .dev/infection/out
           filter="$(php .dev/infection/shards.php filter "$SHARD")"
           # The floor is for the sum of the shards (job merge), not for one shard.
