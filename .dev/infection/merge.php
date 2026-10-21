@@ -31,10 +31,13 @@
 // different numbers of mutants.
 //
 // The merge fails (exit code 1) when the covered code MSI is below minCoveredMsi of infection.json5, when a mutant was
-// skipped (its tests were not run, so it would leave the count without a word), or when no mutant was tested. It stops with
-// exit code 2 when an input cannot be used: a shard of shards.txt without its folder or with a damaged log.
-// It lists every escaped, timed out and not covered mutant (file:line mutator), from the plugin root, for the review in
-// REVIEW.md, also when it fails.
+// skipped (its tests were not run, so it would leave the count without a word), when a mutant ended with an error or a
+// syntax error (Infection counts those as detected, so a database that died in the middle of a shard would raise the score),
+// or when a shard tested no mutant (its filter found nothing, so its files would drop out of the score unseen). It stops with
+// exit code 2 when an input cannot be used: a shard of shards.txt without its folder, a damaged log, or a json log whose lists
+// do not have as many mutants as the summary counts.
+// It lists every escaped, timed out, not covered, errored and syntax error mutant (file:line mutator), from the plugin root,
+// for the review in REVIEW.md, also when it fails.
 //
 // Usage: php merge.php [--root=<plugin>] [--markdown=<file>] <folder of the shard folders>
 // --markdown appends the result as Markdown to the file (the workflow gives $GITHUB_STEP_SUMMARY).
@@ -107,7 +110,11 @@ $keys = ['totalMutantsCount', 'killedCount', 'notCoveredCount', 'escapedCount', 
     'skippedCount', 'ignoredCount', 'timeOutCount'];
 $sums = array_fill_keys($keys, 0);
 $rows = [];
-$listed = ['escaped' => [], 'timeouted' => [], 'uncovered' => []];
+// The lists of the json log, with the count of the summary that each must match.
+$lists = ['escaped' => 'escapedCount', 'timeouted' => 'timeOutCount', 'uncovered' => 'notCoveredCount',
+    'errored' => 'errorCount', 'syntaxErrors' => 'syntaxErrorCount'];
+$listed = array_fill_keys(array_keys($lists), []);
+$failures = [];
 foreach ($shards as $shard) {
     $stats = secbk_infection_read("$folder/infection-$shard/summary.json")['stats'] ?? null;
     if (!is_array($stats)) {
@@ -123,9 +130,17 @@ foreach ($shards as $shard) {
         . '%3d ignored', $shard, $stats['totalMutantsCount'], $stats['killedCount'], $stats['escapedCount'],
         $stats['notCoveredCount'], $stats['timeOutCount'], $stats['errorCount'] + $stats['syntaxErrorCount'],
         $stats['skippedCount'], $stats['ignoredCount']);
+    $shardtested = $stats['totalMutantsCount'] - $stats['skippedCount'] - $stats['ignoredCount'] - $stats['notCoveredCount'];
+    if ($shardtested <= 0) {
+        $failures[] = "the shard $shard tested no mutant";
+    }
     $log = secbk_infection_read("$folder/infection-$shard/infection.json");
-    foreach (array_keys($listed) as $kind) {
-        foreach ($log[$kind] ?? [] as $result) {
+    foreach ($lists as $kind => $key) {
+        if (!is_array($log[$kind] ?? null) || count($log[$kind]) !== $stats[$key]) {
+            secbk_infection_input_error("$folder/infection-$shard/infection.json does not list the {$stats[$key]} mutants of "
+                . "$key in $kind");
+        }
+        foreach ($log[$kind] as $result) {
             $path = (string) ($result['mutator']['originalFilePath'] ?? '');
             $at = strpos($path, '/classes/');
             $listed[$kind][] = ($at === false ? $path : substr($path, $at + 1)) . ':'
@@ -137,7 +152,6 @@ foreach ($shards as $shard) {
 $detected = $sums['killedCount'] + $sums['timeOutCount'] + $sums['errorCount'] + $sums['syntaxErrorCount'];
 $tested = $sums['totalMutantsCount'] - $sums['skippedCount'] - $sums['ignoredCount'] - $sums['notCoveredCount'];
 $msi = $tested > 0 ? 100 * $detected / $tested : 0.0;
-$failures = [];
 if ($tested <= 0) {
     $failures[] = 'no mutant was tested';
 } else if ($msi < $floor) {
@@ -146,6 +160,9 @@ if ($tested <= 0) {
 if ($sums['skippedCount'] > 0) {
     $failures[] = $sums['skippedCount'] . ' mutants were skipped, so their tests were not run';
 }
+if ($sums['errorCount'] + $sums['syntaxErrorCount'] > 0) {
+    $failures[] = ($sums['errorCount'] + $sums['syntaxErrorCount']) . ' mutants ended with an error, which counts as detected';
+}
 
 $lines = $rows;
 $lines[] = sprintf('Total: %d mutants, %d killed, %d escaped, %d not covered, %d timed out, %d errors, %d skipped, %d ignored',
@@ -153,7 +170,9 @@ $lines[] = sprintf('Total: %d mutants, %d killed, %d escaped, %d not covered, %d
     $sums['errorCount'] + $sums['syntaxErrorCount'], $sums['skippedCount'], $sums['ignoredCount']);
 $lines[] = sprintf('Covered code MSI: %.2f%% (%d of %d tested mutants detected; floor %s%%)', $msi, $detected, $tested,
     $floortext);
-foreach (['escaped' => 'Escaped', 'timeouted' => 'Timed out', 'uncovered' => 'Not covered'] as $kind => $title) {
+$titles = ['escaped' => 'Escaped', 'timeouted' => 'Timed out', 'uncovered' => 'Not covered', 'errored' => 'Errors',
+    'syntaxErrors' => 'Syntax errors'];
+foreach ($titles as $kind => $title) {
     sort($listed[$kind]);
     $lines[] = "$title: " . count($listed[$kind]);
     foreach ($listed[$kind] as $mutant) {

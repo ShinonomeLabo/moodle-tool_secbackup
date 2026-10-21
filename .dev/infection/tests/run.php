@@ -76,23 +76,31 @@ function secbk_tree(array $files, string $shards, int $floor = 95): string {
 /**
  * Writes the logs of one shard as the workflow downloads them.
  *
+ * Each list of the json log gets as many mutants as its count in the summary: first the named ones, then mutants of
+ * classes/local/a/one.php:1 of the mutator Filler.
+ *
  * @param string $folder The folder of the shard folders.
  * @param string $shard The shard.
  * @param array $counts Counts that differ from 0.
- * @param array $escaped Escaped mutants as [file, line, mutator].
+ * @param array $named Named mutants by list (escaped, errored, ...), each as [file, line, mutator].
  */
-function secbk_shard_logs(string $folder, string $shard, array $counts, array $escaped = []): void {
+function secbk_shard_logs(string $folder, string $shard, array $counts, array $named = []): void {
     $stats = array_merge(array_fill_keys(['totalMutantsCount', 'killedCount', 'notCoveredCount', 'escapedCount', 'errorCount',
         'syntaxErrorCount', 'skippedCount', 'ignoredCount', 'timeOutCount'], 0), $counts);
     @mkdir("$folder/infection-$shard", 0777, true);
     file_put_contents("$folder/infection-$shard/summary.json", json_encode(['stats' => $stats]));
-    $rows = [];
-    foreach ($escaped as [$file, $line, $mutator]) {
-        $rows[] = ['mutator' => ['mutatorName' => $mutator,
-            'originalFilePath' => "/runner/moodle/public/admin/tool/secbackup/$file", 'originalStartLine' => $line]];
+    $log = ['stats' => $stats, 'killed' => [], 'ignored' => []];
+    $lists = ['escaped' => 'escapedCount', 'timeouted' => 'timeOutCount', 'uncovered' => 'notCoveredCount',
+        'errored' => 'errorCount', 'syntaxErrors' => 'syntaxErrorCount'];
+    foreach ($lists as $list => $key) {
+        $mutants = array_pad($named[$list] ?? [], $stats[$key], ['classes/local/a/one.php', 1, 'Filler']);
+        $log[$list] = [];
+        foreach ($mutants as [$file, $line, $mutator]) {
+            $log[$list][] = ['mutator' => ['mutatorName' => $mutator,
+                'originalFilePath' => "/runner/moodle/public/admin/tool/secbackup/$file", 'originalStartLine' => $line]];
+        }
     }
-    file_put_contents("$folder/infection-$shard/infection.json", json_encode(['stats' => $stats, 'escaped' => $rows,
-        'timeouted' => [], 'killed' => [], 'errored' => [], 'syntaxErrors' => [], 'uncovered' => [], 'ignored' => []]));
+    file_put_contents("$folder/infection-$shard/infection.json", json_encode($log));
 }
 
 /**
@@ -153,7 +161,7 @@ secbk_expect('the shards of the plugin pass the check', $code === 0, "exit $code
 $root = secbk_tree($files, $good);
 $folder = "$root/results";
 secbk_shard_logs($folder, 'one', ['totalMutantsCount' => 200, 'killedCount' => 199, 'escapedCount' => 1],
-    [['classes/local/a/one.php', 12, 'CastString']]);
+    ['escaped' => [['classes/local/a/one.php', 12, 'CastString']]]);
 secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 10, 'killedCount' => 5, 'escapedCount' => 5]);
 $markdown = "$root/summary.md";
 [$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg("--markdown=$markdown") . ' '
@@ -166,16 +174,62 @@ secbk_expect('an escaped mutant is listed from the plugin root',
 secbk_expect('the Markdown summary is written', str_contains((string) @file_get_contents($markdown), 'Covered code MSI: 97.14%'),
     (string) @file_get_contents($markdown));
 
-// Below the floor it fails; mutants that no test covers are not in the covered code MSI; timed out and errors count as found.
+// Below the floor it fails; mutants that no test covers are not in the covered code MSI; timed out ones count as found.
 secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 30, 'killedCount' => 5, 'escapedCount' => 25]);
 [$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
 secbk_expect('below the floor fails',
     $code === 1 && str_contains($out, 'FAILED: the covered code MSI 88.70% is below the floor of 95%'), "exit $code: $out");
-secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 30, 'killedCount' => 3, 'timeOutCount' => 1, 'errorCount' => 1,
-    'notCoveredCount' => 25]);
+secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 30, 'killedCount' => 3, 'timeOutCount' => 2, 'notCoveredCount' => 25]);
 [$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
 secbk_expect('not covered mutants are outside the covered code MSI', $code === 0
     && str_contains($out, 'Covered code MSI: 99.51% (204 of 205 tested mutants detected'), "exit $code: $out");
+
+// Ignored mutants are outside the covered code MSI too: 190 of 200, not of 210.
+secbk_shard_logs($folder, 'one', ['totalMutantsCount' => 210, 'killedCount' => 190, 'escapedCount' => 10, 'ignoredCount' => 10]);
+secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 1, 'killedCount' => 1]);
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('ignored mutants are outside the covered code MSI', $code === 0
+    && str_contains($out, 'Covered code MSI: 95.02% (191 of 201 tested mutants detected'), "exit $code: $out");
+
+// An error counts as detected, as Infection counts it, but fails the merge, and the mutant is listed.
+secbk_shard_logs($folder, 'one', ['totalMutantsCount' => 200, 'killedCount' => 200]);
+secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 10, 'killedCount' => 9, 'errorCount' => 1],
+    ['errored' => [['classes/local/b/deep/three.php', 7, 'MethodCallRemoval']]]);
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('an errored mutant fails the merge', $code === 1
+    && str_contains($out, 'Covered code MSI: 100.00% (210 of 210')
+    && str_contains($out, 'FAILED: 1 mutants ended with an error')
+    && str_contains($out, "Errors: 1\n  classes/local/b/deep/three.php:7 MethodCallRemoval"), "exit $code: $out");
+secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 10, 'killedCount' => 9, 'syntaxErrorCount' => 1]);
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('a syntax error fails the merge', $code === 1 && str_contains($out, 'FAILED: 1 mutants ended with an error')
+    && str_contains($out, 'Syntax errors: 1'), "exit $code: $out");
+
+// A shard that tested nothing fails, also when the others tested enough: its filter found nothing.
+secbk_shard_logs($folder, 'two', []);
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('a shard without mutants fails', $code === 1 && str_contains($out, 'FAILED: the shard two tested no mutant')
+    && str_contains($out, 'Covered code MSI: 100.00% (200 of 200'), "exit $code: $out");
+secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 4, 'notCoveredCount' => 4]);
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('a shard whose mutants are all not covered fails', $code === 1
+    && str_contains($out, 'FAILED: the shard two tested no mutant'), "exit $code: $out");
+
+// A json log that is missing, damaged or short of mutants cannot be used, even when the summary is whole.
+secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 10, 'killedCount' => 9, 'escapedCount' => 1]);
+unlink("$folder/infection-two/infection.json");
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('a missing json log cannot be used', $code === 2 && str_contains($out, 'infection-two/infection.json is missing'),
+    "exit $code: $out");
+file_put_contents("$folder/infection-two/infection.json", '{"escaped": [');
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('a damaged json log cannot be used', $code === 2 && str_contains($out, 'infection-two/infection.json is missing'),
+    "exit $code: $out");
+file_put_contents("$folder/infection-two/infection.json", json_encode(['escaped' => [], 'timeouted' => [], 'uncovered' => [],
+    'errored' => [], 'syntaxErrors' => []]));
+[$code, $out] = secbk_run_tool('merge.php', escapeshellarg("--root=$root") . ' ' . escapeshellarg($folder));
+secbk_expect('a json log that lists fewer mutants than the summary cannot be used', $code === 2
+    && str_contains($out, 'does not list the 1 mutants of escapedCount in escaped'), "exit $code: $out");
 
 // A skipped mutant fails the merge; a shard without its logs cannot be used; nothing tested fails.
 secbk_shard_logs($folder, 'two', ['totalMutantsCount' => 10, 'killedCount' => 9, 'skippedCount' => 1]);
