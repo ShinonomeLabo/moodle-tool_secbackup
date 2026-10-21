@@ -23,9 +23,6 @@
         "@default": true,
         // Mutants that do not change the behaviour. Each entry is one mutator on one line of one method, Class::method::line,
         // and has its row in REVIEW.md, which says why. When the code moves, the line no longer matches and the mutant comes back.
-        "BitwiseOr": {
-            "ignore": ["tool_secbackup\\local\\api\\client::call::589"]
-        },
         "CastInt": {
             "ignore": [
                 "tool_secbackup\\local\\net\\aws_ranges::network::266",

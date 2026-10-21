@@ -1416,6 +1416,21 @@ final class client_runs_test extends \advanced_testcase {
             ->fail(self::endpoint(), $pair, fake_service::SITE_ID, self::RUN, 'restarted'), 200);
     }
 
+    public function test_the_report_is_sent_as_the_statistics_measure_it(): void {
+        // The report is cut to the size that the service takes with the JSON of stats::encode(): the body has to be that
+        // text, with the slashes of the digests not escaped, or it would be larger than what was measured.
+        $manifest = ['sha256' => self::SHA_A, 'size' => 10, 'signature' => 'sig'];
+        $index = ['sha256' => self::SHA_A, 'size' => 5, 'count' => 1, 'signature' => 'sig'];
+        $stats = ['tables' => (object) ['config' => 3], 'moodle' => ['release' => "5.3+ (Build: 20261021) \u{2713}"]];
+        $mock = new MockHandler([new Response(202, [], '{"status":"verifying"}')]);
+        self::client($mock)->complete(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID, self::RUN,
+            $manifest, $index, $stats);
+        $body = (string) $mock->getLastRequest()->getBody();
+        $this->assertStringContainsString('/', self::SHA_A);
+        $this->assertSame(\tool_secbackup\local\backup\stats::encode(['manifest' => $manifest, 'index' => $index,
+            'stats' => $stats]), $body);
+    }
+
     public function test_complete_and_fail_take_only_their_own_success_status(): void {
         $pair = signing_keypair::generate();
         $this->expect_api_error('api_unexpected', fn() => self::answering([new Response(200, [], '{"status":"verifying"}')])
