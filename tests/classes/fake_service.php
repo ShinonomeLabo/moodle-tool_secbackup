@@ -84,6 +84,7 @@ final class fake_service {
      * - instructions: the signed instruction envelopes that the status answer carries, by kind.
      * - awsranges: the content that GET /aws-ranges gives, or null for none.
      * - objects: the bodies that PUT /_s3/<key> stored, by key (base64, so that the state can be kept as JSON).
+     * - signed: the headers that the last upload URL of a key was signed with, by key, with lower-case names.
      * - runs: the runs by ID; nextrun: counter of run IDs; holdverify: true to leave a completed run in verifying until
      *   verify_run() is called; receiptpayload: fields that replace those of the receipt; coremanifests: published lists.
      * - mode (more): run_in_progress, run_limit_reached, run_not_found, run_state_invalid, capacity_recheck_required,
@@ -108,6 +109,7 @@ final class fake_service {
             'instructions' => [],
             'awsranges' => null,
             'objects' => [],
+            'signed' => [],
             'runs' => [],
             'nextrun' => 1,
             'holdverify' => false,
@@ -574,6 +576,8 @@ final class fake_service {
                 // An object is stored once; the manifest and the index are named by the run and can be sent again.
                 $headers['If-None-Match'] = '*';
             }
+            // A real storage checks every header that a URL was signed with: the PUT must send each, with the same value.
+            $this->state['signed'][$key] = array_change_key_case($headers, CASE_LOWER);
             $issued[] = $entry + [
                 'url' => $this->storage_url($key),
                 'headers' => $headers,
@@ -710,7 +714,8 @@ final class fake_service {
      * The storage: PUT /_s3/<key> keeps a body, GET gives it back.
      *
      * A real storage refuses a PUT whose signed headers differ from the request, so does this one: Content-Length and
-     * x-amz-checksum-sha256 must match the body, and both object-lock headers must be there (MinIO does not check them).
+     * x-amz-checksum-sha256 must match the body, both object-lock headers must be there (MinIO does not check them), and a
+     * key that an upload URL was issued for needs every header that the URL was signed with, with the same value.
      *
      * @param string $method HTTP method.
      * @param string $key Key of the object.
@@ -720,6 +725,11 @@ final class fake_service {
      */
     private function object(string $method, string $key, array $headers, string $body): array {
         if ($method === 'PUT') {
+            foreach ($this->state['signed'][$key] ?? [] as $name => $value) {
+                if (($headers[$name] ?? null) !== $value) {
+                    return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+                }
+            }
             if (
                 ($headers['content-length'] ?? null) !== (string) strlen($body)
                 || ($headers['x-amz-checksum-sha256'] ?? null) !== base64_encode(hash('sha256', $body, true))

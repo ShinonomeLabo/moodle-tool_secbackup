@@ -486,6 +486,34 @@ final class fake_service_test extends \basic_testcase {
             $answer[2]['error']['status']]);
     }
 
+    public function test_the_fake_storage_refuses_a_put_without_a_header_that_its_url_was_signed_with(): void {
+        [$service, $secret] = self::enrolled();
+        self::signed($service, $secret, 'POST', '/runs', '{"kind":"full"}');
+        self::signed($service, $secret, 'POST', self::RUN . '/capacity', '{"estimated_bytes":100}');
+        $name = str_repeat('b', 64);
+        $body = 'content';
+        $answer = self::signed($service, $secret, 'POST', self::RUN . '/upload-urls', json_encode(['items' => [
+            ['kind' => 'object', 'name' => $name, 'size' => 7, 'sha256' => base64_encode(hash('sha256', $body, true))]]]));
+        $signed = array_change_key_case($answer[2]['items'][0]['headers'], CASE_LOWER);
+        $path = '/_s3/sites/' . fake_service::SITE_ID . '/objects/' . $name;
+        foreach (array_keys($signed) as $left) {
+            $headers = $signed;
+            unset($headers[$left]);
+            $refused = $service->handle('PUT', 'app.example.test', $path, $headers, $body);
+            $this->assertSame(400, $refused[0], $left);
+            $this->assertStringContainsString('SignatureDoesNotMatch', $refused[2], $left);
+        }
+        // Another value than the signed one is refused too; the signed headers as they are pass.
+        $this->assertSame(400, $service->handle(
+            'PUT',
+            'app.example.test',
+            $path,
+            ['x-amz-storage-class' => 'GLACIER'] + $signed,
+            $body
+        )[0]);
+        $this->assertSame(200, $service->handle('PUT', 'app.example.test', $path, $signed, $body)[0]);
+    }
+
     public function test_the_fake_storage_keeps_an_object_that_is_stored_when_the_put_is_conditional(): void {
         $service = self::service();
         $put = static fn(string $body, array $more): array => $service->handle('PUT', 'app.example.test', '/_s3/k', [
