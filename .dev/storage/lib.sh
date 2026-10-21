@@ -116,6 +116,12 @@ storage_keypair() {
     ' "$SECBK_STORAGE_DIR/site.key")
 }
 
+# Runs cli/backup.php with the arguments given, for 25 minutes at most: the command does not stop on an error, it waits and
+# tries again (every five minutes), so a run that keeps failing would hold the job until its time limit and show no results.
+storage_backup() {
+    (cd "$(storage_docroot)" && timeout 1500 php -d memory_limit=-1 "$(storage_plugin)/cli/backup.php" "$@")
+}
+
 # Registers the site with the fake backup service, with a key pair made for the run (see .dev/fakesec/prepare.php).
 storage_prepare() {
     storage_php "$(storage_plugin)/.dev/fakesec/prepare.php" --publickey="$(storage_keypair)"

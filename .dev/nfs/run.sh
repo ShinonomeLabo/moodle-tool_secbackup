@@ -75,7 +75,7 @@ storage_fake_start
 storage_prepare
 started="$(date +%s)"
 status=0
-storage_php "$(storage_plugin)/cli/backup.php" --now || status=$?
+storage_backup --now || status=$?
 result "backup: exit $status in $(( $(date +%s) - started )) s"
 run="$(storage_php -r 'define("CLI_SCRIPT", true); require "config.php";
     $r = $DB->get_records("tool_secbackup_runs", null, "id DESC", "id, status, abortcode, bytesuploaded, chunksuploaded", 0, 1);

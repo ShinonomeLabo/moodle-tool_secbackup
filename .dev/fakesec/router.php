@@ -120,7 +120,17 @@ foreach ($_SERVER as $name => $value) {
 $host = (string) preg_replace('/:\d+\z/', '', $_SERVER['HTTP_HOST'] ?? 'localhost');
 $service = new fake_service($apibase, $state);
 [$status, $responseheaders, $body] = $service->handle($method, $host, $path, $headers, (string) file_get_contents('php://input'));
-file_put_contents($statefile, json_encode($service->state), LOCK_EX);
+// The body of an object sent to the storage is binary, which JSON cannot hold (json_encode() would fail and the state would be
+// lost); the storage keeps it in base64 already, so the copy of the last body is dropped.
+if (preg_match('//u', (string) $service->state['lastbody']) !== 1) {
+    $service->state['lastbody'] = null;
+}
+$json = json_encode($service->state);
+if ($json === false) {
+    http_response_code(500);
+    return;
+}
+file_put_contents($statefile, $json, LOCK_EX);
 http_response_code($status);
 foreach ($responseheaders as $name => $value) {
     header($name . ': ' . $value);

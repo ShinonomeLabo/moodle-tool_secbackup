@@ -97,7 +97,7 @@ while read -r line; do result "screen: $line"; done < <(grep '^check ' "$SECBK_S
 [ "$screen" -eq 0 ] || exit 1
 started="$(date +%s)"
 status=0
-storage_php "$(storage_plugin)/cli/backup.php" || status=$?
+storage_backup || status=$?
 result "backup (the one the button started): exit $status in $(( $(date +%s) - started )) s"
 run="$(storage_php -r 'define("CLI_SCRIPT", true); require "config.php";
     $r = $DB->get_records("tool_secbackup_runs", null, "id DESC", "id, triggeredby, status, abortcode, chunksuploaded", 0, 1);
