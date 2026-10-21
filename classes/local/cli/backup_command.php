@@ -183,7 +183,7 @@ final class backup_command {
                 ));
                 $advice = abort_reason::refusal_advice($code, $platform);
             } else {
-                $write(get_string('cli_backup_aborted', 'tool_secbackup', abort_reason::text($code)));
+                $write(get_string('cli_backup_aborted', 'tool_secbackup', abort_reason::text($code, null, $run->abort_note())));
                 $advice = abort_reason::advice($code, null, $run->abort_note());
             }
             $write(get_string('status_advice', 'tool_secbackup', $advice));

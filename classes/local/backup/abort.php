@@ -154,7 +154,8 @@ final class abort {
         }
         $code = $e->errorcode;
         if (in_array($code, client::FAIL_CODES, true)) {
-            return [$code, []];
+            $file = self::file_of($e);
+            return [$code, $file === null ? [] : ['file' => $file]];
         }
         $tempdir ??= limits::current()->tempdir;
         $denial = selinux::denial($e, $files, $tempdir, $probe, $writable);
@@ -162,6 +163,46 @@ final class abort {
             return ['selinux_denied', ['denial' => $denial] + ($denial === 'tempfolder' ? ['folder' => $tempdir] : [])];
         }
         return [self::other_reason($e), []];
+    }
+
+    /**
+     * The file of the file store that a stop for a content (tamper_detected or nfs_slow) names, so that the administrator can
+     * find it: its content hash and where the content is, and the first file of the site that has it (component, file area,
+     * item and file name). A value that holds "://" is left out: the record of a run never holds a URL.
+     *
+     * @param plugin_exception $e The error.
+     * @return array|null ['contenthash', 'path'] and, when a file of the site has the content, 'component', 'filearea',
+     *     'itemid' and 'filename'; null when the error names no content.
+     */
+    private static function file_of(plugin_exception $e): ?array {
+        global $DB;
+        if (
+            !in_array($e->errorcode, ['tamper_detected', 'nfs_slow'], true)
+            || preg_match('/^contenthash ([0-9a-f]{40})(?::|\z)/', (string) $e->debuginfo, $m) !== 1
+        ) {
+            return null;
+        }
+        $hash = $m[1];
+        $file = ['contenthash' => $hash, 'path' => 'filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash];
+        $rows = $DB->get_records_select(
+            'files',
+            'contenthash = ? AND filesize > 0',
+            [$hash],
+            'id',
+            'id, component, filearea, itemid, filename',
+            0,
+            1
+        );
+        $row = reset($rows);
+        if ($row !== false) {
+            foreach (['component', 'filearea', 'itemid', 'filename'] as $field) {
+                $value = (string) $row->$field;
+                if (!str_contains($value, '://')) {
+                    $file[$field] = $field === 'itemid' ? (int) $value : $value;
+                }
+            }
+        }
+        return $file;
     }
 
     /**

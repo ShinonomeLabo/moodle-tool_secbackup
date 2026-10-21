@@ -23,6 +23,7 @@ use tool_secbackup\local\backup\run_context;
 use tool_secbackup\local\crypto\chunk_info;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_writer;
+use tool_secbackup\local\plugin_exception;
 
 /**
  * The stage "files": the contents of the file store that the snapshot listed (the journal "files"), in the order of their
@@ -173,7 +174,7 @@ final class files_stage {
         if (!$this->context->make_room(run_context::chunk_bound(packer::PACK_AT + packer::FILE_LIMIT))) {
             return false;
         }
-        $chunks = $this->source->pack($hash, $size, $this->packer);
+        $chunks = self::located($hash, fn(): ?array => $this->source->pack($hash, $size, $this->packer));
         if ($chunks === null) {
             $this->context->journal('missing_files')->append($hash);
         } else if ($chunks === []) {
@@ -200,7 +201,8 @@ final class files_stage {
         $this->safe = $before;
         if ($this->big === null || $this->big['hash'] !== $hash) {
             // A file whose pieces are all stored asks for no room.
-            $digests = $this->from_present($hash, $size) ? [] : $this->source->big_digests($hash, $size, $this->packer);
+            $digests = $this->from_present($hash, $size)
+                ? [] : self::located($hash, fn(): ?array => $this->source->big_digests($hash, $size, $this->packer));
             if ($digests === null) {
                 $this->context->journal('missing_files')->append($hash);
             }
@@ -228,7 +230,8 @@ final class files_stage {
                 if (!$this->context->make_room(run_context::chunk_bound(packer::PIECE))) {
                     return false;
                 }
-                $chunk = $this->source->big_piece($hash, $size, $piece, $this->big['digests'][$piece], $this->packer);
+                $digest = $this->big['digests'][$piece];
+                $chunk = self::located($hash, fn() => $this->source->big_piece($hash, $size, $piece, $digest, $this->packer));
                 if ($chunk === null) {
                     // The file is gone since its first read: what was written of it is withdrawn, and committed at once, so
                     // that the entries are never fewer than the commit says.
@@ -256,6 +259,30 @@ final class files_stage {
         $this->big = null;
         $this->safe = $after;
         return true;
+    }
+
+    /**
+     * Reads a content, and names it in a stop that it causes: a content that is not the one of its hash (tamper_detected) or
+     * that cannot be read (nfs_slow) stops the run, and the administrator needs to know which file it is. The debug
+     * information is "contenthash <hash>", and the warning of PHP after it when there was one (abort::reason() reads it).
+     *
+     * @param string $hash The content hash.
+     * @param callable $read Reads the content.
+     * @return mixed What $read gives.
+     * @throws plugin_exception What $read throws; tamper_detected and nfs_slow made again with the content hash.
+     */
+    private static function located(string $hash, callable $read): mixed {
+        try {
+            return $read();
+        } catch (plugin_exception $e) {
+            if (!in_array($e->errorcode, ['tamper_detected', 'nfs_slow'], true)) {
+                throw $e;
+            }
+            $code = $e->errorcode;
+            $warning = $e->debuginfo;
+            unset($e);
+            throw new plugin_exception($code, null, 'contenthash ' . $hash . ($warning === null ? '' : ': ' . $warning));
+        }
     }
 
     /**

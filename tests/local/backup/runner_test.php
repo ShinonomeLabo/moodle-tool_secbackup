@@ -910,9 +910,72 @@ final class runner_test extends \advanced_testcase {
         ]);
         $this->assertSame('aborted', $this->finish($runner, $run));
         $this->assertSame('tamper_detected', $run->abort_code());
+        // The stop names the file, so that the administrator can find it among all the files of the site.
+        $this->assertSame([
+            'contenthash' => $hash,
+            'path' => 'filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash,
+            'component' => 'tool_secbackup',
+            'filearea' => 'test',
+            'itemid' => 0,
+            'filename' => 'three.bin',
+        ], $run->abort_note()['file']);
         $key = run_fixture::names_key();
         $this->assertNull($this->stored('objects/' . chunk_name::file($key, $hash, 1)));
         $this->assertNull($this->stored('objects/' . chunk_name::file($key, $hash, 2)));
+    }
+
+    public function test_a_content_that_cannot_be_read_stops_the_run_with_the_name_of_the_file(): void {
+        $runner = $this->runner(['filesource' => function (\moodle_database $db): file_source {
+            $source = new \tool_secbackup\tests\flaky_file_source($db, static fn(int $seconds) => null);
+            $source->openfailures = 1000;
+            return $source;
+        }]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', $this->finish($runner, $run));
+        $this->assertSame('nfs_slow', $run->abort_code());
+        global $DB;
+        $file = $run->abort_note()['file'];
+        $fields = 'id, component, filearea, itemid, filename';
+        $rows = $DB->get_records('files', ['contenthash' => $file['contenthash']], 'id', $fields);
+        $row = reset($rows);
+        $this->assertSame(
+            [$row->component, $row->filearea, (int) $row->itemid, $row->filename],
+            [$file['component'], $file['filearea'], $file['itemid'], $file['filename']]
+        );
+        $this->assertStringContainsString($file['path'], abort_reason::text('nfs_slow', null, $run->abort_note()));
+    }
+
+    public function test_a_row_of_the_file_store_with_a_broken_content_hash_is_listed_as_missing(): void {
+        global $DB;
+        $row = $DB->get_record('files', ['contenthash' => $this->hashes['big']], '*', IGNORE_MULTIPLE);
+        unset($row->id);
+        $row->contenthash = 'NOT-A-SHA1';
+        $row->pathnamehash = sha1('broken');
+        $row->filename = 'broken.bin';
+        $DB->insert_record('files', $row);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run), (string) $run->abort_code());
+        [$header] = $this->manifest($run->run_uuid());
+        $this->assertContains('NOT-A-SHA1', $header['missing_files']);
+        $this->assertSame([], $this->entries_of($run->run_uuid(), 'file', 'contenthash', 'NOT-A-SHA1'));
+    }
+
+    public function test_a_row_that_is_not_valid_text_is_named_in_the_log(): void {
+        $failed = false;
+        $runner = $this->runner(['filesource' => function (\moodle_database $db) use (&$failed): file_source {
+            if (!$failed) {
+                $failed = true;
+                // As block_writer makes it: the table and the id of the row, never its values.
+                throw new \JsonException('A value of course id 7 is not valid text.');
+            }
+            return new file_source($db, static fn(int $seconds) => null);
+        }]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($runner, $run));
+        $this->assertContains(
+            'The backup step failed and is tried again: JsonException: A value of course id 7 is not valid text.',
+            $this->logged
+        );
     }
 
     public function test_a_file_of_the_data_root_that_changes_between_the_reads_is_withdrawn_and_its_pieces_stay_stored(): void {

@@ -289,13 +289,29 @@ final class runner {
             [$code, $details] = abort::reason($e, $this->seams['files'], $this->seams['limits']->tempdir);
             $busy = $e instanceof api_exception && in_array($e->errorcode, ['api_unavailable', 'api_rate_limited'], true);
             $wait = $busy ? ($e->retryafter ?? self::DEFAULT_WAIT) : null;
-            $error = $e::class . ($e instanceof plugin_exception ? ' ' . $e->errorcode : '');
+            $error = self::error_text($e);
             // The error is not kept: its trace holds the arguments of the calls, and those can be secrets.
             unset($e);
             return $this->failed($run, $context, $code, $error, $wait, true, $details);
         } finally {
             $context?->close();
         }
+    }
+
+    /**
+     * What the log and the record of the run keep of an error that ends a step without stopping the run: its class, its code
+     * for an error of the plugin, and the message of a value that is not valid text, which the plugin makes from the table
+     * and the id of the row (block_writer) so that the administrator can find the row. No other message is kept: a message
+     * can hold a URL or a value of the data.
+     *
+     * @param \Throwable $e The error.
+     * @return string
+     */
+    private static function error_text(\Throwable $e): string {
+        if ($e instanceof plugin_exception) {
+            return $e::class . ' ' . $e->errorcode;
+        }
+        return $e::class . ($e instanceof \JsonException ? ': ' . $e->getMessage() : '');
     }
 
     /**
@@ -620,6 +636,10 @@ final class runner {
         $rows = $DB->get_recordset_sql('SELECT contenthash, size FROM ' . $grouped . ' WHERE size >= ?', [packer::FILE_LIMIT]);
         $present = $context->present();
         foreach ($rows as $row) {
+            if (!file_source::valid_hash($row->contenthash)) {
+                // Listed as missing by the stage of the database, and never sent.
+                continue;
+            }
             $pieces = intdiv((int) $row->size + packer::PIECE - 1, packer::PIECE);
             for ($piece = 0; $piece < $pieces; $piece++) {
                 if ($present->size_of(chunk_name::file($context->dedup_key(), $row->contenthash, $piece)) === null) {

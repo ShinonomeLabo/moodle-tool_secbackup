@@ -42,7 +42,7 @@ final class notifier {
                 $lang = $admin->lang;
                 $a = (object) [
                     'count' => $count,
-                    'reason' => abort_reason::text($code, $lang),
+                    'reason' => abort_reason::text($code, $lang, $note),
                     'advice' => abort_reason::advice($code, $lang, $note),
                     'url' => $url,
                 ];

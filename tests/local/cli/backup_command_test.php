@@ -16,6 +16,7 @@
 
 namespace tool_secbackup\local\cli;
 
+use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\core_diff;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\runner;
@@ -124,6 +125,26 @@ final class backup_command_test extends \advanced_testcase {
             get_string('status_advice', 'tool_secbackup', get_string('abort_server_busy_advice', 'tool_secbackup')),
             end($lines)
         );
+    }
+
+    public function test_a_stop_for_a_content_names_the_file(): void {
+        $source = function (\moodle_database $db): \tool_secbackup\local\backup\files\file_source {
+            $source = new \tool_secbackup\tests\flaky_file_source($db, static fn(int $seconds) => null);
+            $source->openfailures = 1000;
+            return $source;
+        };
+        get_file_storage()->create_file_from_string(['contextid' => \context_system::instance()->id,
+            'component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 0, 'filepath' => '/',
+            'filename' => 'unreadable.txt'], 'a file that cannot be read');
+        [$code, $lines] = $this->run_command(true, false, ['filesource' => $source]);
+        $this->assertSame(1, $code);
+        $run = run_record::recent(1)[0];
+        $this->assertSame('nfs_slow', $run->abort_code());
+        $this->assertSame(
+            get_string('cli_backup_aborted', 'tool_secbackup', abort_reason::text('nfs_slow', null, $run->abort_note())),
+            $lines[count($lines) - 2]
+        );
+        $this->assertStringContainsString($run->abort_note()['file']['path'], $lines[count($lines) - 2]);
     }
 
     public function test_a_reason_without_a_text_of_its_own_is_named_by_its_code(): void {

@@ -45,15 +45,32 @@ final class abort_reason {
     /**
      * What happened.
      *
+     * A stop for a content of the file store (tamper_detected, nfs_slow) names the file when the stop kept it.
+     *
      * @param string $code The reason.
      * @param string|null $lang The language; null for the one of the user.
+     * @param array $note What the site kept about the stop (run_record::abort_note()).
      * @return string Plain text; a code that has no text of its own is named in it.
      */
-    public static function text(string $code, ?string $lang = null): string {
-        if (in_array($code, self::codes(), true)) {
-            return get_string_manager()->get_string('abort_' . $code, 'tool_secbackup', null, $lang);
+    public static function text(string $code, ?string $lang = null, array $note = []): string {
+        $strings = get_string_manager();
+        if (!in_array($code, self::codes(), true)) {
+            return $strings->get_string('abort_unknown', 'tool_secbackup', $code, $lang);
         }
-        return get_string_manager()->get_string('abort_unknown', 'tool_secbackup', $code, $lang);
+        $text = $strings->get_string('abort_' . $code, 'tool_secbackup', null, $lang);
+        $file = $note['file'] ?? null;
+        if (!is_array($file) || !is_string($file['path'] ?? null)) {
+            return $text;
+        }
+        $a = (object) [
+            'path' => $file['path'],
+            'component' => (string) ($file['component'] ?? ''),
+            'filearea' => (string) ($file['filearea'] ?? ''),
+            'itemid' => (string) ($file['itemid'] ?? ''),
+            'filename' => (string) ($file['filename'] ?? ''),
+        ];
+        $id = isset($file['filename']) ? 'abort_file' : 'abort_file_content';
+        return $text . ' ' . $strings->get_string($id, 'tool_secbackup', $a, $lang);
     }
 
     /**

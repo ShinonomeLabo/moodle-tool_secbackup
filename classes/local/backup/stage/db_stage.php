@@ -116,15 +116,23 @@ final class db_stage {
     /**
      * Writes the contents of the file store, as the snapshot has them, to the journal "files".
      *
+     * A content hash that is not a SHA-1 in lower-case hexadecimal names no content that Moodle can have stored: it is listed
+     * as missing, so that a broken row of the table does not stop every step of every run.
+     *
      * @param run_context $context The step.
      * @param \tool_secbackup\local\backup\files\file_source $source The list of the files, on the export connection.
      */
     private static function list_files(run_context $context, \tool_secbackup\local\backup\files\file_source $source): void {
         $journal = $context->journal('files');
+        $missing = $context->journal('missing_files');
         $after = null;
         while (($page = $source->next($after, self::FILES_PAGE)) !== []) {
             foreach ($page as $content) {
-                $journal->append([$content['contenthash'], $content['size']]);
+                if (\tool_secbackup\local\backup\files\file_source::valid_hash($content['contenthash'])) {
+                    $journal->append([$content['contenthash'], $content['size']]);
+                } else {
+                    $missing->append($content['contenthash']);
+                }
                 $after = $content['contenthash'];
             }
         }

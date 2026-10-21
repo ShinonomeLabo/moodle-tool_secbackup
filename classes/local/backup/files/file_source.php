@@ -63,6 +63,16 @@ class file_source {
     }
 
     /**
+     * Whether a content hash is one that Moodle stores a content under: a SHA-1 in lower-case hexadecimal.
+     *
+     * @param mixed $contenthash The value of the table.
+     * @return bool
+     */
+    public static function valid_hash(mixed $contenthash): bool {
+        return is_string($contenthash) && preg_match('/^[0-9a-f]{40}\z/', $contenthash) === 1;
+    }
+
+    /**
      * The next contents of the file store, in the order of the content hash.
      *
      * @param string|null $after The contents with a larger content hash; null for the first.

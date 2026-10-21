@@ -574,6 +574,19 @@ final class status_page_test extends \advanced_testcase {
         );
     }
 
+    public function test_a_stop_for_a_content_names_the_file_escaped_once(): void {
+        self::register();
+        $hash = str_repeat('cd', 20);
+        $run = run_record::create('manual', 1760000000);
+        $run->abort('tamper_detected', 1760000100, ['file' => ['contenthash' => $hash, 'path' => 'filedir/cd/cd/' . $hash,
+            'component' => 'mod_folder', 'filearea' => 'content', 'itemid' => 3, 'filename' => '<b>a&b.txt</b>']]);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString('filedir/cd/cd/' . $hash, $html);
+        $this->assertStringContainsString('&lt;b&gt;a&amp;b.txt&lt;/b&gt;', $html);
+        $this->assertStringNotContainsString('<b>a&b.txt</b>', $html);
+        $this->assertStringNotContainsString('&amp;lt;', $html);
+    }
+
     public function test_a_reason_without_a_text_of_its_own_is_named_and_escaped_once(): void {
         self::register();
         run_record::create('manual', 1760000000)->abort('<u>x</u>', 1760000100);

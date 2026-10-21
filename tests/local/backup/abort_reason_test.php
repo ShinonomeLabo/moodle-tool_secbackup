@@ -98,6 +98,31 @@ final class abort_reason_test extends \advanced_testcase {
         );
     }
 
+    public function test_a_stop_for_a_content_names_the_file(): void {
+        $hash = str_repeat('ab', 20);
+        $file = ['contenthash' => $hash, 'path' => 'filedir/ab/ab/' . $hash, 'component' => 'mod_resource',
+            'filearea' => 'content', 'itemid' => 0, 'filename' => 'notes.pdf'];
+        $this->assertSame(
+            get_string('abort_tamper_detected', 'tool_secbackup') . ' '
+            . get_string('abort_file', 'tool_secbackup', (object) ['path' => 'filedir/ab/ab/' . $hash,
+                'component' => 'mod_resource', 'filearea' => 'content', 'itemid' => '0', 'filename' => 'notes.pdf']),
+            abort_reason::text('tamper_detected', null, ['file' => $file])
+        );
+        $this->assertStringContainsString('notes.pdf', abort_reason::text('nfs_slow', 'ja', ['file' => $file]));
+        // A content that no file of the site refers to any more is named by where it is.
+        $content = ['contenthash' => $hash, 'path' => 'filedir/ab/ab/' . $hash];
+        $this->assertSame(
+            get_string('abort_tamper_detected', 'tool_secbackup') . ' '
+            . get_string('abort_file_content', 'tool_secbackup', (object) ['path' => 'filedir/ab/ab/' . $hash,
+                'component' => '', 'filearea' => '', 'itemid' => '', 'filename' => '']),
+            abort_reason::text('tamper_detected', null, ['file' => $content])
+        );
+        // Without a file, or with one that is not what a stop keeps, the text is the one of the reason.
+        $this->assertSame(get_string('abort_tamper_detected', 'tool_secbackup'), abort_reason::text('tamper_detected'));
+        $this->assertSame(get_string('abort_nfs_slow', 'tool_secbackup'), abort_reason::text('nfs_slow', null, ['file' => 'x']));
+        $this->assertSame(get_string('abort_nfs_slow', 'tool_secbackup'), abort_reason::text('nfs_slow', null, ['file' => []]));
+    }
+
     public function test_a_code_without_a_text_of_its_own_is_named(): void {
         $this->assertSame(get_string('abort_unknown', 'tool_secbackup', 'something_new'), abort_reason::text('something_new'));
         $this->assertStringContainsString('something_new', abort_reason::text('something_new'));
