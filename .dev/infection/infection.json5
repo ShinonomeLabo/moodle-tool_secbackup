@@ -63,7 +63,6 @@
         },
         "DecrementInteger": {
             "ignore": [
-                "tool_secbackup\\local\\api\\client::exact_object::611",
                 "tool_secbackup\\local\\net\\guarded_options::failure::112",
                 "tool_secbackup\\local\\net\\guarded_options::failure::114",
                 "tool_secbackup\\local\\net\\object_transport::get_to_file::169",
@@ -78,15 +77,11 @@
                 "tool_secbackup\\local\\trust\\developer_settings::from_value::127"
             ]
         },
-        "FunctionCallRemoval": {
-            "ignore": ["tool_secbackup\\local\\net\\object_transport::get_to_file::174"]
-        },
         "GreaterThanOrEqualTo": {
             "ignore": ["tool_secbackup\\local\\net\\object_transport::check_status::331"]
         },
         "IncrementInteger": {
             "ignore": [
-                "tool_secbackup\\local\\api\\client::exact_object::611",
                 "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
                 "tool_secbackup\\local\\net\\transport::send::186",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"

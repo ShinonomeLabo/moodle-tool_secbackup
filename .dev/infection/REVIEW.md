@@ -30,14 +30,14 @@ value to the declared type the way a cast does: an int to its decimal digits, fa
 rest on that.
 
 Each row has an entry in the `mutators` part of `infection.json5` that ignores its mutator on its line of its method
-(`Class::method::line`), except the rows marked *kept*: an entry there would also hide a mutant of the same mutator and
-line that a test kills, so these mutants stay in the score as escaped. The line number ties an entry to one line: when the
+(`Class::method::line`), except the rows marked *kept*: there an entry would also hide a mutant of the same mutator and
+line that a test kills, or the reason rests on how a library works inside, which a later version may change; so these
+mutants stay in the score as escaped. The line number ties an entry to one line: when the
 code moves, the mutant comes back and is looked at again.
 
 | File:line | Mutator | Why the behaviour is the same |
 |---|---|---|
 | classes/local/api/client.php:370 | UnwrapArrayValues | `upload_request()` refused the items already unless they are a list (`array_is_list()`), so `array_values()` gives the same array. |
-| classes/local/api/client.php:611 | DecrementInteger and IncrementInteger (the depth 8 of `json_decode()`) | Every answer that the client takes is at most five levels deep (the upload URLs: the object, the list of items, an item, its headers, a value), so a depth of 7 or 9 reads each of them. A deeper answer is refused with `api_response_invalid` either way, by `json_decode()` or by the checks of the fields; only the field in the debug information differs. |
 | classes/local/api/client.php:673 | CastString | The pattern before lets through only 43 characters of the base64 alphabet and `=`, which `base64_decode()` in strict mode always decodes to a string, never to false. |
 | classes/local/api/client.php:707 | Concat (both), CastString | The key only finds an item that is asked for twice. The kinds are `object`, `manifest` and `index`, none the start of another, and the name of an object always has 64 characters (the others have none: null, which becomes `''` with or without the cast). So two keys are the same exactly when the kind and the name are, in either order and with the separator anywhere. |
 | classes/local/api/client.php:707 | ConcatOperandRemoval (without the separator), *kept* | The same. Not ignored: removing the kind or the name is a different behaviour (two items that differ would have the same key), which the requests of client_runs_test with two objects, or with the manifest and the index, kill. |
@@ -65,7 +65,7 @@ code moves, the mutant comes back and is looked at again.
 | classes/local/net/guarded_options.php:112 | DecrementInteger (`$errno = -1`) | The value stays only for a failure that has no handler context. -1 is, like 0, not above 0 and in neither list of error numbers, so the detail (the class name) and the kind of failure are the same. |
 | classes/local/net/guarded_options.php:114 | DecrementInteger (`?? -1`) | The same, for a handler context without an error number. |
 | classes/local/net/object_transport.php:169 | DecrementInteger (a speed limit of -1 for a GET) | `request()` reads the limit only as `$limit > 0`: -1, like 0, means no limit. The speed option of curl is set by `put_file()` only. |
-| classes/local/net/object_transport.php:174 | FunctionCallRemoval (`clearstatcache()`) | PHP keeps the stat of the last path that it looked at only, and between the start of the request and `filesize()` other paths are looked at: Guzzle's curl handler checks the folder of the sink with `is_dir()` before the transfer (`CurlFactory::applyHandlerOptions()`), and the requests of the tests do the same through Moodle's HTTP client. So `filesize()` reads the file again either way; a test that read the size of the file before the download passed with the mutant. The call stays so that the result does not rest on that. |
+| classes/local/net/object_transport.php:174 | FunctionCallRemoval (`clearstatcache()`), *kept* | PHP keeps the stat of the last path that it looked at only, and between the start of the request and `filesize()` other paths are looked at: Guzzle's curl handler checks the folder of the sink with `is_dir()` before the transfer (`CurlFactory::applyHandlerOptions()`), and the requests of the tests do the same through Moodle's HTTP client. So `filesize()` reads the file again either way; a test that read the size of the file before the download passed with the mutant. Not ignored: that rests on what Guzzle does inside, which a later version may change; the call stays so that the result does not depend on it. |
 | classes/local/net/object_transport.php:175 | CastInt | `filesize()` gives false only for a file that is not there, and a GET that succeeded always leaves its file: Guzzle's curl handler opens the sink (mode `w+`) when it rewinds the body at the end (`CurlFactory::finish()`), also for an empty body, and the mock writes it with `file_put_contents()`. For an int the cast does nothing. |
 | classes/local/net/object_transport.php:202 | CastString | As client.php:779. |
 | classes/local/net/object_transport.php:217 | CastInt | The value matched `^(?:0\|[1-9][0-9]{0,15})\z`; the return type int turns the digits into the same number. |
