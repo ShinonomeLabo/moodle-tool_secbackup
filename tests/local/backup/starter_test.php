@@ -204,6 +204,43 @@ final class starter_test extends \advanced_testcase {
         $this->assertSame([], run_record::recent(1));
     }
 
+    public function test_the_answer_of_a_scheduled_start_that_was_due_is_kept_with_its_time_and_cause(): void {
+        $this->assertNull(starter::last_scheduled());
+        $this->ready();
+        $this->assertSame('busy', starter::maybe_start(self::inside(), static fn(): string => 'disk_low'));
+        $this->assertSame(['at' => self::inside(), 'answer' => 'busy', 'cause' => 'disk_low'], starter::last_scheduled());
+        // Outside the window nothing was due: what happened when it was is kept.
+        $outside = (new \DateTimeImmutable('2026-10-19 12:00', new \DateTimeZone('Asia/Tokyo')))->getTimestamp();
+        $this->assertSame('outsidewindow', starter::maybe_start($outside, [self::class, 'calm']));
+        $this->assertSame('busy', starter::last_scheduled()['answer']);
+        // A start of the button is not a scheduled start.
+        $this->assertSame('started', starter::start_now($outside, [self::class, 'calm']));
+        $this->assertSame('busy', starter::last_scheduled()['answer']);
+        $next = self::inside('2026-10-20');
+        $this->assertSame('running', starter::maybe_start($next, [self::class, 'calm']));
+        $this->assertSame(['at' => $next, 'answer' => 'running', 'cause' => null], starter::last_scheduled());
+    }
+
+    public function test_a_kept_answer_that_cannot_be_read_is_none(): void {
+        foreach (['', 'not json', '[]', '{"at":"x","answer":"busy","cause":null}', '{"at":1,"answer":5,"cause":null}',
+                '{"at":1,"answer":"busy","cause":7}', '{"at":1,"answer":"busy"}'] as $value) {
+            set_config('lastschedule', $value, 'tool_secbackup');
+            $this->assertNull(starter::last_scheduled(), $value);
+        }
+    }
+
+    public function test_the_text_of_an_answer_names_the_cause(): void {
+        $this->assertSame(get_string('start_cause_disk_low', 'tool_secbackup'), starter::answer_text('busy', 'disk_low'));
+        $this->assertSame(get_string('start_cause_memory', 'tool_secbackup'), starter::answer_text('busy', 'memory'));
+        $this->assertSame(get_string('start_reason_busy', 'tool_secbackup'), starter::answer_text('busy', 'unheard_of'));
+        $this->assertSame(get_string('start_reason_busy', 'tool_secbackup'), starter::answer_text('busy', null));
+        $this->assertSame(get_string('start_reason_autobackup', 'tool_secbackup'), starter::answer_text('autobackup', null));
+        $this->assertSame(get_string('start_reason_started', 'tool_secbackup'), starter::answer_text('started', null));
+        foreach (['load', 'memory', 'server_busy', 'disk_low', 'db_slow', 'nfs_slow'] as $cause) {
+            $this->assertTrue(get_string_manager()->string_exists('start_cause_' . $cause, 'tool_secbackup'), $cause);
+        }
+    }
+
     public function test_the_watch_of_this_server_with_the_stored_limits_is_used_by_default(): void {
         $this->ready();
         // No server has a billion MB of memory left, so the default watch must say that the server is busy.

@@ -68,6 +68,21 @@ final class poll_status_test extends \advanced_testcase {
         }
     }
 
+    public function test_the_task_prints_the_answer_of_the_schedule_when_it_was_asked(): void {
+        $this->resetAfterTest();
+        set_config('lastschedule', json_encode(['at' => 1, 'answer' => 'busy', 'cause' => 'disk_low']), 'tool_secbackup');
+        $this->assertSame([
+            get_string('task_poll_ok', 'tool_secbackup'),
+            get_string('task_poll_start', 'tool_secbackup', get_string('start_cause_disk_low', 'tool_secbackup')),
+        ], poll_status::lines('ok', 'busy'));
+        $this->assertSame([
+            get_string('task_poll_ok', 'tool_secbackup'),
+            get_string('task_poll_start', 'tool_secbackup', get_string('start_reason_outsidewindow', 'tool_secbackup')),
+        ], poll_status::lines('ok', 'outsidewindow'));
+        // The schedule is asked only after a status request that succeeded.
+        $this->assertSame([get_string('task_poll_failed', 'tool_secbackup')], poll_status::lines('failed', null));
+    }
+
     public function test_the_task_prints_one_line(): void {
         $this->resetAfterTest();
         ob_start();

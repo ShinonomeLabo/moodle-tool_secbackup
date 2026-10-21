@@ -428,6 +428,20 @@ final class status_page_test extends \advanced_testcase {
         $this->assertStringNotContainsString(display_size(1000), $html);
     }
 
+    public function test_the_last_scheduled_start_is_shown_with_its_time_and_its_cause(): void {
+        self::register();
+        $html = (new status_page())->render();
+        $this->assertStringNotContainsString(get_string('status_last_schedule', 'tool_secbackup'), $html);
+        set_config('lastschedule', json_encode(['at' => 1760100000, 'answer' => 'busy', 'cause' => 'disk_low']), 'tool_secbackup');
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(get_string('status_last_schedule', 'tool_secbackup'), $html);
+        $this->assertStringContainsString(s(get_string('status_last_schedule_value', 'tool_secbackup', (object) [
+            'time' => userdate(1760100000),
+            'text' => get_string('start_cause_disk_low', 'tool_secbackup'),
+        ])), $html);
+        $this->assertStringNotContainsString(get_string('start_reason_busy', 'tool_secbackup'), $html);
+    }
+
     public function test_the_size_of_the_backup_is_the_one_of_the_receipt_and_the_sent_bytes_come_second(): void {
         self::register();
         self::completed(1760100000, 1760100100, 2097152, 3, 7340032);

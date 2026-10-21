@@ -39,17 +39,57 @@ final class starter {
     /** @var int The least value of memory_limit that is accepted, in bytes (256 MB). */
     private const MIN_MEMORY = 268435456;
 
+    /** @var string The setting that keeps what came of the last scheduled start that was due. */
+    private const LAST_SCHEDULE = 'lastschedule';
+
     /**
      * Starts the run of the schedule when one is due.
      *
+     * Every answer but outsidewindow is kept with its time (and, for busy, the limit that was passed), so that the status page
+     * and the task can tell why the schedule did not start a backup: see last_scheduled().
+     *
      * @param int $now The current time.
      * @param callable|null $verdict A seam for tests: function () that returns why the server is too busy, or null. The
-     *     watch of this server (monitor) with the stored limits when null.
+     *     watch of this server (monitor::cause()) with the stored limits when null.
      * @return string started, or the reason: notregistered, notreceived, outsidewindow, clock, memorylimit, running,
      *     autobackup or busy.
      */
     public static function maybe_start(int $now, ?callable $verdict = null): string {
-        return self::decide('schedule', true, $now, $verdict);
+        $cause = null;
+        $answer = self::decide('schedule', true, $now, $verdict, $cause);
+        if ($answer !== 'outsidewindow') {
+            $last = json_encode(['at' => $now, 'answer' => $answer, 'cause' => $cause]);
+            set_config(self::LAST_SCHEDULE, $last, 'tool_secbackup');
+        }
+        return $answer;
+    }
+
+    /**
+     * What came of the last scheduled start that was due.
+     *
+     * @return array|null ['at' => UNIX time, 'answer' => what maybe_start() answered, 'cause' => the limit that the server
+     *     passed (monitor::cause()) for busy, else null]; null when none was due yet.
+     */
+    public static function last_scheduled(): ?array {
+        $value = json_decode((string) get_config('tool_secbackup', self::LAST_SCHEDULE), true);
+        $valid = is_array($value) && array_keys($value) === ['at', 'answer', 'cause'] && is_int($value['at'])
+            && is_string($value['answer']) && ($value['cause'] === null || is_string($value['cause']));
+        return $valid ? $value : null;
+    }
+
+    /**
+     * The text of an answer of the starter: the limit that was passed for busy, else the reason.
+     *
+     * @param string $answer What the starter answered.
+     * @param string|null $cause The limit that the server passed, for busy.
+     * @return string Plain text.
+     */
+    public static function answer_text(string $answer, ?string $cause): string {
+        $id = 'start_cause_' . $cause;
+        if ($answer === 'busy' && $cause !== null && get_string_manager()->string_exists($id, 'tool_secbackup')) {
+            return get_string($id, 'tool_secbackup');
+        }
+        return get_string('start_reason_' . $answer, 'tool_secbackup');
     }
 
     /**
@@ -82,9 +122,10 @@ final class starter {
      * @param bool $inwindow Whether the run has to be due in the schedule.
      * @param int $now The current time.
      * @param callable|null $verdict The watch, or null for the one of this server.
+     * @param string|null $cause Set to what the watch said, when the answer is busy.
      * @return string started or the reason.
      */
-    private static function decide(string $trigger, bool $inwindow, int $now, ?callable $verdict): string {
+    private static function decide(string $trigger, bool $inwindow, int $now, ?callable $verdict, ?string &$cause = null): string {
         $state = state::load();
         if (!$state->is_enrolled()) {
             return 'notregistered';
@@ -109,7 +150,7 @@ final class starter {
             return 'running';
         }
         try {
-            return self::start_locked($trigger, $now, $verdict);
+            return self::start_locked($trigger, $now, $verdict, $cause);
         } finally {
             $lock->release();
         }
@@ -140,9 +181,10 @@ final class starter {
      * @param string $trigger What starts the run.
      * @param int $now The current time.
      * @param callable|null $verdict The watch, or null for the one of this server.
+     * @param string|null $cause Set to what the watch said, when the answer is busy.
      * @return string started or the reason.
      */
-    private static function start_locked(string $trigger, int $now, ?callable $verdict): string {
+    private static function start_locked(string $trigger, int $now, ?callable $verdict, ?string &$cause): string {
         if (run_record::active() !== null) {
             // A run that lost its task (the queue was cleared, or the task failed for good) gets one again.
             \tool_secbackup\task\run_backup::queue();
@@ -151,8 +193,9 @@ final class starter {
         if (autobackup_watch::busy()) {
             return 'autobackup';
         }
-        $verdict ??= static fn(): ?string => monitor::verdict(monitor::create()->sample(), limits::current());
-        if ($verdict() !== null) {
+        $verdict ??= static fn(): ?string => monitor::cause(monitor::create()->sample(), limits::current());
+        $cause = $verdict();
+        if ($cause !== null) {
             return 'busy';
         }
         run_record::create($trigger, $now);

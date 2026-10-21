@@ -393,9 +393,9 @@ final class poller_test extends \advanced_testcase {
             network_fakes::client($this->service->handler(), $now),
             static fn(): int => $now,
             network_fakes::trust(),
-            static function (int $at) use (&$calls): ?string {
+            static function (int $at) use (&$calls): string {
                 $calls[] = [$at, state::load()->last_poll()];
-                return null;
+                return 'busy';
             }
         );
     }
@@ -403,17 +403,22 @@ final class poller_test extends \advanced_testcase {
     public function test_the_starter_is_called_after_a_poll_that_succeeded(): void {
         $this->register();
         $calls = [];
-        $this->assertSame('ok', $this->poller_with_starter(self::NOW, $calls)->run());
+        $poller = $this->poller_with_starter(self::NOW, $calls);
+        $this->assertNull($poller->start_answer());
+        $this->assertSame('ok', $poller->run());
         // The answer was saved before the starter was called: it reads the time of the poll from the state.
         $this->assertSame([[self::NOW, self::NOW]], $calls);
+        $this->assertSame('busy', $poller->start_answer());
     }
 
     public function test_the_starter_is_not_called_when_the_poll_failed(): void {
         $this->register();
         $calls = [];
         $this->service->state['mode'] = 'unavailable';
-        $this->assertSame('failed', $this->poller_with_starter(self::NOW, $calls)->run());
+        $poller = $this->poller_with_starter(self::NOW, $calls);
+        $this->assertSame('failed', $poller->run());
         $this->assertSame([], $calls);
+        $this->assertNull($poller->start_answer());
     }
 
     public function test_the_starter_is_not_called_for_a_site_that_is_not_registered(): void {

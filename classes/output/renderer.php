@@ -21,6 +21,7 @@ use html_writer;
 use tool_secbackup\local\api\client;
 use tool_secbackup\local\backup\abort_reason;
 use tool_secbackup\local\backup\run_record;
+use tool_secbackup\local\backup\starter;
 use tool_secbackup\local\crypto\fingerprint;
 use tool_secbackup\local\enrollment\state;
 use tool_secbackup\local\plugin_exception;
@@ -146,7 +147,7 @@ class renderer extends \plugin_renderer_base {
     private function completed_rows(?run_record $last): array {
         $label = get_string('status_last_completed', 'tool_secbackup');
         if ($last === null) {
-            return [[$label, get_string('status_none_completed', 'tool_secbackup')]];
+            return array_merge([[$label, get_string('status_none_completed', 'tool_secbackup')]], $this->schedule_rows());
         }
         // A run that completed has an end.
         $finished = (int) $last->finished_at();
@@ -161,7 +162,24 @@ class renderer extends \plugin_renderer_base {
         }
         $rows[] = [get_string('status_last_size', 'tool_secbackup'), s($sent)];
         $rows[] = [get_string('status_last_duration', 'tool_secbackup'), format_time($finished - $last->started_at())];
-        return $rows;
+        return array_merge($rows, $this->schedule_rows());
+    }
+
+    /**
+     * The row about the last scheduled start that was due: when, and what came of it (started, or why not).
+     *
+     * @return array[] One row, or none before a scheduled start was due.
+     */
+    private function schedule_rows(): array {
+        $last = starter::last_scheduled();
+        if ($last === null) {
+            return [];
+        }
+        $value = get_string('status_last_schedule_value', 'tool_secbackup', (object) [
+            'time' => userdate($last['at']),
+            'text' => starter::answer_text($last['answer'], $last['cause']),
+        ]);
+        return [[get_string('status_last_schedule', 'tool_secbackup'), s($value)]];
     }
 
     /**

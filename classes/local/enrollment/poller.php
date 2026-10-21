@@ -48,6 +48,9 @@ final class poller {
     /** @var callable Function (int $now) that starts a backup run when one is due; starter::maybe_start() by default. */
     private $starter;
 
+    /** @var string|null What the starter answered at the last run(); null when it was not asked. */
+    private ?string $startanswer = null;
+
     /**
      * Constructor.
      *
@@ -75,6 +78,7 @@ final class poller {
      * @return string ok, notregistered or failed.
      */
     public function run(): string {
+        $this->startanswer = null;
         $state = state::load();
         if (!$state->is_enrolled() && state::site_id_is_stored()) {
             // The cached settings are from before a registration. Drop them and read the registration again.
@@ -105,8 +109,17 @@ final class poller {
             return 'failed';
         }
         // The answer and the instructions are saved, so a run that is due now starts with the newest settings.
-        ($this->starter)($now);
+        $this->startanswer = ($this->starter)($now);
         return 'ok';
+    }
+
+    /**
+     * What the starter answered at the last run(): started, or why the schedule did not start a backup.
+     *
+     * @return string|null Null when the starter was not asked (the status request did not succeed).
+     */
+    public function start_answer(): ?string {
+        return $this->startanswer;
     }
 
     /**

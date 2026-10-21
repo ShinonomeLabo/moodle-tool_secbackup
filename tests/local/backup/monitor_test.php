@@ -446,6 +446,17 @@ final class monitor_test extends \advanced_testcase {
         $this->assertSame($expected, monitor::verdict(self::sample($changes), self::limits()));
     }
 
+    public function test_the_cause_names_the_load_and_the_memory_apart(): void {
+        $this->assertSame('load', monitor::cause(self::sample(['load_per_core' => 2.01]), self::limits()));
+        $this->assertSame('memory', monitor::cause(self::sample(['memory_available_bytes' => 1]), self::limits()));
+        $this->assertSame('load', monitor::cause(self::sample(['load_per_core' => 3.0, 'memory_available_bytes' => 1]),
+            self::limits()));
+        $this->assertSame('disk_low', monitor::cause(self::sample(['disk_free_bytes' => 1]), self::limits()));
+        $this->assertSame('db_slow', monitor::cause(self::sample(['db_ms' => 900.0]), self::limits()));
+        $this->assertSame('nfs_slow', monitor::cause(self::sample(['nfs_mbps' => 1.0]), self::limits()));
+        $this->assertNull(monitor::cause(self::sample([]), self::limits()));
+    }
+
     public function test_verdict_follows_the_limits(): void {
         $limits = new limits(0.5, 1024, 5, 100.0, '/t', 0, 0);
         $this->assertSame('server_busy', monitor::verdict(self::sample(['load_per_core' => 0.6]), $limits));

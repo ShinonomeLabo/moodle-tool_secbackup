@@ -155,14 +155,30 @@ final class monitor {
      * @return string|null server_busy, disk_low, db_slow or nfs_slow; null when nothing is wrong.
      */
     public static function verdict(array $sample, limits $limits): ?string {
+        $cause = self::cause($sample, $limits);
+        return $cause === 'load' || $cause === 'memory' ? 'server_busy' : $cause;
+    }
+
+    /**
+     * Which limit a sample passes, as verdict() judges it, with the load and the memory named apart: what the administrator
+     * is told when a backup does not start.
+     *
+     * @param array $sample Result of sample().
+     * @param limits $limits The limits.
+     * @return string|null load, memory, disk_low, db_slow or nfs_slow; null when nothing is wrong.
+     */
+    public static function cause(array $sample, limits $limits): ?string {
         $load = $sample['load_per_core'] ?? null;
         $memory = $sample['memory_available_bytes'] ?? null;
         $free = $sample['disk_free_bytes'] ?? null;
         $total = $sample['disk_total_bytes'] ?? null;
         $db = $sample['db_ms'] ?? null;
         $nfs = $sample['nfs_mbps'] ?? null;
-        if (($load !== null && $load > $limits->loadpercore) || ($memory !== null && $memory < $limits->minmemorymb * self::MIB)) {
-            return 'server_busy';
+        if ($load !== null && $load > $limits->loadpercore) {
+            return 'load';
+        }
+        if ($memory !== null && $memory < $limits->minmemorymb * self::MIB) {
+            return 'memory';
         }
         if ($free !== null && $free < max(intdiv($total ?? 0, 10), 5 * self::GIB)) {
             return 'disk_low';
