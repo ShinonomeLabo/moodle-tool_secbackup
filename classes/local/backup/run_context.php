@@ -184,7 +184,7 @@ final class run_context {
         $this->folder = $temp->for_run($run->id());
         $progress = $run->progress();
         $this->progress = [
-            'run' => is_array($progress['run'] ?? null) ? $progress['run'] : [],
+            'run' => array_diff_key(is_array($progress['run'] ?? null) ? $progress['run'] : [], ['lasterror' => true]),
             'journals' => is_array($progress['journals'] ?? null) ? $progress['journals'] : [],
             'entries' => is_array($progress['entries'] ?? null) ? $progress['entries'] : null,
             'cursor' => is_array($progress['cursor'] ?? null) ? $progress['cursor'] : [],

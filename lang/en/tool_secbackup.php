@@ -405,6 +405,7 @@ $string['status_backup_now'] = 'Back up now';
 $string['status_backup_running'] = 'A backup is in progress, so another one cannot be started now.';
 $string['status_backups_heading'] = 'Backups';
 $string['status_enrolled_at'] = 'Registered on';
+$string['status_failed_value'] = 'Stage: {$a->stage}. Started on {$a->started}. Sent so far: {$a->size} ({$a->chunks} chunks). The last step failed ({$a->error}); it is tried again on {$a->next}. A backup that fails until 24 hours after its start is stopped.';
 $string['status_last_completed'] = 'Last completed backup';
 $string['status_last_duration'] = 'Time it took';
 $string['status_last_error'] = 'The last status request failed.';

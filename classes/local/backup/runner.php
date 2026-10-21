@@ -386,6 +386,8 @@ final class runner {
         if ($wait === null) {
             $this->lasterror = $error;
             ($this->seams['log'])('The backup step failed and is tried again: ' . $error);
+            // For the status page: why the run waits. The next commit takes it back (run_context).
+            $run->keep(['lasterror' => $error]);
             $window = $context === null ? null : $this->window_after_failure($context, $now);
             if ($window !== null) {
                 return $window === 'ended' ? $this->failed($run, $context, 'window_ended', '') : 'paused';

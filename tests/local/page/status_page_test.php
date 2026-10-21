@@ -493,6 +493,24 @@ final class status_page_test extends \advanced_testcase {
         $this->assertTrue(self::button_disabled($html));
     }
 
+    public function test_a_backup_that_waits_after_a_failed_step_says_so(): void {
+        self::register();
+        $run = run_record::create('schedule', 1760000000);
+        $run->set_stage('files', [], 1760000050);
+        $run->keep(['lasterror' => 'RuntimeException <b>']);
+        $run->pause(1760000060, 1760000360);
+        $html = (new status_page())->render();
+        $this->assertStringContainsString(s(get_string('status_failed_value', 'tool_secbackup', (object) [
+            'stage' => get_string('stage_files', 'tool_secbackup'),
+            'started' => userdate(1760000000),
+            'size' => display_size(0),
+            'chunks' => 0,
+            'error' => 'RuntimeException <b>',
+            'next' => userdate(1760000360),
+        ])), $html);
+        $this->assertStringNotContainsString('RuntimeException <b>', $html);
+    }
+
     public function test_every_stage_of_a_run_has_a_name(): void {
         foreach (run_record::STAGES as $stage) {
             $this->assertTrue(get_string_manager()->string_exists('stage_' . $stage, 'tool_secbackup'), $stage);

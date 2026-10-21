@@ -405,6 +405,7 @@ $string['status_backup_now'] = '予定を待たずにバックアップする';
 $string['status_backup_running'] = 'バックアップが進んでいるので、今は新しく始められません。';
 $string['status_backups_heading'] = 'バックアップ';
 $string['status_enrolled_at'] = '登録した日時';
+$string['status_failed_value'] = '段階: {$a->stage}。開始: {$a->started}。ここまでに送った量: {$a->size} ({$a->chunks} 個の塊)。直前の段が失敗しました ({$a->error})。次に試すのは {$a->next} です。始めてから 24 時間たっても失敗が続くと、バックアップは止まります。';
 $string['status_last_completed'] = '最後に完了したバックアップ';
 $string['status_last_duration'] = 'かかった時間';
 $string['status_last_error'] = '最後の状態の問い合わせに失敗しました。';

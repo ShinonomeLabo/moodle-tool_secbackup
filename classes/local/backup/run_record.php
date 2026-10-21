@@ -513,6 +513,16 @@ final class run_record {
     }
 
     /**
+     * The class and code of the unexpected error that ended the last step, while the run waits to try again.
+     *
+     * @return string|null Null when the last step did not end with such an error, or a step has committed since.
+     */
+    public function last_error(): ?string {
+        $error = $this->progress()['run']['lasterror'] ?? null;
+        return is_string($error) ? $error : null;
+    }
+
+    /**
      * The size of the stored backup that the receipt of the service named.
      *
      * @return int|null Bytes, or null for a run that has no receipt (or from before it was kept).

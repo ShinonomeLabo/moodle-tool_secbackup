@@ -1617,12 +1617,18 @@ final class runner_test extends \advanced_testcase {
     public function test_an_unexpected_refusal_of_the_start_is_tried_again_by_the_next_step(): void {
         $this->fixture->service->state['mode'] = 'ip_not_allowed';
         $run = run_record::create('manual', $this->fixture->time);
+        $this->assertNull($run->last_error());
         $this->assertSame('continue', $this->runner()->step($run, 600));
         $this->assertSame(
             ['The backup step failed and is tried again: tool_secbackup\local\api\api_exception api_ip_not_allowed_address'],
             $this->logged
         );
+        // The status page tells why the run waits.
+        $this->assertSame('tool_secbackup\local\api\api_exception api_ip_not_allowed_address', $run->last_error());
         $this->fixture->service->state['mode'] = '';
+        $this->fixture->set_time($run->next_attempt());
+        $this->assertSame('continue', $this->runner(['timer' => $this->fast_timer()])->step($run, 1));
+        $this->assertNull($run->last_error(), 'A step that commits takes it back.');
         $this->assertSame('done', $this->finish($this->runner(), $run));
     }
 

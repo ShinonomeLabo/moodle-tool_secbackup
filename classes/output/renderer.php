@@ -194,9 +194,14 @@ class renderer extends \plugin_renderer_base {
             'started' => userdate($run->started_at()),
             'size' => display_size($run->bytes_uploaded()),
             'chunks' => $run->chunks_uploaded(),
+            'error' => $run->last_error(),
             'next' => $run->next_attempt() === null ? '' : userdate($run->next_attempt()),
         ];
-        return get_string($run->status() === 'paused' ? 'status_paused_value' : 'status_running_value', 'tool_secbackup', $a);
+        if ($run->status() !== 'paused') {
+            return get_string('status_running_value', 'tool_secbackup', $a);
+        }
+        // A run that waits after a failed step says so; the error is its class and code, never its message.
+        return get_string($a->error === null ? 'status_paused_value' : 'status_failed_value', 'tool_secbackup', $a);
     }
 
     /**
