@@ -286,10 +286,17 @@ the manual workflow `.github/workflows/storage.yml` runs the same two alone.
 
 ### Results of the state `run`
 
-| Template | CI run | `run-denied` | `run-allowed` |
+Run 39554215612 of the workflow Storage (2026-10-21; x86_64 GitHub runners, Lima 2.2.1 with QEMU); all fourteen results of
+each machine match `expect.txt`.
+
+| Template | Moodle | `run-denied` | `run-allowed` |
 |---|---|---|---|
-| Rocky Linux 9 | | | |
-| Ubuntu 24.04 | | | |
+| Rocky Linux 9 (php-fpm `httpd_t`) | 4.5.15 (Build: 20261005) | stopped after 10 s with `selinux_denied`; the kernel logged the denied connection of php-fpm; the status page shows the text of `abort_selinux_denied` and its advice | completed in 40 s (receipt checked); no denial |
+| Ubuntu 24.04 (php-fpm under `php-fpm (enforce)`) | 5.2.4+ (Build: 20261013) | stopped after 19 s with `network_check_failed` (not `selinux_denied`: the plugin judges that reason only while SELinux is enforcing); the denial was logged (`audit deny`); the status page shows the text and advice of `network_check_failed` | completed in 72 s; no denial |
+
+Under AppArmor the run is stopped, as it is under SELinux, but with the reason of a failed network check, whose advice sends the
+administrator to the connection diagnostics; the diagnostics there name the AppArmor rules (the cases of `check.sh`). Neither
+case raised a PHP warning from the plugin's folder.
 
 ## AppArmor facts (the base of the AppArmor check of the plugin)
 
