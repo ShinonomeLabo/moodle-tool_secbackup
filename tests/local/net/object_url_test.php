@@ -187,6 +187,32 @@ final class object_url_test extends \advanced_testcase {
         }
     }
 
+    public function test_the_debug_output_of_a_url_and_of_an_upload_target_hides_the_url(): void {
+        $url = object_url::parse(
+            'https://bucket.s3.ap-northeast-1.amazonaws.com/sites/x/objects/y?X-Amz-Signature=sekret3',
+            developer_settings::from_value(null)
+        );
+        ob_start();
+        var_dump($url);
+        $text = (string) ob_get_clean();
+        $this->assertStringNotContainsString('sekret3', $text);
+        $this->assertStringNotContainsString('/sites/', $text);
+        $this->assertStringContainsString('bucket.s3.ap-northeast-1.amazonaws.com', $text);
+        $target = new \tool_secbackup\local\api\upload_target(
+            'object',
+            str_repeat('a', 64),
+            $url,
+            ['Content-Length' => '5'],
+            1760000000
+        );
+        ob_start();
+        var_dump($target);
+        $text = (string) ob_get_clean();
+        $this->assertStringNotContainsString('sekret3', $text);
+        $this->assertStringNotContainsString('/sites/', $text);
+        $this->assertStringContainsString('object', $text);
+    }
+
     public function test_a_url_of_the_longest_size_is_accepted(): void {
         $prefix = 'https://s3.ap-northeast-1.amazonaws.com/b/k?a=';
         $url = $prefix . str_repeat('x', 8192 - strlen($prefix));

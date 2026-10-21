@@ -105,6 +105,15 @@ final class object_url {
     }
 
     /**
+     * Keeps the URL, whose query is a credential, out of print_r(), var_dump() and debugging output.
+     *
+     * @return array
+     */
+    public function __debuginfo(): array {
+        return ['scheme' => $this->scheme, 'host' => $this->host, 'port' => $this->port];
+    }
+
+    /**
      * Whether a host is s3.<region>.amazonaws.com or <bucket>.s3.<region>.amazonaws.com of the storage region.
      *
      * @param string $host Host name.

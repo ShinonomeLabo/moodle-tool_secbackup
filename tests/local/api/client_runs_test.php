@@ -311,6 +311,59 @@ final class client_runs_test extends \advanced_testcase {
         }
     }
 
+    /**
+     * Expects that a call refuses a signed URL of its answer and that no trace of the error keeps the URL.
+     *
+     * @param callable $call Makes the call.
+     */
+    private function expect_url_kept_out_of_the_trace(callable $call): void {
+        $previous = ini_set('zend.exception_ignore_args', '0');
+        try {
+            $call();
+            $this->fail('No exception');
+        } catch (transport_exception $e) {
+            $this->assertSame('object_url_invalid', $e->errorcode);
+            foreach (\tool_secbackup\tests\trace_strings::of($e) as $string) {
+                $this->assertStringNotContainsString('sekretget', $string);
+                $this->assertStringNotContainsString('/_s3/', $string);
+            }
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previous);
+        }
+    }
+
+    public function test_the_signed_url_of_a_refused_present_list_is_not_in_the_trace(): void {
+        // Not https: the developer settings of the test let any host through, but not a plain connection.
+        $url = 'http://app.example.test/_s3/sites/x/indexes/present?X-Amz-Signature=sekretget1';
+        $client = self::answering([self::start_answer(['present_url' => $url])]);
+        unset($url);
+        $this->expect_url_kept_out_of_the_trace(static fn() => $client->start_run(
+            self::endpoint(),
+            signing_keypair::generate(),
+            fake_service::SITE_ID
+        ));
+    }
+
+    public function test_the_signed_url_of_a_refused_list_of_official_files_is_not_in_the_trace(): void {
+        $pair = signing_keypair::generate();
+        $service = self::service($pair);
+        self::publish_core($service);
+        $answer = json_encode([
+            'manifest' => $service->state['coremanifests']['2024100703.10/20250113'],
+            'url' => 'http://app.example.test/_s3/core-manifests/2024100703.10/20250113.gz?X-Amz-Signature=sekretget2',
+            'url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', self::NOW + 900),
+        ]);
+        $client = self::answering([new Response(200, [], $answer)]);
+        unset($answer, $service);
+        $this->expect_url_kept_out_of_the_trace(static fn() => $client->core_manifest(
+            self::endpoint(),
+            $pair,
+            fake_service::SITE_ID,
+            '2024100703.10',
+            '20250113'
+        ));
+    }
+
     public function test_a_start_answer_signed_by_another_key_or_not_signed_is_refused(): void {
         $other = (new envelope_builder(str_repeat('07', 32)))->body(self::start_payload());
         $client = self::answering([new Response(201, [], $other), new Response(201, [], '{"run_id":"x"}')]);

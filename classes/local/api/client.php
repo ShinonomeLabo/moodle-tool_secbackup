@@ -288,7 +288,7 @@ final class client {
         if ($expiresat <= ($this->clock)()) {
             throw self::invalid(201, 'present_url_expires_at');
         }
-        $presenturl = object_url::parse($payload['present_url'], $this->settings);
+        $presenturl = $this->signed_url($payload['present_url']);
         return new run_start($payload['run_id'], $presenturl, $startedat, $expiresat);
     }
 
@@ -552,12 +552,28 @@ final class client {
         if (self::zulu_field($data['url_expires_at'], 'url_expires_at', 200) <= ($this->clock)()) {
             throw self::invalid(200, 'url_expires_at');
         }
-        return new core_manifest_ref(
-            $payload['sha256'],
-            $payload['size'],
-            $payload['count'],
-            object_url::parse($data['url'], $this->settings)
-        );
+        return new core_manifest_ref($payload['sha256'], $payload['size'], $payload['count'], $this->signed_url($data['url']));
+    }
+
+    /**
+     * Reads a signed URL of an answer to fetch from (the present list, the list of official files).
+     *
+     * A URL that is refused is refused again from here: the trace of the error of object_url::parse() holds the URL as an
+     * argument (hidden from PHP 8.2 on, plain on 8.1). The parameter is unset before the new error is made, so that its trace
+     * does not hold the URL either; the type is written the way the PHPDoc checker of moodle-plugin-ci reads the signature.
+     *
+     * @param #[|\SensitiveParameter|]|string $url The URL.
+     * @return object_url
+     * @throws transport_exception With object_url_invalid.
+     */
+    private function signed_url(#[\SensitiveParameter] string $url): object_url {
+        try {
+            return object_url::parse($url, $this->settings);
+        } catch (transport_exception $e) {
+            $code = $e->errorcode;
+            unset($e, $url);
+            throw new transport_exception($code);
+        }
     }
 
     /**
