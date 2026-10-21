@@ -7,6 +7,10 @@ name: Infection
 # minCoveredMsi of infection.json5 (.dev/infection/merge.php). Every escaped mutant is listed in the summary of the run, for
 # the review in .dev/infection/REVIEW.md. Manual only: the run takes long, and the code it tests changes seldom.
 on:
+  # Only so that GitHub registers the workflow before it is on the default branch; every job is skipped on a push.
+  push:
+    branches:
+      - p2
   workflow_dispatch:
 
 permissions:
@@ -19,6 +23,7 @@ concurrency:
 jobs:
   shards:
     name: List the shards
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -155,7 +160,7 @@ jobs:
   merge:
     name: Covered code MSI of all shards
     needs: mutate
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
