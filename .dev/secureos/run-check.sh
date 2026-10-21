@@ -189,7 +189,8 @@ if sys.argv[3] == 'start':
 else:
     codes = sorted(k[6:-7] for k in strings if k.startswith('abort_') and k.endswith('_advice'))
     shown = [c for c in codes if strings['abort_' + c] in page and strings['abort_' + c + '_advice'] in page]
-    print(shown[0] if shown else ('completed' if strings['status_last_completed'] in page else 'none'))
+    last = strings['status_last_duration'] in page and strings['status_none_completed'] not in page
+    print(shown[0] if shown else ('completed' if last else 'none'))
 PY
 }
 
@@ -219,13 +220,13 @@ case_run() {
     {
         echo "--- web cron"
         status=
-        for attempt in $(seq 1 90); do
-            echo "== request $attempt, $(date -u +%T)"
-            vm curl -s -m 1700 -H "$host" http://127.0.0.1/admin/cron.php | tail -n 40
+        attempt=0
+        while [ $(( $(date +%s) - started )) -lt 1800 ]; do
+            echo "== request $((++attempt)), $(date -u +%T)"
+            vm curl -s -m 1700 -H "$host" http://127.0.0.1/admin/cron.php | tail -n 60
             status="$(run_status)"
             echo "== run: $status"
             case "$status" in completed* | aborted* | refused*) break ;; esac
-            [ $(( $(date +%s) - started )) -lt 1800 ] || break
             sleep 10
         done
         echo "--- $(( $(date +%s) - started )) s"
@@ -242,6 +243,25 @@ case_run() {
         printf '%s\n' "$ours"
     } >> "$file"
     status="$(run_status)"
+    # A run that has not ended is not a result that the summary can explain: what it waits for is printed (the stage, the
+    # seconds to its next attempt, the lines of the cron about the backup, the denials of the case). Nothing of it is secret:
+    # the run goes to the fake service in the VM.
+    case "$status" in
+        completed* | aborted* | refused*) ;;
+        *)
+            echo "-- $name has not ended ($status)"
+            vm sudo -u postgres psql -At moodle -c "SELECT stage, nextattempt - EXTRACT(EPOCH FROM NOW())::int, progress
+                FROM mdl_tool_secbackup_runs ORDER BY id DESC LIMIT 1"
+            grep -iE 'secbackup|backup step|exception|error|fatal|warning' "$file" | sort | uniq -c | sort -rn | head -n 30
+            if [ "$mac" = selinux ]; then
+                vm sudo ausearch --input-logs -m avc -ts $audit_since 2> /dev/null | grep -oE 'avc: +denied.*' \
+                    | sed -E 's/ (pid|ino|dev|lport|src|dest)=[^ ]*//g' | sort | uniq -c | sort -rn | head -n 20
+            else
+                vm sudo journalctl --no-pager --since "$journal_since" -o cat | grep -oE 'apparmor="DENIED".*' \
+                    | sed -E 's/ (pid|fsuid|ouid|requested_mask)=[^ ]*//g' | sort | uniq -c | sort -rn | head -n 20
+            fi
+            ;;
+    esac
     emit "$name" start "$(page_shows "$out/$n-$name-started.html" start)"
     emit "$name" status "${status%% *}"
     emit "$name" reason "${status#* }"
