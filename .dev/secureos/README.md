@@ -50,7 +50,7 @@ The output is the progress of the steps with their times, the summary lines of `
 On the Mac, in the repository (Lima 2.x):
 
     export SECBK_VM=secbk-debian-12
-    limactl create --tty=false --name=$SECBK_VM --cpus=2 --memory=4 --disk=20 --mount-none \
+    limactl create --tty=false --name=$SECBK_VM --cpus=2 --memory=4 --disk=20 --mount-none --containerd=none \
         --set '.portForwards=[{"guestPort":80,"hostPort":18080,"hostIP":"127.0.0.1"}]' template:debian-12
     limactl start --tty=false $SECBK_VM
     limactl shell $SECBK_VM sudo bash -s -- 18080 < .dev/secureos/provision.sh
@@ -59,6 +59,10 @@ On the Mac, in the repository (Lima 2.x):
     .dev/secureos/check.sh all <connection URL>      # a real service: unsigned GET of its status path, nothing changes
     .dev/secureos/assert.sh standin .dev/secureos/out/$SECBK_VM/standin/summary.txt selinux   # or: standard confined
     limactl delete -f $SECBK_VM
+
+The machines are made without containerd (`--containerd=none`; `start_vm` of `lib.sh`, which `run-template.sh` uses,
+does the same): the tests do not use it, and the start of almalinux-10 machines waited for its installation until Lima
+gave up.
 
 The site is `http://localhost:18080` (admin / test). The port forward listens on `127.0.0.1` only, because of that
 password. Use `localhost`, not `127.0.0.1`: Moodle redirects other host names. `SECBK_VM` names the machine
