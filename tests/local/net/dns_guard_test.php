@@ -158,6 +158,24 @@ final class dns_guard_test extends \advanced_testcase {
         $this->assertFalse((new dns_report([], null))->connectfailed);
     }
 
+    public function test_a_resolver_that_timed_out_before_one_that_failed_at_once_is_not_a_failed_connection(): void {
+        $timeout = new doh_resolver('cloudflare', new \GuzzleHttp\Handler\MockHandler([
+            new \GuzzleHttp\Exception\ConnectException(
+                'cURL error 28',
+                new \GuzzleHttp\Psr7\Request('GET', 'https://1.1.1.1/'),
+                null,
+                ['errno' => 28]
+            ),
+        ]));
+        $guard = new dns_guard(
+            network_fakes::ranges(),
+            [$timeout, network_fakes::doh('google', null)],
+            static fn(string $host): array => ['13.225.9.9']
+        );
+        // Every resolver must have failed at once: one timeout is enough to rule out a denial of the system.
+        $this->assertFalse($guard->inspect(network_fakes::HOST, false)->connectfailed);
+    }
+
     public function test_only_a_connection_or_a_lookup_that_failed_at_once_is_a_failed_connection(): void {
         $this->assertTrue(transport_exception::failed_at_connect(new transport_exception('transport_connect', 'cURL error 7')));
         $this->assertFalse(transport_exception::failed_at_connect(new transport_exception('transport_connect', 'cURL error 28')));

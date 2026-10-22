@@ -198,6 +198,8 @@ final class object_url_test extends \advanced_testcase {
         $this->assertStringNotContainsString('sekret3', $text);
         $this->assertStringNotContainsString('/sites/', $text);
         $this->assertStringContainsString('bucket.s3.ap-northeast-1.amazonaws.com', $text);
+        $shown = ['scheme' => 'https', 'host' => 'bucket.s3.ap-northeast-1.amazonaws.com', 'port' => 443];
+        $this->assertSame($shown, $url->__debuginfo());
         $target = new \tool_secbackup\local\api\upload_target(
             'object',
             str_repeat('a', 64),

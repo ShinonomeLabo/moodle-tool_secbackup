@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\net;
 
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
@@ -255,6 +256,8 @@ final class doh_resolver_test extends \advanced_testcase {
             new ConnectException('cURL error 6', new Request('GET', 'https://1.1.1.1/'), null, ['errno' => 6]),
         ]));
         $this->expect_failure(new MockHandler([new ConnectException('no context', new Request('GET', 'https://1.1.1.1/'))]));
+        // A failure of the transfer that is not a failed connection carries no error number of curl.
+        $this->expect_failure(new MockHandler([new TransferException('The transfer was cut.')]));
     }
 
     public function test_moodle_security_list_applies(): void {

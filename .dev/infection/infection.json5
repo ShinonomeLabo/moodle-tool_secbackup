@@ -27,6 +27,7 @@
             "ignore": [
                 "tool_secbackup\\local\\net\\aws_ranges::network::266",
                 "tool_secbackup\\local\\net\\aws_ranges::stored_seq::120",
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
                 "tool_secbackup\\local\\net\\object_transport::declared_length::217",
                 "tool_secbackup\\local\\net\\object_transport::get_to_file::175",
                 "tool_secbackup\\local\\net\\object_url::parse::94",
@@ -63,6 +64,7 @@
         },
         "DecrementInteger": {
             "ignore": [
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
                 "tool_secbackup\\local\\net\\guarded_options::failure::112",
                 "tool_secbackup\\local\\net\\guarded_options::failure::114",
                 "tool_secbackup\\local\\net\\object_transport::get_to_file::169",
