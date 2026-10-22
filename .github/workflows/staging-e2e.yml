@@ -9,10 +9,6 @@ name: Staging end-to-end test
 # before anything starts, and the job summary fails a run whose sites the service holds more of. data-only builds one site
 # and checks its data without the service and without the environment.
 on:
-  # Only so that GitHub registers the workflow before it is on the default branch; every job is skipped on a push.
-  push:
-    branches:
-      - staging-e2e
   workflow_dispatch:
     inputs:
       scenarios:
@@ -58,7 +54,6 @@ concurrency:
 jobs:
   plan:
     name: Check the sizes and set the start of the ten sites
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -612,7 +607,7 @@ jobs:
   summary:
     name: Summary
     needs: [plan, reset, normal, load, abort, concurrent, data-only]
-    if: always() && github.event_name == 'workflow_dispatch'
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
