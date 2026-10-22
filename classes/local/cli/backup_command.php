@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\cli;
 
 use tool_secbackup\local\backup\abort_reason;
+use tool_secbackup\local\backup\cli_lease;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\runner;
 use tool_secbackup\local\backup\starter;
@@ -131,39 +132,64 @@ final class backup_command {
             $say(get_string('cli_backup_continued', 'tool_secbackup'));
         }
         $runner = $this->runner ?? runner::create(false);
-        while (true) {
-            $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', $this->lockwait);
-            if (!$lock) {
-                // The task (or another server) runs a step: the command goes on after it, from what it committed.
-                $say(get_string('cli_backup_lockwait', 'tool_secbackup'));
-                ($this->sleep)(self::LOCK_RETRY);
-                continue;
+        try {
+            while (true) {
+                // The task leaves the run to the command (cli_lease), also while the command waits for the lock.
+                cli_lease::renew($run->id(), ($this->clock)());
+                $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', $this->lockwait);
+                if (!$lock) {
+                    // The task (or another server) runs a step: the command goes on after it, from what it committed.
+                    $say(get_string('cli_backup_lockwait', 'tool_secbackup'));
+                    $this->wait($run, self::LOCK_RETRY);
+                    continue;
+                }
+                try {
+                    $result = $runner->step($run, self::BUDGET);
+                } catch (\Throwable $e) {
+                    // A failure that the step could not record: the step made it again from its class and code, so its
+                    // message holds nothing of the run. The run is not stopped by it.
+                    $write(get_string('cli_backup_error', 'tool_secbackup', $e->getMessage()));
+                    return self::EXIT_FAILED;
+                } finally {
+                    // A step can take longer than the lease: it is renewed before the lock is released.
+                    cli_lease::renew($run->id(), ($this->clock)());
+                    $lock->release();
+                }
+                $end = $this->outcome($run, $result, $write);
+                if ($end !== null) {
+                    return $end;
+                }
+                if ($runner->last_error() !== null) {
+                    // The run waits five minutes and is tried again; a run without a receipt after 24 hours is stopped.
+                    $say(get_string('cli_backup_failed', 'tool_secbackup', $runner->last_error()));
+                }
+                $say(get_string('cli_backup_stage', 'tool_secbackup', get_string('stage_' . $run->stage(), 'tool_secbackup')));
+                $next = $run->next_attempt();
+                $wait = $next === null ? 0 : $next - ($this->clock)();
+                if ($wait > 0) {
+                    $say(get_string('cli_backup_waiting', 'tool_secbackup', userdate($next)));
+                    $this->wait($run, $wait);
+                }
             }
-            try {
-                $result = $runner->step($run, self::BUDGET);
-            } catch (\Throwable $e) {
-                // A failure that the step could not record: the step made it again from its class and code, so its message
-                // holds nothing of the run. The run is not stopped by it.
-                $write(get_string('cli_backup_error', 'tool_secbackup', $e->getMessage()));
-                return self::EXIT_FAILED;
-            } finally {
-                $lock->release();
-            }
-            $end = $this->outcome($run, $result, $write);
-            if ($end !== null) {
-                return $end;
-            }
-            if ($runner->last_error() !== null) {
-                // The run waits five minutes and is tried again; a run without a receipt after 24 hours is stopped.
-                $say(get_string('cli_backup_failed', 'tool_secbackup', $runner->last_error()));
-            }
-            $say(get_string('cli_backup_stage', 'tool_secbackup', get_string('stage_' . $run->stage(), 'tool_secbackup')));
-            $next = $run->next_attempt();
-            $wait = $next === null ? 0 : $next - ($this->clock)();
-            if ($wait > 0) {
-                $say(get_string('cli_backup_waiting', 'tool_secbackup', userdate($next)));
-                ($this->sleep)($wait);
-            }
+        } finally {
+            // The task goes on with the run at once when the command ends without finishing it.
+            cli_lease::release();
+        }
+    }
+
+    /**
+     * Waits, and renews the lease of the command on the run at least every cli_lease::RENEW_EVERY seconds, so that the task
+     * leaves the run alone while the command waits.
+     *
+     * @param run_record $run The run.
+     * @param int $seconds Seconds to wait.
+     */
+    private function wait(run_record $run, int $seconds): void {
+        while ($seconds > 0) {
+            $slice = min($seconds, cli_lease::RENEW_EVERY);
+            cli_lease::renew($run->id(), ($this->clock)());
+            ($this->sleep)($slice);
+            $seconds -= $slice;
         }
     }
 

@@ -169,7 +169,8 @@ final class runner {
      * Moves a run forward.
      *
      * The caller holds the lock "step" of tool_secbackup_run while the step runs; the run is read again from the table
-     * first, so a copy that is stale does no harm.
+     * first, so a copy that is stale does no harm. A step of the task leaves a run alone while the command line holds it
+     * (cli_lease).
      *
      * Every failure is bounded. A reason stops the run; a busy service makes it wait as long as the service asks; any other
      * error makes it wait RETRY_AFTER seconds (or, past the end of its window in a stage that makes chunks, for its next
@@ -212,10 +213,15 @@ final class runner {
             $this->temp->clear($run->id());
             return $status === 'completed' ? 'done' : 'aborted';
         }
+        $now = $this->now();
+        if ($this->seams['windows'] && cli_lease::held($run->id(), $now)) {
+            // The command line drives the run, without the windows: the task leaves it alone while the lease holds, also in the
+            // waits of the command line, which releases the lock of the steps (cli_lease).
+            return 'paused';
+        }
         // First of all, also for a step that only finds that the run waits: Moodle's cleanup of its temporary folder must not
         // take the files of the run.
         $this->temp->refresh($run->id());
-        $now = $this->now();
         $elsewhere = $run->hostname() !== null && $run->hostname() !== ($this->seams['hostname'])();
         // A run that waits for its receipt asks for it once more; a run in any other stage cannot get one in time. A run whose
         // files are on another server is stopped from any server, in any stage: that server may never come back (replaced, or

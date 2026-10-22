@@ -697,6 +697,30 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(0, $this->fixture->count('POST', '/fail'));
     }
 
+    public function test_a_task_step_leaves_a_run_that_the_command_line_drives_alone_until_its_lease_lapses(): void {
+        $run = run_record::create('schedule', $this->fixture->time);
+        $cli = $this->runner(['windows' => false, 'timer' => $this->fast_timer()]);
+        while ($run->stage() !== 'files') {
+            $cli->step($run, 1);
+        }
+        // The command line waits between two steps, past the end of the window (once a day: the next one starts too late).
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:01'));
+        cli_lease::renew($run->id(), $this->fixture->time);
+        $requests = count($this->fixture->requests);
+        $progress = $run->progress();
+        $this->assertSame('paused', $this->runner()->step($run, 600));
+        $run->reload();
+        $this->assertSame('active', $run->status());
+        $this->assertSame('files', $run->stage());
+        $this->assertSame($progress, $run->progress());
+        $this->assertSame(0, $run->window_misses());
+        $this->assertCount($requests, $this->fixture->requests);
+        // The command line was killed: once the lease lapses, the task follows the window again.
+        $this->fixture->set_time($this->fixture->time + cli_lease::LENGTH);
+        $this->assertSame('aborted', $this->runner()->step($run, 600));
+        $this->assertSame('window_ended', $run->abort_code());
+    }
+
     public function test_the_command_line_does_not_stop_at_the_end_of_the_window(): void {
         $run = run_record::create('schedule', $this->fixture->time);
         $this->fixture->set_time(run_fixture::tokyo('2026-10-19 06:00'));

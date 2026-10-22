@@ -129,6 +129,8 @@ A large site whose backup does not finish within its window can run `backup.php`
 that runs Moodle's cron, once a day 35 minutes after the start of the window (the schedule starts the backup at most 30
 minutes after the start). Without `--now` it takes over the backup that the schedule started and goes on with it until it
 ends, past the end of the window and in steps of an hour instead of ten minutes; when none was started, it does nothing.
+While the command drives a backup, also while it waits between two steps, the task of the cron leaves that backup to it;
+when the command is stopped or killed, the task goes on with the backup within 15 minutes and follows the window again.
 For example, for a window from 02:00 in the time zone of the server:
 
     35 2 * * * www-data /usr/bin/php /var/www/moodle/admin/tool/secbackup/cli/backup.php --quiet

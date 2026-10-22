@@ -17,7 +17,8 @@
   with the button "Back up now" of the status page or with `cli/backup.php --now`. A backup that the cron runs pauses at the
   end of its window and goes on in the next one when that one starts early enough for it to finish within 24 hours;
   otherwise (one window a day) it is stopped at the end of its window, and one that two windows did not finish is stopped.
-  A backup that has sent everything waits for its receipt past the end of its window.
+  A backup that has sent everything waits for its receipt past the end of its window. While `cli/backup.php` drives a
+  backup, the task of the cron leaves it alone, so the windows do not stop it between two steps of the command.
   A failed step is tried again, and an upload three times, before the backup is stopped.
 - Registering the site again with the same site and the same encryption key keeps the key for the names of the chunks, so
   the next backup does not send again what the storage holds; a registration of another site or with another key gets a

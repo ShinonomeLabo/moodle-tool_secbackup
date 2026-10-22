@@ -17,6 +17,7 @@
 namespace tool_secbackup\local\cli;
 
 use tool_secbackup\local\backup\abort_reason;
+use tool_secbackup\local\backup\cli_lease;
 use tool_secbackup\local\backup\core_diff;
 use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\backup\runner;
@@ -376,19 +377,22 @@ final class backup_command_test extends \advanced_testcase {
         ];
     }
 
-    public function test_a_task_step_that_completes_the_run_between_two_steps_ends_the_command_with_0(): void {
+    public function test_a_step_of_another_process_that_completes_the_run_between_two_steps_ends_the_command_with_0(): void {
         $this->fixture->service->state['holdverify'] = true;
-        [$runner, $taskrunner] = $this->two_runners();
+        // Another command line on the same run: it holds the lease too, so it steps the run.
+        $seams = ['windows' => false] + $this->fixture->small_seams();
+        $runner = new runner($this->fixture->client(), $this->fixture->objects(), $this->fixture->clock(), $seams);
+        $other = new runner($this->fixture->client(), $this->fixture->objects(), $this->fixture->clock(), $seams);
         $ran = false;
         $requests = 0;
-        $sleep = function (int $seconds) use ($taskrunner, &$ran, &$requests): void {
+        $sleep = function (int $seconds) use ($other, &$ran, &$requests): void {
             $this->fixture->advance($seconds);
             if (!$ran) {
                 $ran = true;
-                // While the command waits for the receipt, the task asks for it and completes the run.
+                // While the command waits for the receipt, the other process asks for it and completes the run.
                 $this->fixture->service->verify_run(run_record::recent(1)[0]->run_uuid());
                 (new \tool_secbackup\task\run_backup())->step_with(
-                    fn(run_record $run, int $budget): string => $taskrunner->step($run, $budget),
+                    fn(run_record $run, int $budget): string => $other->step($run, $budget),
                     $this->fixture->clock(),
                     static fn(string $line) => null
                 );
@@ -482,6 +486,70 @@ final class backup_command_test extends \advanced_testcase {
         $this->assertSame(0, $code, implode("\n", $lines));
         $this->assertSame(count($packed), count(array_unique($packed)), 'No content was packed again.');
         $this->assertContains(get_string('cli_backup_lockwait', 'tool_secbackup'), $lines);
+    }
+
+    public function test_the_command_holds_the_lease_while_it_waits_and_releases_it_at_the_end(): void {
+        $this->fixture->service->state['holdverify'] = true;
+        [$runner] = $this->two_runners();
+        $held = [];
+        $slept = [];
+        $sleep = function (int $seconds) use (&$held, &$slept): void {
+            $run = run_record::recent(1)[0];
+            $held[] = cli_lease::held($run->id(), $this->fixture->time + $seconds);
+            $slept[] = $seconds;
+            $this->fixture->advance($seconds);
+            if (count($slept) === 6) {
+                $this->fixture->service->verify_run($run->run_uuid());
+            }
+        };
+        $command = new backup_command($runner, $this->fixture->clock(), $sleep, static fn(): ?string => null);
+        $code = $command->run(true, true, static fn(string $line) => null);
+        $this->assertSame(0, $code);
+        // The waits for the receipt (30, 60, 120, 300 and 600 seconds) are cut so that the lease is renewed every 300 seconds,
+        // and the lease holds the run to the end of each one.
+        $this->assertSame([30, 60, 120, 300, 300, 300], $slept);
+        $this->assertSame(array_fill(0, 6, true), $held);
+        $this->assertFalse(cli_lease::held(run_record::recent(1)[0]->id(), $this->fixture->time));
+        $this->assertFalse(get_config('tool_secbackup', 'clilease'));
+    }
+
+    public function test_a_task_step_while_the_command_waits_past_the_window_leaves_the_run_to_it(): void {
+        // Once a day: the command line goes on with a scheduled backup past the end of its window, as the README advises.
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 03:00'));
+        run_record::create('schedule', $this->fixture->time);
+        $failed = false;
+        $sample = function () use (&$failed): array {
+            if (!$failed && run_record::active()->stage() === 'files') {
+                // A step of the command fails after the end of the window: the command waits five minutes.
+                $failed = true;
+                $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:01'));
+                throw new \RuntimeException('The share of the files went away.');
+            }
+            return ['load_per_core' => 0.1, 'memory_available_bytes' => 8589934592, 'db_ms' => 1.0,
+                'disk_free_bytes' => 107374182400, 'disk_total_bytes' => 214748364800, 'nfs_mbps' => 100.0,
+                'not_applicable' => []];
+        };
+        [$runner, $taskrunner] = $this->two_runners(['sample' => $sample]);
+        $results = [];
+        $sleep = function (int $seconds) use ($taskrunner, &$results): void {
+            $this->fixture->advance($seconds);
+            // The task wins the lock while the command waits.
+            $results[] = (new \tool_secbackup\task\run_backup())->step_with(
+                fn(run_record $run, int $budget): string => $taskrunner->step($run, $budget),
+                $this->fixture->clock(),
+                static fn(string $line) => null
+            );
+        };
+        $command = new backup_command($runner, $this->fixture->clock(), $sleep, static fn(): ?string => null);
+        $lines = [];
+        $code = $command->run(false, false, static function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+        $this->assertTrue($failed);
+        $this->assertSame(0, $code, implode("\n", $lines));
+        $this->assertSame('paused', $results[0]);
+        $this->assertSame('completed', run_record::recent(1)[0]->status());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
     }
 
     public function test_a_refusal_for_the_number_of_backups_says_when_one_can_start_again(): void {
