@@ -45,6 +45,10 @@ e2e_run_bytes=0
 e2e_run_estimate=0
 e2e_before=0
 e2e_sent=0
+# The latest run before the command of e2e_backup_start; a wait looks only at the runs after it.
+e2e_after_id=0
+# The process that e2e_sleep or e2e_sec runs in the background, which the trap stops.
+e2e_bg=''
 
 # Prints the name of a step with the time, so that the log of the job shows where a scenario is.
 e2e_step() {
@@ -60,17 +64,26 @@ e2e_fail() {
 }
 
 # e2e_sleep <seconds>: sleeps in the background and waits for it. bash runs a trap only when the command in the foreground
-# ends, but it ends the builtin wait at once: so a signal (a cancelled job) reaches the trap of EXIT without delay.
+# ends, but it ends the builtin wait at once: so a signal (a cancelled job) reaches the trap of EXIT without delay, and the
+# trap stops the sleep (e2e_bg).
 e2e_sleep() {
+    local status=0
     sleep "$1" &
-    wait "$!"
+    e2e_bg=$!
+    wait "$e2e_bg" || status=$?
+    e2e_bg=''
+    return "$status"
 }
 
 # e2e_sec <arguments of sec.php>: runs sec.php (which may wait minutes for the service) in the background and waits for it,
-# for the same reason as e2e_sleep. Its exit code is the one of sec.php.
+# for the same reason as e2e_sleep; the trap stops it too. Its exit code is the one of sec.php.
 e2e_sec() {
+    local status=0
     php "$e2e_dir/sec.php" "$@" &
-    wait "$!"
+    e2e_bg=$!
+    wait "$e2e_bg" || status=$?
+    e2e_bg=''
+    return "$status"
 }
 
 # e2e_duration <name> <start>: records the seconds from <start> (UNIX time) to now.
@@ -108,8 +121,9 @@ e2e_finish() {
     e2e_finished=yes
 }
 
-# The trap of EXIT: stops the load, opens the firewall again, stops a backup that still runs, removes the registration code,
-# and writes the result. The script ends with 0 only when the scenario ran to its end and every condition held.
+# The trap of EXIT: stops the load, opens the firewall again, stops a backup that still runs and the sleep or sec.php that a
+# wait runs in the background, removes the registration code, and writes the result. The script ends with 0 only when the
+# scenario ran to its end and every condition held.
 e2e_end() {
     local status=$?
     set +e
@@ -117,6 +131,11 @@ e2e_end() {
     e2e_s3_unblock
     if [ -n "$e2e_pid" ] && e2e_alive "$e2e_pid"; then
         kill "$e2e_pid" 2> /dev/null
+    fi
+    if [ -n "$e2e_bg" ] && e2e_alive "$e2e_bg"; then
+        kill "$e2e_bg" 2> /dev/null
+        # sec.php may be writing a file of the scenario: it ends before the result is written.
+        wait "$e2e_bg" 2> /dev/null
     fi
     rm -f "$e2e_private/code"
     if [ "$e2e_finished" != yes ]; then
@@ -359,15 +378,15 @@ e2e_check_db() {
     fi
 }
 
-# e2e_read_sent <checkpoint>: e2e_sent is what the latest run uploaded, from its record on the site (and e2e_run_* are read);
-# 0, with a reason, when the database cannot be read.
+# e2e_read_sent <checkpoint>: e2e_sent is what the latest run uploaded, from its record on the site (and e2e_run_* are read).
+# When the database cannot be read: 0, a reason, and 1.
 e2e_read_sent() {
     e2e_sent=0
-    if e2e_read_run; then
-        e2e_sent="$e2e_run_bytes"
-    else
+    if ! e2e_read_run; then
         e2e_fail "$1: the database of the site cannot be read (logs/psql.log)"
+        return 1
     fi
+    e2e_sent="$e2e_run_bytes"
 }
 
 # Prints the state of the latest run.
@@ -387,12 +406,29 @@ e2e_alive() {
     [[ "$state" != Z* ]]
 }
 
-# e2e_backup_start <log> [--now]: starts cli/backup.php in the background, with its output in <log>. e2e_pid is the process
-# of php itself, so that kill -9 reaches it.
+# e2e_backup_start <log> [--now]: starts cli/backup.php in the background, with its output in <log>. It first reads the
+# latest run of the site, so that the waits look only at the run of this command (e2e_after_id): with --now, the command
+# makes a new run, later than that one, and a run from before (stopped, but still in the stage files with its bytes sent)
+# would satisfy a wait at once; without --now, the command goes on with that latest run itself. A database that cannot be
+# read stops the scenario here.
 e2e_backup_start() {
     e2e_log="$1"
     shift
+    if ! e2e_read_run; then
+        e2e_fail "the database of the site cannot be read before cli/backup.php starts (logs/psql.log)"
+        return 1
+    fi
+    e2e_after_id="${e2e_run_id:-0}"
+    if [ "${1:-}" != --now ] && [ "$e2e_after_id" -gt 0 ]; then
+        e2e_after_id=$(( e2e_after_id - 1 ))
+    fi
     echo "cli/backup.php $* in the background"
+    e2e_launch_backup "$@"
+}
+
+# e2e_launch_backup [--now]: the command itself, in the background, with its output in e2e_log. e2e_pid is the process of
+# php itself, so that kill -9 reaches it.
+e2e_launch_backup() {
     (cd "$(storage_docroot)" && exec php -d memory_limit=-1 "$(storage_plugin)/cli/backup.php" "$@") >> "$e2e_log" 2>&1 &
     e2e_pid=$!
 }
@@ -436,10 +472,12 @@ e2e_backup() {
     e2e_wait_exit "$e2e_backup_timeout"
 }
 
-# e2e_wait_sending <percent> [<bytes>]: waits until the run of the command of e2e_backup_start is in the stage files (it
-# sends the files of the site) and has sent <percent> % of the bytes it expects, and at least <bytes> bytes. Returns 1 when
-# the command ends first, when the run leaves the stage files first, after SECBK_E2E_BACKUP_TIMEOUT seconds, or when the
-# database of the site cannot be read five times in a row (with that reason).
+# e2e_wait_sending <percent> [<bytes>]: waits until the run of the command of e2e_backup_start (a run later than
+# e2e_after_id, active or paused) is in the stage files (it sends the files of the site) and has sent <percent> % of the
+# bytes it expects, and at least <bytes> bytes. Until the command has written the record of its run, the latest record is
+# from before it, and is not looked at. Returns 1 when the command ends first, when its run ends or leaves the stage files
+# first, after SECBK_E2E_BACKUP_TIMEOUT seconds, or when the database of the site cannot be read five times in a row (with
+# that reason).
 e2e_wait_sending() {
     local percent="$1" least="${2:-1}" deadline next=0 wanted misses=0
     deadline=$(( $(date +%s) + e2e_backup_timeout ))
@@ -454,6 +492,22 @@ e2e_wait_sending() {
             continue
         fi
         misses=0
+        if [[ ! "$e2e_run_id" =~ ^[0-9]+$ ]] || [ "$e2e_run_id" -le "$e2e_after_id" ]; then
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "the command did not write the record of its run in $e2e_backup_timeout s"
+                return 1
+            fi
+            e2e_sleep 1
+            continue
+        fi
+        case "$e2e_run_status" in
+            active | paused) ;;
+            *)
+                echo "the run ended ($e2e_run_status) before it got there"
+                e2e_progress
+                return 1
+                ;;
+        esac
         if [ "$e2e_run_stage" = files ] && [ "$e2e_run_estimate" -gt 0 ]; then
             wanted=$(( e2e_run_estimate * percent / 100 ))
             if [ "$wanted" -lt "$least" ]; then wanted="$least"; fi
@@ -737,7 +791,7 @@ e2e_scenario_load() {
     if [ "$e2e_exit" -ne 0 ]; then
         e2e_fail "cli/backup.php --now after the stop ended with $e2e_exit, expected 0"
     fi
-    e2e_read_sent "the run after the stop"
+    e2e_read_sent "the run after the stop" || true
     e2e_final --runs=2 --failed=server_busy
     e2e_check_resend "$e2e_before" "$e2e_sent" "$(e2e_inspected_bytes "$e2e_folder/inspect.json")"
 }
@@ -800,12 +854,14 @@ e2e_scenario_abort() {
     if [ "$e2e_exit" -ne 0 ]; then
         e2e_fail "(a) cli/backup.php without --now ended with $e2e_exit, expected 0"
     fi
-    # The bytes of the run that went on are counted in its one record, before and after the kill.
-    e2e_read_sent "(a) the run that went on"
-    if [ "$e2e_run_id" != "$run" ]; then
-        e2e_fail "(a) cli/backup.php went on with run ${e2e_run_id:-none}, expected run $run"
-    elif [ "$e2e_run_status" != completed ]; then
-        e2e_fail "(a) the run that went on is ${e2e_run_status:-unknown}, expected completed"
+    # The bytes of the run that went on are counted in its one record, before and after the kill. When the record cannot be
+    # read, that is the reason, and the run is not compared.
+    if e2e_read_sent "(a) the run that went on"; then
+        if [ "$e2e_run_id" != "$run" ]; then
+            e2e_fail "(a) cli/backup.php went on with run ${e2e_run_id:-none}, expected run $run"
+        elif [ "$e2e_run_status" != completed ]; then
+            e2e_fail "(a) the run that went on is ${e2e_run_status:-unknown}, expected completed"
+        fi
     fi
     e2e_final --runs=2 --failed=upload_failed
     e2e_check_resend "$e2e_before" "$e2e_sent" "$(e2e_inspected_bytes "$e2e_folder/inspect.json")"

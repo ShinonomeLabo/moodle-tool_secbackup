@@ -39,8 +39,8 @@ From the environment:
 `run.sh` runs only where `GITHUB_ACTIONS=true` (or `SECBK_E2E_DISPOSABLE=yes`): it keeps all the CPUs busy and changes the
 firewall. It needs sudo, PHP with curl, pgsql and sodium, the PostgreSQL client, and a PostgreSQL server that trusts the user
 `postgres` on 127.0.0.1 (a connection that cannot be made fails after 10 seconds, `PGCONNECT_TIMEOUT`). Every wait has an end,
-and a signal (a cancelled job) reaches the trap of the script at once, which stops the load, opens the firewall and writes
-the result.
+and a signal (a cancelled job) reaches the trap of the script at once, which stops the load, opens the firewall, stops the
+backup and the sleep or the request to the service that runs in the background, and writes the result.
 
 ## A scenario
 
@@ -79,8 +79,10 @@ everything again would count `before` twice (a chunk that the storage has alread
 `before` is allowed. What each run asked the service for (`requested_bytes`) is recorded but not judged: the plugin counts in
 it every file below 4 MiB, sent before or not.
 
-The points of the scenarios (the stage of the files, 10 %, 10 % more) are read from the record of the run in the database of
-the site every second or two. If a run is faster than that, or leaves the stage of the files first, the scenario fails and
+The points of the scenarios (the stage of the files, 10 %) are read from the record of the run in the database of the site
+every second or two. A wait looks only at the run of the command it waits for, which is still going: with `--now`, a run
+later than the latest one before the command (a stopped run stays in the stage of the files with its bytes sent), and
+without `--now`, that latest run itself. If a run is faster than that, or leaves the stage of the files first, the scenario fails and
 says so: the sizes are then to be made larger. When the database cannot be read (five times in a row), the scenario fails
 with that reason.
 

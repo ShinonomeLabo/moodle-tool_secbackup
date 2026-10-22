@@ -557,23 +557,84 @@ secbk_e2e_expect('the result of a script that stopped', $exit === 1 && ($result[
     && ($result['reasons'] ?? null) === ['the script stopped (exit 1) at the step: a step that fails']
     && ($result['sent_bytes'] ?? null) === 0, "exit $exit: $output " . json_encode($result));
 
-// lib.sh: a signal (a cancelled job) during a long wait runs the trap at once, which writes the result.
-$started = microtime(true);
-// Development tooling may run commands; the plugin itself never does.
-$process = proc_open(['bash', '-c', 'set -euo pipefail; . "$0/lib.sh"; e2e_begin normal r1-term; e2e_step "a long wait";'
-    . ' e2e_sleep 60; e2e_finish', $e2e], [0 => ['file', '/dev/null', 'r'], 1 => ['file', "$work/term.out", 'a'],
-    2 => ['file', "$work/term.out", 'a']], $pipes, null, array_merge(getenv(), ['SECBK_STORAGE_DIR' => "$work/storage",
-    'SECBK_E2E_OUT' => "$work/out"]));
-for ($i = 0; $i < 100 && !str_contains((string) @file_get_contents("$work/term.out"), 'a long wait'); $i++) {
-    usleep(100000);
+/**
+ * The command lines of the processes of this machine that match a pattern.
+ *
+ * @param string $pattern A regular expression on the command line.
+ * @return string[]
+ */
+function secbk_e2e_processes(string $pattern): array {
+    $lines = [];
+    // Development tooling may run commands; the plugin itself never does.
+    \exec('ps -A -o command=', $lines);
+    return array_values(array_filter($lines, static fn(string $line): bool => preg_match($pattern, trim($line)) === 1));
 }
-usleep(300000);
-proc_terminate($process, 15);
-proc_close($process);
+
+/**
+ * Runs bash code after lib.sh is sourced, sends it SIGTERM once its output shows a line, and returns [seconds until it
+ * ended, its output].
+ *
+ * @param string $code The code.
+ * @param string $line The line to wait for before the signal.
+ * @param array $env Variables of the environment to set.
+ * @return array
+ */
+function secbk_e2e_terminate(string $code, string $line, array $env = []): array {
+    global $e2e, $work;
+    $out = "$work/term-" . md5($code) . '.out';
+    $started = microtime(true);
+    // Development tooling may run commands; the plugin itself never does.
+    $process = proc_open(['bash', '-c', 'set -euo pipefail; . "$0/lib.sh"; ' . $code, $e2e], [0 => ['file', '/dev/null', 'r'],
+        1 => ['file', $out, 'a'], 2 => ['file', $out, 'a']], $pipes, null, array_merge(getenv(),
+        ['SECBK_STORAGE_DIR' => "$work/storage", 'SECBK_E2E_OUT' => "$work/out"], $env));
+    for ($i = 0; $i < 100 && !str_contains((string) @file_get_contents($out), $line); $i++) {
+        usleep(100000);
+    }
+    usleep(500000);
+    proc_terminate($process, 15);
+    proc_close($process);
+    return [microtime(true) - $started, (string) @file_get_contents($out)];
+}
+
+/**
+ * Waits up to two seconds until no process matches a pattern, and returns the ones that are left.
+ *
+ * @param string $pattern A regular expression on the command line.
+ * @return string[]
+ */
+function secbk_e2e_left(string $pattern): array {
+    for ($i = 0; $i < 20 && secbk_e2e_processes($pattern); $i++) {
+        usleep(100000);
+    }
+    return secbk_e2e_processes($pattern);
+}
+
+// lib.sh: a signal (a cancelled job) during a long wait runs the trap at once, which writes the result and stops what the
+// script runs in the background: the sleep of the wait, and sec.php that waits for the service.
+// The length of the sleep is made for this run, so that a process of another run cannot be taken for it.
+$sleeplength = 600000 + getmypid() % 100000;
+[$seconds, $output] = secbk_e2e_terminate("e2e_begin normal r1-term; e2e_step 'a long wait'; e2e_sleep $sleeplength; e2e_finish",
+    'a long wait');
 $result = secbk_e2e_result('r1-term') ?? [];
-secbk_e2e_expect('a signal during a long wait writes the result at once', microtime(true) - $started < 15
+secbk_e2e_expect('a signal during a long wait writes the result at once', $seconds < 15
     && ($result['reasons'] ?? null) === ['the script stopped (exit 143) at the step: a long wait'],
-    sprintf('%.1f s: ', microtime(true) - $started) . @file_get_contents("$work/term.out") . json_encode($result));
+    sprintf('%.1f s: ', $seconds) . $output . json_encode($result));
+$left = secbk_e2e_left("~^sleep $sleeplength\$~");
+secbk_e2e_expect('a signal during a long wait stops its sleep', $left === [], implode("\n", $left));
+// A service that takes the connection and never answers: sec.php waits for it.
+$silent = stream_socket_server('tcp://127.0.0.1:0');
+$silentname = (string) stream_socket_get_name($silent, false);
+$silentport = (int) substr($silentname, strrpos($silentname, ':') + 1);
+[$seconds, $output] = secbk_e2e_terminate('e2e_begin normal r1-term-sec; e2e_site=11111111-2222-4333-8444-5555555590ff;'
+    . ' e2e_step "a long request"; e2e_sec inspect --site="$e2e_site" --out="$e2e_logs/silent.json"; e2e_finish',
+    'a long request', ['SECBK_E2E_BASE_URL' => "http://127.0.0.1:$silentport/api/lms-backup", 'SECBK_E2E_SECRET' => $secret]);
+$result = secbk_e2e_result('r1-term-sec') ?? [];
+secbk_e2e_expect('a signal during a request to the service writes the result at once', $seconds < 15
+    && ($result['reasons'] ?? null) === ['the script stopped (exit 143) at the step: a long request'],
+    sprintf('%.1f s: ', $seconds) . $output . json_encode($result));
+$left = secbk_e2e_left('~/sec\.php inspect .*' . preg_quote($work, '~') . '~');
+secbk_e2e_expect('a signal during a request to the service stops sec.php', $left === [], implode("\n", $left));
+fclose($silent);
 
 // lib.sh: the database of the site that cannot be read stops the scenario with that reason, also in a wait.
 [$exit, $output] = secbk_e2e_lib('echo "timeout $PGCONNECT_TIMEOUT"');
@@ -589,36 +650,99 @@ secbk_e2e_expect('a database that cannot be read ends a wait with that reason', 
     && str_contains(implode("\n", secbk_e2e_result('r1-dbwait')['reasons'] ?? []), 'the database of the site cannot be read'),
     "exit $exit: $output");
 
+// lib.sh: the wait for the point of a scenario looks only at the run of the command it waits for, never at a run from before
+// it. The real e2e_backup_start starts the command (a php on the PATH turns cli/backup.php into a sleep), and psql gives the
+// record of the latest run from a list, one row a call and the last one after it, as the database would show it while the
+// command starts and writes the record of its run.
+@mkdir("$work/bin", 0777, true);
+@mkdir("$work/storage/moodle", 0777, true);
+$commandlength = 700000 + getmypid() % 100000;
+file_put_contents("$work/bin/php", "#!/bin/sh\ncase \"\$*\" in\n    *cli/backup.php*) exec sleep $commandlength ;;\nesac\nexec "
+    . escapeshellarg(PHP_BINARY) . " \"\$@\"\n");
+chmod("$work/bin/php", 0755);
+$rowpsql = <<<'BASH'
+e2e_test_count="$SECBK_E2E_OUT/psql-$E2E_NAME.count"
+psql() {
+    local n
+    n=$(( $(cat "$e2e_test_count" 2> /dev/null || echo 0) + 1 ))
+    echo "$n" > "$e2e_test_count"
+    if [ "$n" -gt "${#e2e_test_rows[@]}" ]; then n="${#e2e_test_rows[@]}"; fi
+    printf '%s\n' "${e2e_test_rows[$(( n - 1 ))]}"
+}
+BASH;
+$waits = [
+    'a --now after a run that S3 stopped in the stage files' => [['1|files|aborted|upload_failed|1200|10000',
+        '1|files|aborted|upload_failed|1200|10000', '1|files|aborted|upload_failed|1200|10000', '2|prepare|active||0|0',
+        '2|files|active||500|10000', '2|files|active||1500|10000'], '--now', 'reached run=2 bytes=1500 status=active'],
+    'a --now after a run that completed' => [['1|done|completed||9000|10000', '1|done|completed||9000|10000',
+        '2|db|active||100|0', '2|files|active||1500|10000'], '--now', 'reached run=2 bytes=1500 status=active'],
+    'a --now whose run stops before the point' => [['1|files|aborted|upload_failed|1200|10000',
+        '1|files|aborted|upload_failed|1200|10000', '2|files|aborted|server_busy|100|10000'], '--now', 'not reached'],
+    'the command without --now that goes on with the run' => [['2|files|active||500|10000', '2|files|active||500|10000',
+        '2|files|active||1500|10000'], '', 'reached run=2 bytes=1500 status=active'],
+];
+foreach ($waits as $label => [$rows, $now, $words]) {
+    $name = 'r1-sending-' . md5($label);
+    $list = implode(' ', array_map('escapeshellarg', $rows));
+    [$exit, $output] = secbk_e2e_lib("$rowpsql\ne2e_test_rows=($list)\ne2e_begin abort $name\n"
+        . "e2e_backup_start \"\$e2e_logs/backup-1.log\" $now\n"
+        . 'if e2e_wait_sending 10; then echo "reached run=$e2e_run_id bytes=$e2e_run_bytes status=$e2e_run_status";'
+        . " else echo 'not reached'; fi\ne2e_finish\n", ['E2E_NAME' => $name, 'PATH' => "$work/bin:" . getenv('PATH'),
+        // A wait that never gets there ends within 20 s, not after the two hours of a real run.
+        'SECBK_E2E_BACKUP_TIMEOUT' => '20']);
+    secbk_e2e_expect("the wait for the point: $label", str_contains($output, $words)
+        && ($words !== 'not reached' || str_contains($output, 'the run ended (aborted) before it got there')),
+        "exit $exit: $output");
+}
+$left = secbk_e2e_left("~^sleep $commandlength\$~");
+secbk_e2e_expect('the commands of the waits are stopped by the trap', $left === [], implode("\n", $left));
+
 // lib.sh: the wait for the recount of the service is 1200 seconds unless SECBK_E2E_RECOUNT_WAIT says otherwise.
 [$exit, $output] = secbk_e2e_lib('echo "recount $e2e_recount_wait"');
 secbk_e2e_expect('the wait for the recount is 1200 s', trim($output) === 'recount 1200', $output);
 [$exit, $output] = secbk_e2e_lib('echo "recount $e2e_recount_wait"', ['SECBK_E2E_RECOUNT_WAIT' => '5']);
 secbk_e2e_expect('the wait for the recount can be set', trim($output) === 'recount 5', $output);
 
-// lib.sh: the order of the steps of the scenarios, with the steps that reach the site, the service, the firewall and other
-// processes replaced by stubs that write down their calls. Each "end" is what one call of cli/backup.php ends with: its exit
-// code, the status of the run and its reason.
+// lib.sh: the order of the steps of the scenarios. The steps that reach the site, the service, the firewall and other
+// processes are replaced by stubs that write down their calls; the database of the site is a file with the record of the
+// latest run, which psql prints, so that the real e2e_backup_start, e2e_read_run, e2e_stopped_run and e2e_read_sent read
+// the runs as they would. Each "end" is what one call of cli/backup.php ends with: its exit code, and the status and the
+// reason that its run has then. E2E_NEW_RUN_ON_CONTINUE makes the command without --now start a run of its own;
+// E2E_DB_GONE makes the database unreadable after the last end.
 $stubs = <<<'BASH'
 e2e_test_calls="$SECBK_E2E_OUT/calls-$E2E_NAME.txt"
-e2e_test_run=0
+e2e_test_db="$SECBK_E2E_OUT/db-$E2E_NAME.txt"
+: > "$e2e_test_db"
 e2e_test_call() { printf '%s\n' "$*" >> "$e2e_test_calls"; }
-e2e_backup_start() {
-    e2e_test_call "start $(basename "$1") ${*:2}"
-    e2e_log="$1"
-    : > "$e2e_log"
+psql() {
+    if [ -e "$e2e_test_db.gone" ]; then echo "the database is gone" >&2; return 2; fi
+    cat "$e2e_test_db"
+}
+e2e_test_row() { printf '%s|%s|%s|%s|%s|%s\n' "$@" > "$e2e_test_db"; }
+e2e_test_field() { cut -d '|' -f "$1" "$e2e_test_db"; }
+e2e_launch_backup() {
+    e2e_test_call "start $(basename "$e2e_log") $*"
     e2e_pid=4242
-    if [ "${2:-}" = --now ]; then e2e_test_run=$(( e2e_test_run + 1 )); fi
-    e2e_run_id="$e2e_test_run"
+    if [ "${1:-}" = --now ] || [ "${E2E_NEW_RUN_ON_CONTINUE:-}" = yes ]; then
+        e2e_test_row $(( $(e2e_test_field 1) + 1 )) start active '' 0 10000
+    fi
+}
+e2e_wait_sending() {
+    e2e_test_call "wait_sending $*"
+    e2e_test_row "$(e2e_test_field 1)" files active '' $(( 10000 * $1 / 100 + 1 )) 10000
+    e2e_read_run
 }
 e2e_wait_exit() {
+    local status code stage
     e2e_test_call "wait_exit $1"
-    read -r e2e_exit e2e_run_status e2e_run_code <<< "${e2e_test_ends[0]}"
+    read -r e2e_exit status code <<< "${e2e_test_ends[0]}"
     e2e_test_ends=("${e2e_test_ends[@]:1}")
-    if [ "$e2e_run_code" = - ]; then e2e_run_code=''; fi
+    if [ "$code" = - ]; then code=''; fi
+    stage="$(e2e_test_field 2)"
+    if [ "$status" = completed ]; then stage=done; fi
+    e2e_test_row "$(e2e_test_field 1)" "$stage" "$status" "$code" "$(e2e_test_field 5)" 10000
+    if [ "${#e2e_test_ends[@]}" -eq 0 ] && [ "${E2E_DB_GONE:-}" = yes ]; then : > "$e2e_test_db.gone"; fi
 }
-e2e_wait_sending() { e2e_test_call "wait_sending $*"; }
-e2e_read_run() { e2e_run_bytes=500; }
-e2e_progress() { :; }
 e2e_alive() { return 1; }
 kill() { e2e_test_call "kill $*"; }
 e2e_s3_block() { e2e_test_call s3_block; e2e_s3_blocked=yes; }
@@ -640,13 +764,14 @@ BASH;
  * @param string $name The name of the site.
  * @param string $scenario The call of the scenario, such as "e2e_scenario_abort".
  * @param string[] $ends What the calls of cli/backup.php end with, in their order.
+ * @param array $env Variables of the environment to set.
  * @return array
  */
-function secbk_e2e_scenario(string $name, string $scenario, array $ends): array {
+function secbk_e2e_scenario(string $name, string $scenario, array $ends, array $env = []): array {
     global $stubs, $work;
     $list = implode(' ', array_map(static fn(string $end): string => escapeshellarg($end), $ends));
     [$exit, $output] = secbk_e2e_lib("$stubs\ne2e_test_ends=($list)\ne2e_begin test $name\n$scenario\ne2e_finish\n",
-        ['E2E_NAME' => $name]);
+        ['E2E_NAME' => $name] + $env);
     $calls = array_map('trim', @file("$work/out/calls-$name.txt", FILE_IGNORE_NEW_LINES) ?: []);
     return [$exit, $output, $calls, secbk_e2e_result($name) ?? []];
 }
@@ -656,28 +781,37 @@ function secbk_e2e_scenario(string $name, string $scenario, array $ends): array 
 $wanted = ['start backup-1.log --now', 'wait_sending 10', 's3_block', 'wait_exit 3600', 's3_unblock',
     'wait_stopped upload_failed | (b) after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_sending 10',
     'kill -9 4242', 'wait_exit 60', 'inspect inspect-killed.json', 'verdict (a) after kill -9 | --stopped=open',
-    'start backup-3.log', 'wait_exit 7200', 'final --runs=2 --failed=upload_failed', 'resend 1000 500 1000'];
+    'start backup-3.log', 'wait_exit 7200', 'final --runs=2 --failed=upload_failed', 'resend 1000 1001 1000'];
 secbk_e2e_expect('abort: (b) S3 refused, the stop, the recount, then (a) kill -9 and the same run to its end', $exit === 0
     && $calls === $wanted && ($result['reasons'] ?? null) === [], "exit $exit: $output\n" . implode("\n", $calls));
 $aborts = [
-    'the run that S3 did not stop' => [['0 completed -'], '(b) the refused connections to S3 did not stop the run'],
-    'a kill that did not end the command' => [['1 aborted upload_failed', '0 completed -', '0 completed -'],
+    'the run that S3 did not stop' => [['0 completed -'], [], '(b) the refused connections to S3 did not stop the run'],
+    'a kill that did not end the command' => [['1 aborted upload_failed', '0 completed -', '0 completed -'], [],
         '(a) cli/backup.php ended with 0 after kill -9, expected 137'],
     'the run after the kill that did not complete' => [['1 aborted upload_failed', '137 active -', '1 aborted upload_failed'],
-        '(a) the run that went on is aborted, expected completed'],
-    'the command after the kill that failed' => [['1 aborted upload_failed', '137 active -', '3 active -'],
+        [], '(a) the run that went on is aborted, expected completed'],
+    'the command after the kill that failed' => [['1 aborted upload_failed', '137 active -', '3 active -'], [],
         '(a) cli/backup.php without --now ended with 3, expected 0'],
+    'the command after the kill that started another run' => [['1 aborted upload_failed', '137 active -', '0 completed -'],
+        ['E2E_NEW_RUN_ON_CONTINUE' => 'yes'], '(a) cli/backup.php went on with run 3, expected run 2'],
 ];
-foreach ($aborts as $label => [$ends, $words]) {
-    [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-abort-' . md5($label), 'e2e_scenario_abort', $ends);
+foreach ($aborts as $label => [$ends, $env, $words]) {
+    [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-abort-' . md5($label), 'e2e_scenario_abort', $ends, $env);
     secbk_e2e_expect("abort: $label names its step", $exit === 1
         && str_contains(implode("\n", $result['reasons'] ?? []), $words), "exit $exit: $output");
 }
+// A database that cannot be read at the end of (a) gives that reason, and not a second one about the ID of the run.
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-abort-db', 'e2e_scenario_abort',
+    ['1 aborted upload_failed', '137 active -', '0 completed -'], ['E2E_DB_GONE' => 'yes']);
+$reasons = implode("\n", $result['reasons'] ?? []);
+secbk_e2e_expect('abort: a database that cannot be read after (a) gives only that reason', $exit === 1
+    && str_contains($reasons, '(a) the run that went on: the database of the site cannot be read')
+    && !str_contains($reasons, 'went on with run') && !str_contains($reasons, 'expected completed'), "exit $exit: $reasons");
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load', 'e2e_scenario_load',
     ['1 aborted server_busy', '0 completed -']);
 $wanted = ['start backup-1.log --now', 'wait_sending 0', 'load_start', 'wait_exit 7200', 'load_stop',
     'wait_stopped server_busy | after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_exit 7200',
-    'final --runs=2 --failed=server_busy', 'resend 1000 500 1000'];
+    'final --runs=2 --failed=server_busy', 'resend 1000 0 1000'];
 secbk_e2e_expect('load: the load, the stop, the recount and the next run', $exit === 0 && $calls === $wanted
     && ($result['reasons'] ?? null) === [], "exit $exit: $output\n" . implode("\n", $calls));
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load-busy', 'e2e_scenario_load', ['0 completed -']);
