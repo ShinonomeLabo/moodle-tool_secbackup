@@ -48,25 +48,51 @@ newest_stream() {
     { dnf -q module list "$1" 2> /dev/null || true; } | awk -v name="$1" '$1 == name { print $2 }' | sort -V | tail -n 1
 }
 
+# The source repository of a repository of the distribution (appstream, baseos or crb) on the primary server of the
+# distribution, for the release of this machine. The mirrors of a source repository can lag hours behind the binary one
+# after an update (a run failed on a mirror that listed no source package of the PHP just installed, three times), while the
+# primary server is always current. What is read from it is checked as from a mirror: the signature of the distribution and
+# the version of the installed PHP.
+primary_source_url() {
+    local folder
+    case "$1" in
+        appstream) folder=AppStream ;;
+        baseos) folder=BaseOS ;;
+        crb) folder=CRB ;;
+        *) return 1 ;;
+    esac
+    case "$ID" in
+        rocky) echo "https://dl.rockylinux.org/pub/rocky/$(rpm -E %rhel)/$folder/source/tree/" ;;
+        almalinux) echo "https://vault.almalinux.org/$(rpm -E %rhel)/$folder/Source/" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Rocky Linux 9 and AlmaLinux 9 have no php-sodium for PHP 8.1 and later: EPEL's package is for PHP 8.0. The extension is
 # part of PHP, so it is built from the source package of the distribution's own PHP, with libsodium-devel from EPEL.
-# The source repository is the one that belongs to the repository PHP comes from; the source package must be signed by the
-# distribution and must be the version that is installed; and the result must load in php-fpm and in the command line.
+# The source repository is the one that belongs to the repository PHP comes from, read from the primary server of the
+# distribution (primary_source_url); the source package must be signed by the distribution and must be the version that is
+# installed; and the result must load in php-fpm and in the command line.
 build_sodium() {
-    local work repos repo installed modules
+    local work repos repo source installed modules
     work="$(mktemp -d)"
     from_mirrors dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
     # The whole output is read first: a pipe into head can fail when head ends before dnf does (SIGPIPE under pipefail).
     repos="$(dnf -q repoquery --qf '%{repoid}\n' php-common)"
     repo="${repos%%$'\n'*}"
     [ -n "$repo" ] || { echo "cannot tell which repository PHP comes from" >&2; exit 1; }
+    source="$(primary_source_url "$repo")" || { echo "no primary server is known for the source of $repo on $ID" >&2; exit 1; }
     installed="$(php-config --version)"
     (
         set -e
         cd "$work"
         # Only the repository of PHP and its source repository: dnf download --source would also enable the source repository
-        # of every other enabled one (EPEL's too), whose mirrors are not needed here and can fail.
-        from_mirrors dnf -y --disablerepo='*' --enablerepo="$repo" --enablerepo="$repo-source" download --source php
+        # of every other enabled one (EPEL's too), whose mirrors are not needed here and can fail. The source repository is
+        # read from the primary server instead of its mirror list, and every attempt reads its metadata again (--refresh):
+        # without it, an attempt reuses the list that the first one cached.
+        from_mirrors dnf -y --refresh --disablerepo='*' --enablerepo="$repo" --enablerepo="$repo-source" \
+            --setopt="$repo-source.baseurl=$source" --setopt="$repo-source.mirrorlist=" --setopt="$repo-source.metalink=" \
+            download --source php
         signature="$(rpm -K ./php-*.src.rpm)"
         echo "$signature" >&2
         if [[ "$signature" != *'signatures OK'* || "$signature" =~ NOKEY|BAD|'NOT OK' ]]; then
