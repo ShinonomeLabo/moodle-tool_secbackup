@@ -705,10 +705,10 @@ final class runner_test extends \advanced_testcase {
         }
         // The command line waits between two steps, past the end of the window (once a day: the next one starts too late).
         $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:01'));
-        cli_lease::renew($run->id(), $this->fixture->time);
+        (new cli_lease())->renew($run->id(), $this->fixture->time);
         $requests = count($this->fixture->requests);
         $progress = $run->progress();
-        $this->assertSame('paused', $this->runner()->step($run, 600));
+        $this->assertSame('leased', $this->runner()->step($run, 600));
         $run->reload();
         $this->assertSame('active', $run->status());
         $this->assertSame('files', $run->stage());

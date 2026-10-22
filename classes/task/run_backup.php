@@ -75,8 +75,9 @@ class run_backup extends \core\task\adhoc_task {
                 return null;
             }
             $result = $step($run, self::BUDGET);
-            if ($result === 'continue' || $result === 'paused') {
-                self::queue_next($run, $result, $clock === null ? time() : (int) $clock());
+            if (in_array($result, ['continue', 'paused', 'leased'], true)) {
+                // A run that the command line drives is looked at again as a paused run is: the command may end or be killed.
+                self::queue_next($run, $result === 'leased' ? 'paused' : $result, $clock === null ? time() : (int) $clock());
             }
             $write(get_string('task_run_backup_' . $result, 'tool_secbackup'));
             return $result;

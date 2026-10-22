@@ -170,7 +170,7 @@ final class runner {
      *
      * The caller holds the lock "step" of tool_secbackup_run while the step runs; the run is read again from the table
      * first, so a copy that is stale does no harm. A step of the task leaves a run alone while the command line holds it
-     * (cli_lease).
+     * (cli_lease), and answers leased.
      *
      * Every failure is bounded. A reason stops the run; a busy service makes it wait as long as the service asks; any other
      * error makes it wait RETRY_AFTER seconds (or, past the end of its window in a stage that makes chunks, for its next
@@ -181,7 +181,7 @@ final class runner {
      *
      * @param run_record $run The run; it is read again from the table.
      * @param int $budgetseconds Seconds that the step may take (the stage of the database takes what it needs).
-     * @return string continue, paused, done or aborted.
+     * @return string continue, paused, done or aborted; leased for a step of the task on a run that the command line holds.
      * @throws \Throwable Only when a failure could not be recorded; the error is made again from its class and code, so that
      *     its trace holds none of the objects of the step.
      */
@@ -217,7 +217,7 @@ final class runner {
         if ($this->seams['windows'] && cli_lease::held($run->id(), $now)) {
             // The command line drives the run, without the windows: the task leaves it alone while the lease holds, also in the
             // waits of the command line, which releases the lock of the steps (cli_lease).
-            return 'paused';
+            return 'leased';
         }
         // First of all, also for a step that only finds that the run waits: Moodle's cleanup of its temporary folder must not
         // take the files of the run.

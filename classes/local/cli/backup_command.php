@@ -70,6 +70,9 @@ final class backup_command {
     /** @var callable|null The watch of the starter; null for the one of this server. */
     private $verdict;
 
+    /** @var cli_lease The lease of this command on the run that it drives. */
+    private cli_lease $lease;
+
     /**
      * Constructor.
      *
@@ -78,19 +81,22 @@ final class backup_command {
      * @param callable|null $sleep Waits some seconds; null for sleep().
      * @param callable|null $verdict The watch of the starter, as for starter::start_cli(); null for the one of this server.
      * @param int $lockwait Seconds that one ask for the lock of the steps waits.
+     * @param cli_lease|null $lease The lease of this command; null for a new one.
      */
     public function __construct(
         ?runner $runner = null,
         ?callable $clock = null,
         ?callable $sleep = null,
         ?callable $verdict = null,
-        int $lockwait = self::LOCK_WAIT
+        int $lockwait = self::LOCK_WAIT,
+        ?cli_lease $lease = null
     ) {
         $this->runner = $runner;
         $this->lockwait = $lockwait;
         $this->clock = $clock ?? static fn(): int => time();
         $this->sleep = $sleep ?? static fn(int $seconds) => sleep($seconds);
         $this->verdict = $verdict;
+        $this->lease = $lease ?? new cli_lease();
     }
 
     /**
@@ -135,7 +141,7 @@ final class backup_command {
         try {
             while (true) {
                 // The task leaves the run to the command (cli_lease), also while the command waits for the lock.
-                cli_lease::renew($run->id(), ($this->clock)());
+                $this->lease->renew($run->id(), ($this->clock)());
                 $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', $this->lockwait);
                 if (!$lock) {
                     // The task (or another server) runs a step: the command goes on after it, from what it committed.
@@ -151,9 +157,13 @@ final class backup_command {
                     $write(get_string('cli_backup_error', 'tool_secbackup', $e->getMessage()));
                     return self::EXIT_FAILED;
                 } finally {
-                    // A step can take longer than the lease: it is renewed before the lock is released.
-                    cli_lease::renew($run->id(), ($this->clock)());
-                    $lock->release();
+                    try {
+                        // A step can take longer than the lease: it is renewed before the lock is released.
+                        $this->lease->renew($run->id(), ($this->clock)());
+                    } finally {
+                        // Also when the renewal fails: the lock is never kept until the process ends.
+                        $lock->release();
+                    }
                 }
                 $end = $this->outcome($run, $result, $write);
                 if ($end !== null) {
@@ -173,7 +183,7 @@ final class backup_command {
             }
         } finally {
             // The task goes on with the run at once when the command ends without finishing it.
-            cli_lease::release();
+            $this->lease->release();
         }
     }
 
@@ -187,7 +197,7 @@ final class backup_command {
     private function wait(run_record $run, int $seconds): void {
         while ($seconds > 0) {
             $slice = min($seconds, cli_lease::RENEW_EVERY);
-            cli_lease::renew($run->id(), ($this->clock)());
+            $this->lease->renew($run->id(), ($this->clock)());
             ($this->sleep)($slice);
             $seconds -= $slice;
         }

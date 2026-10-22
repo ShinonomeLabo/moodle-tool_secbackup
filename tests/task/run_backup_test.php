@@ -112,6 +112,15 @@ final class run_backup_test extends \advanced_testcase {
         $this->assertSame($this->fixture->time + 7200, (int) self::queued()[1]->nextruntime);
     }
 
+    public function test_a_run_that_the_command_line_drives_is_left_to_it_and_looked_at_again_in_five_minutes(): void {
+        run_record::create('manual', $this->fixture->time);
+        $step = fn(run_record $r, int $budget): string => $this->answer($budget, 'leased');
+        $this->assertSame('leased', (new run_backup())->step_with($step, $this->fixture->clock(), $this->writer()));
+        // The log of the task says why the run did not move.
+        $this->assertSame([get_string('task_run_backup_leased', 'tool_secbackup')], $this->lines);
+        $this->assertSame($this->fixture->time + 300, (int) self::queued()[0]->nextruntime);
+    }
+
     public function test_a_run_that_ended_is_not_queued_again(): void {
         foreach (['done', 'aborted'] as $outcome) {
             run_record::create('manual', $this->fixture->time);

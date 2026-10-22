@@ -25,14 +25,19 @@ namespace tool_secbackup\local\backup;
  * renews the lease before and after each of its steps and at least every RENEW_EVERY seconds while it waits, and releases it
  * when it ends; when it is killed, the lease lapses within LENGTH seconds and the task goes on with the run, with its rules.
  *
- * The lease is a setting of the plugin, "clilease": the ID of the run and the time when the lease ends. It is read from the
- * table, since a cron process may hold a copy of the settings from before the last renewal.
+ * Each command holds a lease of its own, named by a random token: a second command on the same run (a second cron entry, or
+ * a server that does not hold the files of the run) neither takes the lease while the first holds it nor removes it when it
+ * ends. The value is read and then written, which two commands can interleave: the loser of such a race leaves a lease that
+ * lapses within LENGTH seconds.
+ *
+ * The lease is a setting of the plugin, "clilease": the ID of the run, the time when the lease ends and the token. It is read
+ * from the table, since a cron process may hold a copy of the settings from before the last renewal.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-final class cli_lease {
+class cli_lease {
     /** @var int Seconds between two renewals while the command line waits, at most. */
     public const RENEW_EVERY = runner::RETRY_AFTER;
 
@@ -42,33 +47,62 @@ final class cli_lease {
     /** @var string Name of the setting. */
     private const NAME = 'clilease';
 
+    /** @var string The token of the lease of this command. */
+    private string $token;
+
     /**
-     * Holds a run for the command line, or holds it longer.
+     * Constructor: a lease of its own for a command.
+     */
+    public function __construct() {
+        $this->token = bin2hex(random_bytes(16));
+    }
+
+    /**
+     * Holds a run for this command, or holds it longer. Nothing happens while another command holds the same run.
      *
      * @param int $runid The run.
      * @param int $now The current time.
      */
-    public static function renew(int $runid, int $now): void {
-        set_config(self::NAME, $runid . ':' . ($now + self::LENGTH), 'tool_secbackup');
+    public function renew(int $runid, int $now): void {
+        $stored = self::stored();
+        if ($stored !== null && $stored['token'] !== $this->token && $stored['run'] === $runid && $now < $stored['end']) {
+            return;
+        }
+        set_config(self::NAME, $runid . ':' . ($now + self::LENGTH) . ':' . $this->token, 'tool_secbackup');
     }
 
     /**
-     * Ends the lease: the command line no longer drives a run.
+     * Ends the lease of this command, which no longer drives a run. The lease of another command is left as it is.
      */
-    public static function release(): void {
-        unset_config(self::NAME, 'tool_secbackup');
+    public function release(): void {
+        if ((self::stored()['token'] ?? null) === $this->token) {
+            unset_config(self::NAME, 'tool_secbackup');
+        }
     }
 
     /**
-     * Whether the command line holds a run.
+     * Whether a command holds a run.
      *
      * @param int $runid The run.
      * @param int $now The current time.
      * @return bool
      */
     public static function held(int $runid, int $now): bool {
+        $stored = self::stored();
+        return $stored !== null && $stored['run'] === $runid && $now < $stored['end'];
+    }
+
+    /**
+     * The lease that is stored.
+     *
+     * @return array|null ['run' => ID, 'end' => time, 'token' => token], or null when there is none.
+     */
+    private static function stored(): ?array {
         global $DB;
         $value = (string) $DB->get_field('config_plugins', 'value', ['plugin' => 'tool_secbackup', 'name' => self::NAME]);
-        return preg_match('/^(\d+):(\d+)\z/', $value, $m) === 1 && (int) $m[1] === $runid && $now < (int) $m[2];
+        if (preg_match('/^(\d+):(\d+):([0-9a-f]{32})\z/', $value, $m) !== 1) {
+            return null;
+        }
+        return ['run' => (int) $m[1], 'end' => (int) $m[2], 'token' => $m[3]];
     }
 }

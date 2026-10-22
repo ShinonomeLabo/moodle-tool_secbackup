@@ -457,6 +457,7 @@ $string['task_run_backup'] = 'このサイトのバックアップを進める';
 $string['task_run_backup_aborted'] = 'バックアップを中止しました。連携ツールの状態の画面を確かめてください。';
 $string['task_run_backup_continue'] = 'バックアップは次の段で続けます。';
 $string['task_run_backup_done'] = 'バックアップが完了しました。';
+$string['task_run_backup_leased'] = 'バックアップはコマンドライン (cli/backup.php) が進めています。コマンドが終わるまで、タスクはこのバックアップをコマンドに任せます。';
 $string['task_run_backup_locked'] = 'ほかの処理がバックアップの段を進めています。';
 $string['task_run_backup_none'] = '動いているバックアップはありません。';
 $string['task_run_backup_paused'] = 'バックアップは、次の時間帯か、一時ファイルを持つサーバを待っています。';

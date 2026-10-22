@@ -457,6 +457,7 @@ $string['task_run_backup'] = 'Run the backup of this site';
 $string['task_run_backup_aborted'] = 'The backup was stopped. See the status page of the plugin.';
 $string['task_run_backup_continue'] = 'The backup goes on in the next step.';
 $string['task_run_backup_done'] = 'The backup is complete.';
+$string['task_run_backup_leased'] = 'The command line (cli/backup.php) drives the backup: the task leaves it to the command until the command ends.';
 $string['task_run_backup_locked'] = 'Another process is running a step of the backup.';
 $string['task_run_backup_none'] = 'No backup is running.';
 $string['task_run_backup_paused'] = 'The backup waits for its next backup window, or for the server that holds its temporary files.';

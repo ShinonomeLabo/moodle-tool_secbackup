@@ -547,9 +547,51 @@ final class backup_command_test extends \advanced_testcase {
         });
         $this->assertTrue($failed);
         $this->assertSame(0, $code, implode("\n", $lines));
-        $this->assertSame('paused', $results[0]);
+        $this->assertSame('leased', $results[0]);
         $this->assertSame('completed', run_record::recent(1)[0]->status());
         $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+    }
+
+    public function test_the_lock_of_the_steps_is_released_when_the_lease_cannot_be_renewed_after_a_step(): void {
+        global $CFG;
+        $CFG->lock_factory = '\core\lock\file_lock_factory';
+        // The database goes away after the first step: the renewal of the lease fails.
+        $lease = new class extends cli_lease {
+            /** @var int Renewals so far. */
+            public int $renewals = 0;
+
+            /**
+             * Fails at the second renewal, the one after the first step.
+             *
+             * @param int $runid The run.
+             * @param int $now The current time.
+             */
+            public function renew(int $runid, int $now): void {
+                if (++$this->renewals === 2) {
+                    throw new \dml_write_exception('The database went away.');
+                }
+                parent::renew($runid, $now);
+            }
+        };
+        [$runner] = $this->two_runners();
+        $command = new backup_command(
+            $runner,
+            $this->fixture->clock(),
+            static fn(int $s) => null,
+            static fn(): ?string => null,
+            0,
+            $lease
+        );
+        try {
+            $command->run(true, true, static fn(string $line) => null);
+            $this->fail('No exception');
+        } catch (\dml_write_exception $e) {
+            $this->assertSame(2, $lease->renewals);
+        }
+        // Another process gets the lock at once: the command did not keep it.
+        $lock = \core\lock\lock_config::get_lock_factory('tool_secbackup_run')->get_lock('step', 0);
+        $this->assertNotFalse($lock);
+        $lock->release();
     }
 
     public function test_a_refusal_for_the_number_of_backups_says_when_one_can_start_again(): void {
