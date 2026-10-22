@@ -46,6 +46,8 @@ jobs:
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.4'
+          # curl and sodium: the tests of the scripts of the staging end-to-end test.
+          extensions: curl, sodium
           coverage: none
 
       - name: Write the pattern list from the secret
@@ -104,6 +106,13 @@ jobs:
         run: |
           php .dev/infection/tests/run.php
           php .dev/infection/shards.php check
+
+      # The staging end-to-end test runs by hand against the staging service (.dev/e2e/README.md). The parts of its scripts
+      # that need neither Moodle nor the service (the test endpoints against a fake one, the checks and the summary) are
+      # tested on every run.
+      - name: Test the scripts of the staging end-to-end test
+        if: ${{ !cancelled() }}
+        run: php .dev/e2e/tests/run.php
 
   inventory:
     name: UI inventory
