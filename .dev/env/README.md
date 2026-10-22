@@ -30,6 +30,19 @@ Web ports: 4.5 = 18045, 5.0 = 18050, 5.1 = 18051, 5.2 = 18052, 5.3 = 18053 (admi
 Users are named `secbk_<time>_<n>` and courses `secbk-<time>-<n>`. A second run does nothing
 unless `--force` is given.
 
+    .dev/env/data.sh 503 pgsql S --plugin-data --files-gb=2
+
+Two options add to the dummy courses, also on a site that has them already (no `--force` needed):
+
+- `--plugin-data`: an activity or a block of each extra plugin of the staging end-to-end test (`.dev/e2e/plugins.json`) that
+  the site has installed, with data in it (attendance sessions, an item of the sharing cart, a questionnaire with answers,
+  videos, points), in every dummy course.
+- `--files-gb=<number>`: files of random content, in a folder "Bulk files" in each course, until the folder `filedir` holds
+  that many GB (10^9 bytes) in total. Of the files it adds, 70 % have 64 KiB to 1 MiB, 25 % 1 to 4 MiB and 5 % 4 to 64 MiB.
+
+`.dev/e2e/check-data.php --files-gb=<number>` checks the result: the total within 5 %, a file larger than 4 MiB, and rows in
+the main tables of each extra plugin.
+
 ## Development settings in config.php
 
 `.dev/env/devconfig.sh 503` adds a block to the `config.php` of the development site of that Moodle version (once; a second run

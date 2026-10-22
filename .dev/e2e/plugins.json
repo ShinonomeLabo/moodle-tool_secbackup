@@ -1,0 +1,50 @@
+[
+    {
+        "component": "mod_attendance",
+        "dir": "mod/attendance",
+        "repo": "https://github.com/danmarsden/moodle-mod_attendance.git",
+        "commit": "b0694031d8c15f5da14d16e6b300550fdd2746be"
+    },
+    {
+        "component": "block_autoattend",
+        "dir": "blocks/autoattend",
+        "repo": "https://github.com/moodle-fumihax/block_autoattend.git",
+        "commit": "77e55a4a63781b9ba6b319dc7e515bea42cbee0e"
+    },
+    {
+        "component": "block_autoattend",
+        "dir": "blocks/autoattend/jbxl",
+        "repo": "https://github.com/JunkBox-Library/jbxl-php.git",
+        "commit": "d30962f4be17ecd6238f26a63199f6e138a88fd6"
+    },
+    {
+        "component": "mod_autoattendmod",
+        "dir": "mod/autoattendmod",
+        "repo": "https://github.com/moodle-fumihax/mod_autoattendmod.git",
+        "commit": "de5c32f0903596b9354ca10e14f34af572ae9594"
+    },
+    {
+        "component": "block_sharing_cart",
+        "dir": "blocks/sharing_cart",
+        "repo": "https://github.com/praxisdigital/moodle-block_sharing_cart.git",
+        "commit": "5445f7b65247871c3dc6e725aa0adebd11f8af3f"
+    },
+    {
+        "component": "mod_videoassessment",
+        "dir": "mod/videoassessment",
+        "repo": "https://github.com/BM373/moodle-mod_videoassessment.git",
+        "commit": "b68f216d4e187fcb50cd838d2b2770b35324b019"
+    },
+    {
+        "component": "mod_questionnaire",
+        "dir": "mod/questionnaire",
+        "repo": "https://github.com/PoetOS/moodle-mod_questionnaire.git",
+        "commit": "e9f3409ba11469c075a68b2d99aa33176be3e138"
+    },
+    {
+        "component": "block_xp",
+        "dir": "blocks/xp",
+        "repo": "https://github.com/FMCorz/moodle-block_xp.git",
+        "commit": "1cd5f40f5f975984d9c28e5b6a0bb42a64fd7758"
+    }
+]
