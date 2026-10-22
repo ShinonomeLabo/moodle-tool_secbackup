@@ -29,14 +29,16 @@
  * For each site the table shows the Moodle it was built with and whether its run had the official list of the files of that
  * build at the service (moodle of result.json), the waits of its runs that no failed step comes before, but in the stage of
  * the receipt (the requests that the service answered as busy, and the sends to S3 that are tried again), and its failed
- * steps (retries), and its minutes. For the scenario concurrent it says how long the runs of the ten sites
- * ran together, from the latest start to the earliest end of their completed runs by the times of the service, and how late
- * the latest site started (numbers.start_late).
+ * steps (retries), and its minutes. For the scenario concurrent it says how long the runs of the ten sites ran together,
+ * from the latest start to the earliest end of the last run of each site by the times of the service (started_at, and
+ * completed_at or failed_at; created_at and updated_at stand in for them when the service did not give them, which is a
+ * problem of the site, since updated_at moves on with writes after the end), and how late the latest site started
+ * (numbers.start_late).
  *
  * It fails (exit 1) when there is no result at all, when the amount sent is over the limit, when a result did not pass or is
  * missing, when the inspection of a site is missing, failed (an error such as lock_read_failed or too_many_objects), or
  * shows an object that is not locked in COMPLIANCE mode (compliance false, or missing, expired or gone keys), when the amount
- * of a site is not known, and when the runs of concurrent never ran together or a completed one has no times. The scenario
+ * of a site is not known, and when the runs of concurrent never ran together or one has no times of its own. The scenario
  * data-only, which does not reach the service, has no inspection. Notes, which do not fail it: the sites that sent the code
  * of Moodle because the service has no official list of its build, and the sites of concurrent that started late.
  * Exit 2: wrong usage.
@@ -129,7 +131,7 @@ $failures = [];
 $notes = [];
 // The sites that sent the code of Moodle, by the build that the service has no official list of.
 $codesent = [];
-// The sites of concurrent: how many, the start and the end of their completed runs, and how late each started.
+// The sites of concurrent: how many, the start and the end of their last runs, and how late each started.
 $concurrent = 0;
 $together = [];
 $lates = [];
@@ -217,17 +219,22 @@ foreach ($sites as $site) {
                 $notes[] = "concurrent $name: started $late s after the start of the ten sites";
             }
         }
-        $completed = null;
-        foreach (is_array($inspection['runs'] ?? null) && !isset($inspection['error']) ? $inspection['runs'] : [] as $run) {
-            if (is_array($run) && ($run['status'] ?? null) === 'completed') {
-                $completed = $run;
+        // The last run of the site: from its start to its completion or its failure.
+        $runlist = is_array($inspection['runs'] ?? null) && !isset($inspection['error']) ? $inspection['runs'] : [];
+        $last = $runlist ? end($runlist) : null;
+        if (is_array($last)) {
+            $from = secbk_e2e_time($last['started_at'] ?? null);
+            $to = secbk_e2e_time($last['completed_at'] ?? null) ?? secbk_e2e_time($last['failed_at'] ?? null);
+            if ($from === null && ($from = secbk_e2e_time($last['created_at'] ?? null)) !== null) {
+                $problems[] = 'the service gave no started_at of its last run: created_at is used instead';
             }
-        }
-        if ($completed !== null) {
-            $from = secbk_e2e_time($completed['created_at'] ?? null);
-            $to = secbk_e2e_time($completed['updated_at'] ?? null);
+            if ($to === null && ($to = secbk_e2e_time($last['updated_at'] ?? null)) !== null) {
+                $problems[] = 'the service gave neither completed_at nor failed_at of its last run: updated_at is used instead,'
+                    . ' which later writes move on';
+            }
             if ($from === null || $to === null) {
-                $problems[] = 'the service gave no times of a completed run, so the time that the ten ran together is not known';
+                $problems[] = 'the service gave no time of the start or of the end of its last run, so the time that the ten'
+                    . ' ran together is not known';
             } else {
                 $together[] = [$from, $to];
             }

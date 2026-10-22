@@ -131,11 +131,12 @@ problem, the line of the total says for how many sites, and the limit is judged 
 
 The table also shows the Moodle of each site (its release, and `list used` or `code sent`), `Waits without a failed step` and
 `Failed steps` (`retries` above; a line under the table says what the waits count). For `concurrent` a line says how long the
-runs of the ten sites ran together, from the latest start to the earliest end of their completed runs by the times that the
-service gives (`created_at` and `updated_at` of the run; the service gives no other time of its end), and how late the latest
-site started (`numbers.start_late`); runs that never ran together fail the summary. Notes, which do not fail it: the sites
-that sent the code of Moodle because the service has no official list of the files of their build (see "The Moodle of the
-sites"), and the sites of `concurrent` that started after the time of the ten.
+runs of the ten sites ran together, from the latest start to the earliest end of the last run of each site by the times that
+the service gives: `started_at`, and `completed_at` or `failed_at`. When the service did not give them, `created_at` and
+`updated_at` stand in for them, and the site has that problem (`updated_at` moves on with writes after the end). The line
+also says how late the latest site started (`numbers.start_late`); runs that never ran together fail the summary. Notes,
+which do not fail it: the sites that sent the code of Moodle because the service has no official list of the files of their
+build (see "The Moodle of the sites"), and the sites of `concurrent` that started after the time of the ten.
 
 ## The workflow
 

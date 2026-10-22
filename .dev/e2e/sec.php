@@ -232,6 +232,10 @@ function secbk_e2e_inspection(mixed $data): ?array {
             'failure_code' => secbk_e2e_word($run['failure_code'] ?? null),
             'requested_bytes' => secbk_e2e_int($run['requested_bytes'] ?? null),
             'has_receipt' => ($run['has_receipt'] ?? null) === true,
+            // When the run began, completed and failed; updated_at also moves with writes after the end.
+            'started_at' => secbk_e2e_word($run['started_at'] ?? null, $time),
+            'completed_at' => secbk_e2e_word($run['completed_at'] ?? null, $time),
+            'failed_at' => secbk_e2e_word($run['failed_at'] ?? null, $time),
             'created_at' => secbk_e2e_word($run['created_at'] ?? null, $time),
             'updated_at' => secbk_e2e_word($run['updated_at'] ?? null, $time),
         ];

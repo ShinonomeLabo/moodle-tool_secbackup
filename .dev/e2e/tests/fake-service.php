@@ -115,11 +115,14 @@ if ($method === 'POST' && $path === "$prefix/reset") {
         'url' => 'https://SECBK-FAKE-MARKER.example/objects',
         'runs' => [
             ['uuid' => 'aaaaaaaa-2222-4333-8444-555555555555', 'status' => 'failed', 'failure_code' => 'server_busy',
-                'requested_bytes' => 4000, 'has_receipt' => false, 'created_at' => '2026-10-23T01:00:00+00:00',
+                'requested_bytes' => 4000, 'has_receipt' => false, 'started_at' => '2026-10-23T01:00:00+00:00',
+                'completed_at' => null, 'failed_at' => '2026-10-23T01:09:00+00:00', 'created_at' => '2026-10-23T01:00:00+00:00',
                 'updated_at' => '2026-10-23T01:10:00+00:00', 'url' => 'https://SECBK-FAKE-MARKER.example/run'],
+            // A time that is not of its form (here a URL) is not kept.
             ['uuid' => 'bbbbbbbb-2222-4333-8444-555555555555', 'status' => 'completed', 'failure_code' => null,
-                'requested_bytes' => 3000, 'has_receipt' => true, 'created_at' => '2026-10-23T01:30:00+00:00',
-                'updated_at' => '2026-10-23T01:40:00+00:00'],
+                'requested_bytes' => 3000, 'has_receipt' => true, 'started_at' => '2026-10-23T01:31:00+00:00',
+                'completed_at' => '2026-10-23T01:39:00+00:00', 'failed_at' => 'https://SECBK-FAKE-MARKER.example/failed',
+                'created_at' => '2026-10-23T01:30:00+00:00', 'updated_at' => '2026-10-23T01:40:00+00:00'],
         ],
         'objects' => [
             'count' => 12,

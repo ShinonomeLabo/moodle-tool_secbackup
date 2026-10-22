@@ -139,7 +139,8 @@ function secbk_e2e_inspection(array $changes = []): array {
         'site_uuid' => '11111111-2222-4333-8444-555555555555',
         'runs' => [
             ['uuid' => 'bbbbbbbb-2222-4333-8444-555555555555', 'status' => 'completed', 'failure_code' => null,
-                'requested_bytes' => 3000, 'has_receipt' => true, 'created_at' => '2026-10-23T01:30:00+00:00',
+                'requested_bytes' => 3000, 'has_receipt' => true, 'started_at' => '2026-10-23T01:30:00+00:00',
+                'completed_at' => '2026-10-23T01:40:00+00:00', 'failed_at' => null, 'created_at' => '2026-10-23T01:30:00+00:00',
                 'updated_at' => '2026-10-23T01:40:00+00:00'],
         ],
         'objects' => [
@@ -295,6 +296,14 @@ secbk_e2e_expect('inspect writes the answer', $exit === 0 && is_array($kept) && 
     && ($kept['objects']['storage_classes'] ?? null) === ['INTELLIGENT_TIERING' => 12], "exit $exit: $output");
 secbk_e2e_expect('inspect drops the fields that it does not know', !str_contains((string) @file_get_contents($file), 'MARKER'),
     (string) @file_get_contents($file));
+secbk_e2e_expect('inspect keeps the times of the start, the completion and the failure of each run, and drops one that is not'
+    . ' a time', ($kept['runs'][0]['started_at'] ?? null) === '2026-10-23T01:00:00+00:00'
+    && array_key_exists('completed_at', $kept['runs'][0] ?? []) && $kept['runs'][0]['completed_at'] === null
+    && ($kept['runs'][0]['failed_at'] ?? null) === '2026-10-23T01:09:00+00:00'
+    && ($kept['runs'][1]['started_at'] ?? null) === '2026-10-23T01:31:00+00:00'
+    && ($kept['runs'][1]['completed_at'] ?? null) === '2026-10-23T01:39:00+00:00'
+    && array_key_exists('failed_at', $kept['runs'][1] ?? []) && $kept['runs'][1]['failed_at'] === null,
+    json_encode($kept['runs'] ?? null));
 secbk_e2e_expect('inspect prints numbers, not the site', str_contains($output, '2 runs') && str_contains($output, '5000 bytes')
     && !str_contains($output, '11111111-2222') && !str_contains($output, $base), $output);
 $errors = ['0503' => [503, 'lock_read_failed'], '0413' => [413, 'too_many_objects'], '0404' => [404, 'http_404']];
@@ -445,9 +454,13 @@ secbk_e2e_expect('the sites that sent the code of Moodle are one note, which doe
 
 // concurrent: how long the runs of the ten sites ran together (from the latest start to the earliest end, by the times of
 // the service), and how late the latest site started. Runs that never ran together fail; a late site is a note.
-$concurrentrun = static fn(string $from, string $to): array => ['runs' => [['uuid' => 'bbbbbbbb-2222-4333-8444-555555555555',
-    'status' => 'completed', 'failure_code' => null, 'requested_bytes' => 3000, 'has_receipt' => true,
-    'created_at' => "2026-10-23T$from+00:00", 'updated_at' => "2026-10-23T$to+00:00"]]];
+// The times of the start and of the end of the run count; created_at and updated_at are other times here, so that a summary
+// that used them would show other numbers.
+$concurrentrun = static fn(string $from, string $to, array $changes = []): array => ['runs' => [array_merge([
+    'uuid' => 'bbbbbbbb-2222-4333-8444-555555555555', 'status' => 'completed', 'failure_code' => null,
+    'requested_bytes' => 3000, 'has_receipt' => true, 'started_at' => "2026-10-23T$from+00:00",
+    'completed_at' => "2026-10-23T$to+00:00", 'failed_at' => null, 'created_at' => '2026-10-23T00:00:00+00:00',
+    'updated_at' => '2026-10-23T02:00:00+00:00'], $changes)]];
 $folder = "$work/results-together";
 secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent', 'numbers' => ['start_late' => 0]],
     $concurrentrun('01:00:00', '01:20:00'));
@@ -467,13 +480,35 @@ secbk_e2e_site($folder, 'r1-c04', ['scenario' => 'concurrent', 'numbers' => ['st
 secbk_e2e_expect('concurrent: runs that never ran together fail', $exit === 1
     && str_contains($output, 'the runs of the 4 sites of concurrent never ran together: the latest started at 01:16:00, after'
     . ' the earliest ended at 01:15:00 (UTC)'), "exit $exit: $output");
+// A run that failed ends at failed_at.
+$folder = "$work/results-together-failed";
+secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:20:00'));
+secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], $concurrentrun('01:05:00', '01:00:00',
+    ['status' => 'failed', 'failure_code' => 'upload_failed', 'completed_at' => null, 'failed_at' => '2026-10-23T01:12:00+00:00']));
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('concurrent: a run that failed ends at failed_at', str_contains($output, 'Concurrent: the runs of the 2 sites'
+    . ' ran together for 420 s (01:05:00 to 01:12:00 UTC)'), "exit $exit: $output");
+// Without started_at, completed_at and failed_at, created_at and updated_at stand in for them, and the site has that problem:
+// updated_at moves on with writes after the end.
+$folder = "$work/results-together-substitute";
+secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:20:00'));
+secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:00:00',
+    ['started_at' => null, 'completed_at' => null, 'created_at' => '2026-10-23T01:05:00+00:00',
+        'updated_at' => '2026-10-23T01:15:00+00:00']));
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('concurrent: the times that stand in for missing ones are used, and said', $exit === 1
+    && str_contains($output, 'ran together for 600 s (01:05:00 to 01:15:00 UTC)')
+    && str_contains($output, 'concurrent r1-c02: the service gave no started_at of its last run: created_at is used instead')
+    && str_contains($output, 'concurrent r1-c02: the service gave neither completed_at nor failed_at of its last run: updated_at'
+    . ' is used instead, which later writes move on'), "exit $exit: $output");
 $folder = "$work/results-together-unknown";
 secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:20:00'));
-secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], ['runs' => [['uuid' => null, 'status' => 'completed',
-    'failure_code' => null, 'requested_bytes' => 3000, 'has_receipt' => true, 'created_at' => null, 'updated_at' => null]]]);
+secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:00:00', ['started_at' => null,
+    'completed_at' => null, 'created_at' => null, 'updated_at' => null]));
 [$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
 secbk_e2e_expect('concurrent: a site whose run has no times fails, since the overlap cannot be known', $exit === 1
-    && str_contains($output, 'concurrent r1-c02: the service gave no times of a completed run'), "exit $exit: $output");
+    && str_contains($output, 'concurrent r1-c02: the service gave no time of the start or of the end of its last run'),
+    "exit $exit: $output");
 
 // The waits of the runs that no failed step comes before, but in the stage of the receipt (the requests that the service
 // answered as busy are among them, and the sends to S3 that are tried again), and the failed steps, in a column of their own.
