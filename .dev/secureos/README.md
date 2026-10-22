@@ -17,8 +17,9 @@ up to three times, a minute apart, and the source package of PHP is read from th
 only (a run once failed on a mirror of `epel-source` with a bad certificate, which that package does not need), on the
 primary server of the distribution (`dl.rockylinux.org`, `vault.almalinux.org`) with its metadata read again at each attempt:
 the mirrors of a source repository can lag hours behind the binary one after an update (runs failed on a mirror that listed
-no source package of the PHP just installed). The package is checked all the same: the signature of the distribution and the
-version of the installed PHP. Moodle is 4.5 on
+no source package of the PHP just installed). The package asked for is the one the installed PHP was built from (the
+`SOURCERPM` of `php-common`), not the newest: the binary comes from a mirror, which can also be behind the primary server.
+The package is checked all the same: the signature of the distribution and the version of the installed PHP. Moodle is 4.5 on
 the older version of each pair, and on the newer one the newest
 5.x stable branch whose `environment.xml` accepts the PHP and PostgreSQL of the distribution (so 5.1 and later, which serve
 from `public/`, are covered too).
