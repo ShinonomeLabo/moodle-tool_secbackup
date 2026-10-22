@@ -41,7 +41,15 @@ Two options add to the dummy courses, also on a site that has them already (no `
   that many GB (10^9 bytes) in total. Of the files it adds, 70 % have 64 KiB to 1 MiB, 25 % 1 to 4 MiB and 5 % 4 to 64 MiB.
 
 `.dev/e2e/check-data.php --files-gb=<number>` checks the result: the total within 5 %, a file larger than 4 MiB, and rows in
-the main tables of each extra plugin.
+the main tables of each extra plugin. It wants every plugin of `plugins.json` installed, except the ones left out with
+`--skip`; give it the same `--skip` as `.dev/e2e/install-plugins.sh`, which puts the plugins:
+
+    .dev/e2e/install-plugins.sh <Moodle folder> --skip mod_videoassessment
+    php admin/tool/secbackup/.dev/e2e/check-data.php --files-gb=0.2 --skip mod_videoassessment
+
+Both scripts take `--skip` more than once (`--skip a --skip=b`) and with a list (`--skip=a,b`). block_autoattend and
+mod_autoattendmod are left out together (`--skip=block_autoattend,mod_autoattendmod`): the activity needs the block in its
+course and the library of the block.
 
 ## Development settings in config.php
 

@@ -26,7 +26,8 @@
  *    skip; every other plugin of the list has to be there, so that a site without the extra plugins cannot pass.
  * It ends with 0 when every check passes, and with 1 otherwise.
  *
- * Usage: php <plugin>/.dev/e2e/check-data.php --files-gb=<number> [--skip=<component>[,<component>...]]
+ * Usage: php <plugin>/.dev/e2e/check-data.php --files-gb=<number> [--skip <component>[,<component>...]]...
+ * --skip takes the same forms as in install-plugins.sh: more than once (--skip a --skip=b) and lists (--skip=a,b).
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -39,9 +40,30 @@ define('CLI_SCRIPT', true);
 require(__DIR__ . '/../../../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
 
-[$options, $unrecognised] = cli_get_params(['files-gb' => null, 'skip' => '', 'help' => false], ['h' => 'help']);
+// cli_get_params() keeps only the last value of an option and takes no value after a space, so the values of --skip are
+// collected here, in every form, and the rest of the arguments is left to cli_get_params(). Like cli_get_params(), nothing
+// after "--" is read.
+$skip = [];
+$arguments = [];
+$given = $_SERVER['argv'] ?? [];
+for ($i = 0; $i < count($given); $i++) {
+    if ($i > 0 && $given[$i] === '--') {
+        $arguments = array_merge($arguments, array_slice($given, $i));
+        break;
+    } else if ($i > 0 && $given[$i] === '--skip' && isset($given[$i + 1])) {
+        $skip[] = $given[++$i];
+    } else if ($i > 0 && str_starts_with($given[$i], '--skip=')) {
+        $skip[] = substr($given[$i], strlen('--skip='));
+    } else {
+        $arguments[] = $given[$i];
+    }
+}
+$_SERVER['argv'] = $arguments;
+$skip = array_values(array_filter(array_map('trim', explode(',', implode(',', $skip)))));
+
+[$options, $unrecognised] = cli_get_params(['files-gb' => null, 'help' => false], ['h' => 'help']);
 if ($unrecognised || $options['help'] || !is_numeric($options['files-gb']) || (float) $options['files-gb'] <= 0) {
-    cli_writeln('Usage: php .dev/e2e/check-data.php --files-gb=<number> [--skip=<component>[,<component>...]]');
+    cli_writeln('Usage: php .dev/e2e/check-data.php --files-gb=<number> [--skip <component>[,<component>...]]...');
     exit($options['help'] ? 0 : 1);
 }
 
@@ -124,7 +146,6 @@ if (!is_array($rows) || !$rows) {
     cli_error('plugins.json cannot be read.');
 }
 $components = array_values(array_unique(array_column($rows, 'component')));
-$skip = array_values(array_filter(array_map('trim', explode(',', (string) $options['skip']))));
 foreach ($skip as $component) {
     if (!in_array($component, $components, true)) {
         cli_error("--skip names $component, which plugins.json does not list.");
