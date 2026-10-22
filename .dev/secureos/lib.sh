@@ -23,12 +23,14 @@ free_port() {
 
 # Creates and starts the VM $1 from the Lima template $3, with the guest's port 80 on the host port $2. A machine sometimes
 # does not come up in time (the image boots slowly while another VM starts), so a failed start is tried once more with a
-# new machine. A machine of the same name is replaced: the callers check before that this is meant.
+# new machine. A machine of the same name is replaced: the callers check before that this is meant. The machine has no
+# containerd (--containerd=none): the tests do not use it, and the start of an almalinux-10 machine waited for its
+# installation until Lima gave up, twice in a row in two runs.
 start_vm() {
     local name="$1" port="$2" template="$3" attempt
     for attempt in 1 2; do
         limactl delete -f "$name" > /dev/null 2>&1 || true
-        if limactl create --tty=false --name="$name" --cpus=2 --memory=4 --disk=20 --mount-none \
+        if limactl create --tty=false --name="$name" --cpus=2 --memory=4 --disk=20 --mount-none --containerd=none \
             --set ".portForwards=[{\"guestPort\":80,\"hostPort\":$port,\"hostIP\":\"127.0.0.1\"}]" "template:$template" \
             && limactl start --tty=false "$name"; then
             return 0

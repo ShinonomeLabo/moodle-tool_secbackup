@@ -107,6 +107,15 @@ final class network_fakes {
     }
 
     /**
+     * A guard for the storage, whose answers all pass; it pins 3.5.152.9 (inside the range list's S3 prefix 3.5.152.0/21).
+     *
+     * @return dns_guard
+     */
+    public static function passing_s3_guard(): dns_guard {
+        return self::guard(['3.5.152.1'], ['3.5.152.2'], ['3.5.152.9', '3.5.152.8']);
+    }
+
+    /**
      * Turns Moodle's HTTP security list off. With rules, its checks look host names up on the network.
      * Call it from a test that resets the site after the test.
      */
@@ -129,10 +138,11 @@ final class network_fakes {
      *
      * @param callable $handler Guzzle handler, such as fake_service::handler().
      * @param int $now This server's clock (UNIX time).
+     * @param developer_settings|null $settings Developer settings; null for none.
      * @return client
      */
-    public static function client(callable $handler, int $now): client {
-        $settings = developer_settings::from_value(null);
+    public static function client(callable $handler, int $now, ?developer_settings $settings = null): client {
+        $settings ??= developer_settings::from_value(null);
         $transport = new transport($settings, self::passing_guard(), $handler);
         return new client(
             $transport,

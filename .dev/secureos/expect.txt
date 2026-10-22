@@ -256,3 +256,30 @@ confined-cli-control advice none:none none:none
 confined-cli-control mac unconfined unconfined
 confined-cli-control netdenials none none
 confined-cli-control phpwarnings present present
+
+# A whole backup run (state run, run-check.sh): started with the button of the status page and run by the cron of Moodle from
+# the web server, against the fake backup service in the VM. The connection URL is not used, so both columns are the same.
+# SELinux (Rocky Linux, AlmaLinux): php-fpm runs as httpd_t. The fake service listens on a port of no special type, which
+# httpd_t may connect to only with httpd_can_network_connect: with it off the connection is denied and logged, and the plugin
+# stops the run with selinux_denied, whose text and advice the status page shows; with it on the run completes.
+run-denied start started started
+run-denied status aborted aborted
+run-denied reason selinux_denied selinux_denied
+run-denied page selinux_denied selinux_denied
+run-denied mac httpd_t httpd_t
+run-denied netdenials present present
+run-denied phpwarnings none none
+run-allowed start started started
+run-allowed status completed completed
+run-allowed reason none none
+run-allowed page completed completed
+run-allowed mac httpd_t httpd_t
+run-allowed netdenials none none
+run-allowed phpwarnings none none
+# AppArmor (Ubuntu 24.04): php-fpm under the php-fpm profile, denied with "audit deny network inet stream," (and inet6). The
+# plugin judges selinux_denied only while SELinux is enforcing, so the denied connection stops the run with
+# network_check_failed, and the status page shows that reason and its advice (the connection diagnostics name AppArmor).
+run-denied@ubuntu24 reason network_check_failed network_check_failed
+run-denied@ubuntu24 page network_check_failed network_check_failed
+run-denied@ubuntu24 mac php-fpm_(enforce) php-fpm_(enforce)
+run-allowed@ubuntu24 mac php-fpm_(enforce) php-fpm_(enforce)

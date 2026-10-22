@@ -61,9 +61,14 @@ final class strings_test extends \advanced_testcase {
 
     public function test_every_string_the_diagnostics_build_exists(): void {
         $ids = [];
-        $checks = ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata'];
+        $checks = ['developer', 'extensions', 'proxy', 'dns', 'connection', 'clock', 'selinux', 'apparmor', 'moodledata',
+            'tempdir', 'load', 'memory', 'database', 'autobackup'];
         foreach ($checks as $check) {
             $ids[] = 'check_' . $check;
+        }
+        // The advice of a value against its limit is named from the check.
+        foreach (['tempdir', 'load', 'memory', 'database'] as $check) {
+            $ids[] = 'diag_' . $check . '_advice';
         }
         foreach (['pass', 'warn', 'fail', 'info', 'unknown'] as $result) {
             $ids[] = 'result_' . $result;

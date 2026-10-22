@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<XMLDB PATH="admin/tool/secbackup/db" VERSION="2026101900" COMMENT="XMLDB file for Moodle admin/tool/secbackup"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="../../../../lib/xmldb/xmldb.xsd"
+>
+  <TABLES>
+    <TABLE NAME="tool_secbackup_runs" COMMENT="One row for each backup run: its stage, progress and counters">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="runuuid" TYPE="char" LENGTH="36" NOTNULL="false" SEQUENCE="false" COMMENT="UUID of the run at the backup service"/>
+        <FIELD NAME="kind" TYPE="char" LENGTH="16" NOTNULL="true" DEFAULT="full" SEQUENCE="false" COMMENT="Kind of backup: full"/>
+        <FIELD NAME="triggeredby" TYPE="char" LENGTH="16" NOTNULL="true" SEQUENCE="false" COMMENT="What started the run: schedule, manual or cli"/>
+        <FIELD NAME="stage" TYPE="char" LENGTH="32" NOTNULL="true" SEQUENCE="false" COMMENT="Current stage of the run"/>
+        <FIELD NAME="status" TYPE="char" LENGTH="16" NOTNULL="true" DEFAULT="active" SEQUENCE="false" COMMENT="active, paused, completed, aborted or refused"/>
+        <FIELD NAME="abortcode" TYPE="char" LENGTH="40" NOTNULL="false" SEQUENCE="false" COMMENT="Why the run was aborted"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timefinished" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false" COMMENT="When the run completed or was aborted"/>
+        <FIELD NAME="nextattempt" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false" COMMENT="When a paused run is tried again"/>
+        <FIELD NAME="windowmisses" TYPE="int" LENGTH="2" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="How many backup windows passed before the run could continue"/>
+        <FIELD NAME="hostname" TYPE="char" LENGTH="255" NOTNULL="false" SEQUENCE="false" COMMENT="Server that started the run"/>
+        <FIELD NAME="progress" TYPE="text" NOTNULL="false" SEQUENCE="false" COMMENT="Progress of the current stage as JSON"/>
+        <FIELD NAME="entriescommitted" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Number of index entries written so far"/>
+        <FIELD NAME="bytesuploaded" TYPE="int" LENGTH="20" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="chunksuploaded" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="estimatedbytes" TYPE="int" LENGTH="20" NOTNULL="false" SEQUENCE="false" COMMENT="Estimated size of the backup in bytes"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="status" UNIQUE="false" FIELDS="status"/>
+        <INDEX NAME="timecreated" UNIQUE="false" FIELDS="timecreated"/>
+      </INDEXES>
+    </TABLE>
+  </TABLES>
+</XMLDB>

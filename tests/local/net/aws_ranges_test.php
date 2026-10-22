@@ -16,6 +16,10 @@
 
 namespace tool_secbackup\local\net;
 
+use tool_secbackup\local\api\instruction;
+use tool_secbackup\local\trust\envelope_exception;
+use tool_secbackup\tests\instruction_factory;
+
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\net\aws_ranges::class)]
 /**
  * Tests for the AWS address ranges.
@@ -25,12 +29,17 @@ namespace tool_secbackup\local\net;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  * @covers     \tool_secbackup\local\net\aws_ranges
  */
-final class aws_ranges_test extends \basic_testcase {
+final class aws_ranges_test extends \advanced_testcase {
     /** @var string[] Five CloudFront prefixes: the fewest that a list may have for a service. */
     private const CLOUDFRONT = ['13.225.0.0/16', '3.165.11.0/24', '0.0.0.0/32', '18.64.0.0/14', '64.252.64.0/18'];
 
     /** @var string[] Five S3 prefixes. */
     private const S3 = ['3.5.152.0/21', '16.15.54.0/23', '52.219.0.0/20', '52.219.16.0/22', '35.72.164.240/28'];
+
+    protected function setUp(): void {
+        parent::setUp();
+        $this->resetAfterTest();
+    }
 
     /**
      * A valid range list, as the array that data/aws-ranges.json decodes to.
@@ -235,5 +244,260 @@ final class aws_ranges_test extends \basic_testcase {
         $this->assertGreaterThan(5, $ranges->count(aws_ranges::SERVICE_S3));
         $this->assertMatchesRegularExpression('/^\d+\z/', $ranges->sync_token());
         $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\z/', $ranges->create_date());
+    }
+
+    public function test_the_region_of_the_bundled_list_is_tokyo(): void {
+        $this->assertSame('ap-northeast-1', aws_ranges::bundled()->s3_region());
+        $this->assertSame('ap-northeast-1', aws_ranges::from_json(self::sample())->s3_region());
+    }
+
+    public function test_the_region_of_a_list_is_read(): void {
+        $this->assertSame('us-east-1', aws_ranges::from_json(self::with_part('s3_region', 'us-east-1'))->s3_region());
+    }
+
+    /**
+     * Regions that are not a region name.
+     *
+     * @return array[]
+     */
+    public static function invalid_regions(): array {
+        return [
+            'a number' => [5],
+            'null' => [null],
+            'empty' => [''],
+            'no number' => ['ap-northeast-'],
+            'two digits' => ['ap-northeast-12'],
+            'capitals' => ['AP-NORTHEAST-1'],
+            'a digit before the region' => ['1ap-northeast-1'],
+            'a final line feed' => ["ap-northeast-1\n"],
+            'a list' => [['ap-northeast-1']],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalid_regions')]
+    /**
+     * A region that is not a region name is refused.
+     *
+     * @dataProvider invalid_regions
+     * @param mixed $region The region.
+     */
+    public function test_an_invalid_region_is_refused(mixed $region): void {
+        $this->expectException(\coding_exception::class);
+        aws_ranges::from_json(self::with_part('s3_region', $region));
+    }
+
+    public function test_repeated_prefixes_are_counted_once(): void {
+        $repeated = ['13.225.0.0/16', '13.225.0.0/16', '3.165.11.0/24', '3.165.11.0/24', '18.64.0.0/14'];
+        try {
+            aws_ranges::from_json(self::with_service('CLOUDFRONT', $repeated));
+            $this->fail('No exception');
+        } catch (\coding_exception $e) {
+            $this->assertStringContainsString('too few prefixes of CLOUDFRONT.', $e->getMessage());
+        }
+        $six = array_merge(self::CLOUDFRONT, [self::CLOUDFRONT[0]]);
+        $this->assertSame(5, aws_ranges::from_json(self::with_service('CLOUDFRONT', $six))->count('CLOUDFRONT'));
+    }
+
+    /**
+     * An aws_ranges instruction for a content.
+     *
+     * @param int $seq Sequence number.
+     * @param string $content The content.
+     * @param array $changes Fields of the body to replace.
+     * @return instruction
+     */
+    private static function instruction(int $seq, string $content, array $changes = []): instruction {
+        return instruction_factory::make('aws_ranges', $seq, array_merge([
+            'sync_token' => '1791766626', 'create_date' => '2026-10-18-00-00-00',
+            'sha256' => hash('sha256', $content), 'size' => strlen($content),
+        ], $changes));
+    }
+
+    public function test_the_bundled_list_is_current_when_nothing_is_stored(): void {
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    public function test_a_stored_list_is_preferred_to_the_bundled_one(): void {
+        $content = self::sample();
+        $this->assertTrue(aws_ranges::is_newer(self::instruction(3, $content)));
+        $this->assertTrue(aws_ranges::apply(self::instruction(3, $content), $content));
+        $this->assertSame('1791766626', aws_ranges::current()->sync_token());
+        $this->assertSame(5, aws_ranges::current()->count('S3'));
+        $this->assertSame(3, aws_ranges::stored_seq());
+        $this->assertSame($content, get_config('tool_secbackup', 'awsranges'));
+    }
+
+    public function test_an_older_or_equal_seq_is_not_newer_and_changes_nothing(): void {
+        $content = self::sample();
+        aws_ranges::apply(self::instruction(3, $content), $content);
+        $other = self::with_part('syncToken', '999');
+        $this->assertFalse(aws_ranges::is_newer(self::instruction(3, $other)));
+        $this->assertFalse(aws_ranges::apply(self::instruction(3, $other), $other));
+        $this->assertFalse(aws_ranges::apply(self::instruction(2, $other), $other));
+        $this->assertSame('1791766626', aws_ranges::current()->sync_token());
+        $this->assertTrue(aws_ranges::is_newer(self::instruction(4, $other)));
+    }
+
+    public function test_a_content_that_differs_from_the_signed_hash_or_size_is_not_stored(): void {
+        $content = self::sample();
+        $other = self::with_part('syncToken', '999');
+        $this->assertFalse(aws_ranges::apply(self::instruction(3, $content), $other));
+        $samesize = str_replace('1791766626', '1791766627', $content);
+        $this->assertSame(strlen($content), strlen($samesize));
+        $this->assertFalse(aws_ranges::apply(self::instruction(3, $content), $samesize));
+        $this->assertFalse(aws_ranges::apply(self::instruction(3, $content, ['size' => strlen($content) + 1]), $content));
+        $this->assertFalse(get_config('tool_secbackup', 'awsranges'));
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    public function test_a_content_that_is_not_a_list_is_refused_even_when_signed(): void {
+        $junk = '{"syncToken":"1"}';
+        try {
+            aws_ranges::apply(self::instruction(3, $junk), $junk);
+            $this->fail('No exception');
+        } catch (envelope_exception $e) {
+            $this->assertSame('instruction_invalid', $e->errorcode);
+        }
+        $this->assertFalse(get_config('tool_secbackup', 'awsranges'));
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    /**
+     * Bodies of an aws_ranges instruction that break a rule.
+     *
+     * @return array[]
+     */
+    public static function invalid_bodies(): array {
+        $good = ['sync_token' => '1791766626', 'create_date' => '2026-10-18-00-00-00', 'sha256' => str_repeat('a', 64),
+            'size' => 100];
+        return [
+            'no token' => [array_diff_key($good, ['sync_token' => 1])],
+            'a token that is a number' => [array_merge($good, ['sync_token' => 5])],
+            'an empty token' => [array_merge($good, ['sync_token' => ''])],
+            'a long token' => [array_merge($good, ['sync_token' => str_repeat('1', 65)])],
+            'a date of another form' => [array_merge($good, ['create_date' => '2026-10-18'])],
+            'a date with a final line feed' => [array_merge($good, ['create_date' => "2026-10-18-00-00-00\n"])],
+            'a date after other text' => [array_merge($good, ['create_date' => 'x2026-10-18-00-00-00'])],
+            'a hash in capitals' => [array_merge($good, ['sha256' => str_repeat('A', 64)])],
+            'a short hash' => [array_merge($good, ['sha256' => str_repeat('a', 63)])],
+            'a long hash' => [array_merge($good, ['sha256' => str_repeat('a', 65)])],
+            'a hash with a final line feed' => [array_merge($good, ['sha256' => str_repeat('a', 64) . "\n"])],
+            'a size of zero' => [array_merge($good, ['size' => 0])],
+            'a size larger than a response' => [array_merge($good, ['size' => 1048577])],
+            'a size as text' => [array_merge($good, ['size' => '100'])],
+            'an extra field' => [array_merge($good, ['extra' => 1])],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalid_bodies')]
+    /**
+     * A body that breaks a rule is refused.
+     *
+     * @dataProvider invalid_bodies
+     * @param array $body Body.
+     */
+    public function test_invalid_bodies_are_refused(array $body): void {
+        $i = instruction_factory::make('aws_ranges', 3, $body);
+        try {
+            aws_ranges::is_newer($i);
+            $this->fail('No exception');
+        } catch (envelope_exception $e) {
+            $this->assertSame('instruction_invalid', $e->errorcode);
+        }
+        $this->expectException(envelope_exception::class);
+        aws_ranges::apply($i, 'x');
+    }
+
+    /**
+     * Bodies at the limits of the rules, which are read.
+     *
+     * @return array[]
+     */
+    public static function limit_bodies(): array {
+        $good = ['sync_token' => '1791766626', 'create_date' => '2026-10-18-00-00-00', 'sha256' => str_repeat('a', 64),
+            'size' => 100];
+        return [
+            'a token of 64 characters' => [array_merge($good, ['sync_token' => str_repeat('1', 64)])],
+            'a size of one byte' => [array_merge($good, ['size' => 1])],
+            'the size of the largest response' => [array_merge($good, ['size' => 1048576])],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('limit_bodies')]
+    /**
+     * A body at the limits of the rules is read.
+     *
+     * @dataProvider limit_bodies
+     * @param array $body Body.
+     */
+    public function test_bodies_at_the_limits_are_read(array $body): void {
+        $this->assertTrue(aws_ranges::is_newer(instruction_factory::make('aws_ranges', 3, $body)));
+    }
+
+    public function test_an_instruction_of_another_kind_is_a_coding_error(): void {
+        $i = instruction_factory::make('settings', 3, instruction_factory::settings_body());
+        $this->expectException(\coding_exception::class);
+        aws_ranges::is_newer($i);
+    }
+
+    public function test_a_stored_list_that_cannot_be_read_is_dropped_and_the_bundled_list_is_used(): void {
+        set_config('endpoint', 'https://app.example.test/api/lms-backup/v1', 'tool_secbackup');
+        set_config('awsranges', 'garbage', 'tool_secbackup');
+        set_config('awsrangesseq', '7', 'tool_secbackup');
+        set_config('awsrangesendpoint', 'https://app.example.test/api/lms-backup/v1', 'tool_secbackup');
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
+        $this->assertSame(0, aws_ranges::stored_seq());
+        foreach (['awsranges', 'awsrangesseq', 'awsrangesendpoint'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
+    }
+
+    public function test_the_sequence_number_of_a_stored_list_that_cannot_be_read_is_0_before_the_list_is_used(): void {
+        set_config('awsranges', 'garbage', 'tool_secbackup');
+        set_config('awsrangesseq', '7', 'tool_secbackup');
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    public function test_a_stored_sequence_number_that_is_not_a_plain_number_is_0(): void {
+        $content = self::sample();
+        aws_ranges::apply(self::instruction(3, $content), $content);
+        set_config('awsrangesseq', '07', 'tool_secbackup');
+        $this->assertSame(0, aws_ranges::stored_seq());
+    }
+
+    public function test_an_empty_stored_list_is_dropped_with_its_sequence_number(): void {
+        set_config('awsranges', '', 'tool_secbackup');
+        set_config('awsrangesseq', '7', 'tool_secbackup');
+        $this->assertSame(0, aws_ranges::stored_seq());
+        foreach (['awsranges', 'awsrangesseq', 'awsrangesendpoint'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
+    }
+
+    public function test_a_stored_list_belongs_to_the_connection_url_it_came_from(): void {
+        $content = self::sample();
+        set_config('endpoint', 'https://app.example.test/api/lms-backup/v1', 'tool_secbackup');
+        aws_ranges::apply(self::instruction(9, $content), $content);
+        $this->assertSame('1791766626', aws_ranges::current()->sync_token());
+
+        set_config('endpoint', 'https://other.example.test/api/lms-backup/v1', 'tool_secbackup');
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
+        $this->assertSame(0, aws_ranges::stored_seq());
+        $this->assertTrue(aws_ranges::is_newer(self::instruction(1, $content)));
+        $other = self::with_part('syncToken', '555');
+        $this->assertTrue(aws_ranges::apply(self::instruction(1, $other), $other));
+        $this->assertSame('555', aws_ranges::current()->sync_token());
+        $this->assertSame(1, aws_ranges::stored_seq());
+    }
+
+    public function test_removing_the_registration_removes_the_stored_list(): void {
+        $content = self::sample();
+        aws_ranges::apply(self::instruction(9, $content), $content);
+        \tool_secbackup\local\enrollment\state::clear();
+        foreach (['awsranges', 'awsrangesseq', 'awsrangesendpoint'] as $name) {
+            $this->assertFalse(get_config('tool_secbackup', $name), $name);
+        }
+        $this->assertSame(aws_ranges::bundled()->sync_token(), aws_ranges::current()->sync_token());
     }
 }

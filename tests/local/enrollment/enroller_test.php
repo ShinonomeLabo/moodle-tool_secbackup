@@ -239,6 +239,21 @@ final class enroller_test extends \advanced_testcase {
         }
     }
 
+    public function test_the_fake_service_takes_the_encryption_key_that_its_state_names(): void {
+        // The development runs (.dev/fakesec) register with a key pair of their own, so that they can open the backup.
+        $other = sodium_crypto_box_publickey(sodium_crypto_box_keypair());
+        $service = self::service(['encryptionkey' => public_key_format::encode($other)]);
+        try {
+            self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);
+            $this->fail('The key of the fake site was taken.');
+        } catch (api_exception $e) {
+            $this->assertSame('encryption_key_mismatch', $e->servercode);
+        }
+        self::enroller($service)->enroll(self::endpoint(), $other, fake_service::CODE);
+        $this->assertSame(public_key_format::encode($other), state::load()->encryption_key());
+        $this->assertSame(fake_service::ENCRYPTION_KEY, fake_service::initial_state()['encryptionkey']);
+    }
+
     public function test_registering_again_replaces_the_key(): void {
         $service = self::service();
         self::enroller($service)->enroll(self::endpoint(), self::key(), fake_service::CODE);

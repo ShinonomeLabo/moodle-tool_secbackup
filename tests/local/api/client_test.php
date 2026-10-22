@@ -827,6 +827,26 @@ final class client_test extends \advanced_testcase {
         $this->assert_words_stay_out($e, $text);
     }
 
+    public function test_the_list_of_aws_ranges_is_fetched_as_it_is(): void {
+        $service = self::service();
+        $pair = signing_keypair::generate();
+        self::client($service->handler())->enroll(self::endpoint(), $pair, self::request());
+        $service->state['awsranges'] = '{"syncToken":"1"}';
+        $content = self::client($service->handler())->aws_ranges(self::endpoint(), $pair, fake_service::SITE_ID);
+        $this->assertSame('{"syncToken":"1"}', $content);
+        $requests = $service->state['requests'];
+        $this->assertSame('GET /api/lms-backup/v1/aws-ranges', end($requests));
+    }
+
+    public function test_a_list_of_aws_ranges_that_the_service_does_not_have_is_an_error(): void {
+        $service = self::service();
+        $pair = signing_keypair::generate();
+        self::client($service->handler())->enroll(self::endpoint(), $pair, self::request());
+        $e = $this->expect_api_error('api_unexpected', fn() => self::client($service->handler())
+            ->aws_ranges(self::endpoint(), $pair, fake_service::SITE_ID));
+        $this->assertSame(404, $e->httpstatus);
+    }
+
     public function test_status_after_enrolment(): void {
         $service = self::service();
         $pair = signing_keypair::generate();
@@ -835,7 +855,7 @@ final class client_test extends \advanced_testcase {
         $this->assertSame('active', $result->status);
         $this->assertSame(self::NOW, $result->servertime);
         $this->assertSame(90, $result->clockskew);
-        $this->assertSame(0, $result->instructions);
+        $this->assertSame([], $result->instructions);
         $this->assertSame(fake_service::SITE_ID, $service->state['lastheaders']['x-secbackup-site']);
     }
 
@@ -915,7 +935,7 @@ final class client_test extends \advanced_testcase {
         // With a depth of 8, json_decode() reads at most 7 nested objects and lists: here the answer and 6 lists.
         $mock = new MockHandler([new Response(200, [], self::status_body(['instructions' => [[[[[[]]]]]]]))]);
         $result = self::client($mock)->status(self::endpoint(), signing_keypair::generate(), fake_service::SITE_ID);
-        $this->assertSame(1, $result->instructions);
+        $this->assertCount(1, $result->instructions);
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('unreadable_status_provider')]
@@ -933,13 +953,13 @@ final class client_test extends \advanced_testcase {
         $this->assertSame('', $e->servercode);
     }
 
-    public function test_the_edges_of_the_server_time_and_the_instructions_are_counted(): void {
+    public function test_the_edges_of_the_server_time_and_the_instructions_are_kept(): void {
         $pair = signing_keypair::generate();
         $first = new MockHandler([new Response(200, [], self::status_body(['server_time' => 0]))]);
         $result = self::client($first)->status(self::endpoint(), $pair, fake_service::SITE_ID);
         $this->assertSame(0, $result->servertime);
         $this->assertSame(-self::NOW, $result->clockskew);
-        $this->assertSame(0, $result->instructions);
+        $this->assertSame([], $result->instructions);
 
         $instructions = [['kind' => 'a'], ['kind' => 'b']];
         $body = self::status_body(['server_time' => 999999999999, 'instructions' => $instructions]);
@@ -947,7 +967,7 @@ final class client_test extends \advanced_testcase {
         $result = self::client($last)->status(self::endpoint(), $pair, fake_service::SITE_ID);
         $this->assertSame(999999999999, $result->servertime);
         $this->assertSame(999999999999 - self::NOW, $result->clockskew);
-        $this->assertSame(2, $result->instructions);
+        $this->assertSame($instructions, $result->instructions);
     }
 
     /**

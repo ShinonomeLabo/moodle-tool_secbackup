@@ -243,6 +243,33 @@ final class request_signer_test extends \basic_testcase {
         $this->assertSame('999999999999', $last['X-SecBackup-Timestamp']);
     }
 
+    public function test_a_body_of_the_largest_size_is_signed_and_a_larger_one_is_a_coding_error(): void {
+        $headers = request_signer::headers(
+            self::pair(),
+            'POST',
+            self::endpoint(),
+            'runs',
+            str_repeat('a', 65536),
+            self::SITE,
+            1760000000,
+            'AAAAAAAAAAAAAAAAAAAAAA'
+        );
+        $this->assertArrayHasKey('X-SecBackup-Signature', $headers);
+        $this->assertSame(65536, request_signer::MAX_BODY);
+        $this->expectException(\coding_exception::class);
+        $this->expectExceptionMessage('A request body has at most 65536 bytes.');
+        request_signer::headers(
+            self::pair(),
+            'POST',
+            self::endpoint(),
+            'runs',
+            str_repeat('a', 65537),
+            self::SITE,
+            1760000000,
+            'AAAAAAAAAAAAAAAAAAAAAA'
+        );
+    }
+
     public function test_the_key_pair_and_the_body_parameters_are_marked_sensitive(): void {
         $parameters = (new \ReflectionMethod(request_signer::class, 'headers'))->getParameters();
         $marked = [];

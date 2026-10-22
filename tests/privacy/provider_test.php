@@ -56,6 +56,16 @@ final class provider_test extends \core_privacy\tests\provider_testcase {
         $this->assertSame('privacy:metadata:core_message', $link->get_summary());
     }
 
+    public function test_the_runs_table_adds_no_metadata_because_it_has_no_user_columns(): void {
+        global $DB;
+        $columns = array_keys($DB->get_columns('tool_secbackup_runs'));
+        $this->assertNotContains('userid', $columns);
+        $this->assertSame([], array_filter($columns, static fn($c) => strpos($c, 'user') !== false));
+
+        $items = provider::get_metadata(new collection('tool_secbackup'))->get_collection();
+        $this->assertSame(['tool_secbackup_service', 'core_message'], array_map(static fn($i) => $i->get_name(), $items));
+    }
+
     public function test_metadata_strings_exist(): void {
         $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:service', 'tool_secbackup'));
         $this->assertTrue(get_string_manager()->string_exists('privacy:metadata:core_message', 'tool_secbackup'));

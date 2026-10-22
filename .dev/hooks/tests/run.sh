@@ -893,5 +893,76 @@ expect_check ok "the line of an install that failed part-way says to remove the 
     matrix_hint no fails '503 pgsql' failed yes
 expect_check ok "the line of an environment that was installed before does not say so" matrix_hint yes skips '503 pgsql' ok no
 
+# The names of the known failures of a browser or a runner (.dev/ci/behat-known-failures.sh): small outputs of Behat in the
+# form it prints at the end. A known failure is named with its share of the failures that Behat lists, so that its name is
+# never taken for the cause of a failure that is not known.
+known_failures="$here/../../ci/behat-known-failures.sh"
+behat_output() {
+    # behat_output <file> <entry...>: writes an output of Behat whose lists hold these failures: nsw (a scenario that failed
+    # with "no such window"), other (a scenario that failed in another way), notready (the hook before the first step).
+    local file="$1" entry n=0
+    shift
+    {
+        echo '..F--..'
+        echo '--- Failed steps:'
+        echo
+        for entry in "$@"; do
+            case "$entry" in
+                nsw)
+                    n=$((n + 1))
+                    printf '%03d Scenario: A page # a.feature:1\n      When I open "X" # a.feature:2\n' "$n"
+                    printf '        Facebook\\WebDriver\\Exception\\NoSuchWindowException in /x/WebDriverException.php:124\n'
+                    ;;
+                other)
+                    n=$((n + 1))
+                    printf '%03d Scenario: Another # b.feature:1\n      And I press "Y" # b.feature:2\n' "$n"
+                    printf '        Facebook\\WebDriver\\Exception\\ElementClickInterceptedException: Element is not clickable\n'
+                    ;;
+            esac
+        done
+        echo '--- Failed hooks:'
+        echo
+        for entry in "$@"; do
+            if [ "$entry" = notready ]; then
+                printf '    BeforeStep "c.feature:8" # behat_hooks::before_step()\n'
+                printf '      Exception: Javascript code and/or AJAX requests are not ready after 10 seconds (theme_boost/loader).\n'
+            fi
+        done
+        echo '9 scenarios (7 passed, 2 failed)'
+    } > "$file"
+}
+known_output() {
+    # known_output <expected text> <entry...>: the names printed for such an output hold the text.
+    local expected="$1" out
+    shift
+    behat_output "$work/behat.out" "$@" || return 1
+    out="$(bash "$known_failures" "$work/behat.out")" || return 1
+    [[ "$out" == *"$expected"* ]]
+}
+known_output_with_time_stamps() {
+    # known_output_with_time_stamps <expected text> <entry...>: the same, read from a log that GitHub keeps.
+    local expected="$1" out
+    shift
+    behat_output "$work/behat.raw" "$@" || return 1
+    sed 's/^/2026-10-21T04:28:10.9533790Z /' "$work/behat.raw" > "$work/behat.out" || return 1
+    out="$(bash "$known_failures" "$work/behat.out")" || return 1
+    [[ "$out" == *"$expected"* ]]
+}
+expect_check ok "a no such window that is the only failure is named as the cause of every failure" \
+    known_output 'no such window" while a page was being replaced (1 failed scenarios). It is the cause of every failure that Behat lists (1 of 1).' nsw
+expect_check ok "a no such window next to another failure names the other failure" \
+    known_output 'It is the cause of 1 of the 2 failures that Behat lists; the other 1 are not a known failure: look at them.' nsw other
+expect_check ok "a page not ready next to another failure names the other failure" \
+    known_output 'in time (1 failed hooks). It is the cause of 1 of the 2 failures that Behat lists; the other 1' notready other
+expect_check ok "two known failures together are the cause of every failure" \
+    known_output 'It is the cause of every failure that Behat lists (2 of 2).' nsw notready
+expect_check ok "a failure that is not known is not named" \
+    known_output 'No known failure of a browser or a runner among the 1 failures that Behat lists' other
+expect_check ng "a failure that is not known does not get the name of a known one" \
+    known_output 'Known browser failure' other
+expect_check ok "an output without lists of failures says so" known_output 'No failure listed by Behat'
+expect_check ok "a log with the time stamps of GitHub is read too" \
+    known_output_with_time_stamps 'It is the cause of 1 of the 2 failures that Behat lists' nsw other
+
 echo "rules: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

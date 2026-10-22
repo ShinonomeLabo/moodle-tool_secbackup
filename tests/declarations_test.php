@@ -50,11 +50,13 @@ final class declarations_test extends \advanced_testcase {
     public function test_message_providers(): void {
         $messageproviders = [];
         include(self::dir() . '/db/messages.php');
-        $this->assertSame(['connection'], array_keys($messageproviders));
-        $this->assertSame('tool/secbackup:manage', $messageproviders['connection']['capability']);
-        $this->assertSame(['popup', 'email'], array_keys($messageproviders['connection']['defaults']));
-        $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $messageproviders['connection']['defaults']['popup']);
-        $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $messageproviders['connection']['defaults']['email']);
+        $this->assertSame(['connection', 'backupfailure'], array_keys($messageproviders));
+        foreach ($messageproviders as $name => $provider) {
+            $this->assertSame('tool/secbackup:manage', $provider['capability'], $name);
+            $this->assertSame(['popup', 'email'], array_keys($provider['defaults']), $name);
+            $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $provider['defaults']['popup'], $name);
+            $this->assertSame(MESSAGE_PERMITTED + MESSAGE_DEFAULT_ENABLED, $provider['defaults']['email'], $name);
+        }
     }
 
     public function test_scheduled_tasks(): void {
@@ -134,7 +136,11 @@ final class declarations_test extends \advanced_testcase {
         // The plugin has one name in the Japanese strings. Written as escapes to keep this file ASCII.
         $strings = self::strings('ja');
         foreach ($strings as $id => $text) {
-            $this->assertStringNotContainsString("\u{30D7}\u{30E9}\u{30B0}\u{30A4}\u{30F3}", $text, $id);
+            // The warning about files in an external cloud service is the sentence of the design, which speaks of the plugin
+            // of the site that keeps the files there, not of this one.
+            if ($id !== 'modal_external') {
+                $this->assertStringNotContainsString("\u{30D7}\u{30E9}\u{30B0}\u{30A4}\u{30F3}", $text, $id);
+            }
         }
         $this->assertStringContainsString("\u{9023}\u{643A}\u{30C4}\u{30FC}\u{30EB}", $strings['privacy:metadata:service']);
         $this->assertStringContainsString("\u{9023}\u{643A}\u{30C4}\u{30FC}\u{30EB}", $strings['envelope_untrusted']);
@@ -167,6 +173,18 @@ final class declarations_test extends \advanced_testcase {
             $tree->locate('tool_secbackup_diagnostics')->url->out(false)
         );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_connect')->req_capability);
+        $limits = $tree->locate('tool_secbackup_settings');
+        $this->assertInstanceOf(\admin_settingpage::class, $limits);
+        $this->assertSame(['tool/secbackup:manage'], $limits->req_capability);
+        $names = [];
+        foreach ($limits->settings as $setting) {
+            $names[$setting->name] = $setting->get_defaultsetting();
+        }
+        $this->assertSame(
+            ['loadpercore' => '2', 'minmemorymb' => '256', 'maxdbms' => '500', 'minnfsmbps' => '5', 'tempbudgetmb' => '0',
+                'bandwidthmbps' => '0', 'tempdir' => ''],
+            $names
+        );
         $this->assertSame(['tool/secbackup:manage'], $tree->locate('tool_secbackup_diagnostics')->req_capability);
     }
 
@@ -186,6 +204,7 @@ final class declarations_test extends \advanced_testcase {
             $this->assertNull($tree->locate('tool_secbackup_status'));
             $this->assertNull($tree->locate('tool_secbackup_connect'));
             $this->assertNull($tree->locate('tool_secbackup_diagnostics'));
+            $this->assertNull($tree->locate('tool_secbackup_settings'));
         } finally {
             $this->setAdminUser();
             \admin_get_root(true, false);

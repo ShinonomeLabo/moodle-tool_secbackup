@@ -12,8 +12,28 @@ Public key of the site: secbk1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 The site must trust the fake service's key; .dev/env/devconfig.sh adds the settings to config.php.
 
 Control (POST, answers 204): /_fake/reset, /_fake/newcode, /_fake/mode/<mode>, /_fake/status/<status>,
-/_fake/clock/<seconds from now>. GET /_fake/state shows the state.
+/_fake/clock/<seconds from now>, /_fake/encryptionkey (the body is the public key that the enrolment accepts, `secbk1:...`),
+/_fake/core-manifest (the body is `{"version", "build", "release", "count", "content"}`, the list of official files compressed
+and in base64). GET /_fake/state shows the state.
 Modes: unavailable, rate_limited, ip_not_allowed, unexpected, untrusted_key, bad_signature, site_removed, bad_status.
+
+## A whole run against it
+
+Two scripts of this folder make a whole backup run against the fake service possible, outside Behat (`.dev/nfs`,
+`.dev/objectfs` and the state `run` of `.dev/secureos` use them). Both are Moodle command line scripts in the site's copy of
+the plugin.
+
+- `prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099]` resets the fake service, tells it which encryption
+  public key it accepts, registers the site (as the Behat step does), makes it send the settings of the backup with a window
+  twelve hours away (so that only a start by hand begins a run), receives them with the regular status request, and publishes
+  the list of the official files of this Moodle build, made from the site itself. The run then sends the added plugins as
+  code but not the whole Moodle program: the fake service keeps every stored object in its one state file, which the whole
+  program would make hundreds of megabytes large.
+- `verify.php --secretkey=<file> [--state=<file>]` opens the last completed run that the fake service holds with the secret
+  key of the key pair that `prepare.php` registered (the fixed key of the fake site has no known secret key), decrypts the
+  list of the generation and every file of it, and checks each against the site: the SHA-1 of its pieces put together is the
+  content hash, and its size is the size in the files table; and the set of contents of the backup is the set of contents of
+  one byte or more of the site. It prints counts and `result: ok` or `result: mismatch`.
 
 ## Where it runs
 

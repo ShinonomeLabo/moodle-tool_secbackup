@@ -40,6 +40,18 @@ class api_exception extends plugin_exception {
     /** @var int|null The service's clock (UNIX time), when it gave it. */
     public readonly ?int $servertime;
 
+    /** @var string|null ID of the run that is in progress (run_in_progress). */
+    public readonly ?string $runid;
+
+    /** @var string|null Status of the run that refused the call (run_state_invalid). */
+    public readonly ?string $runstatus;
+
+    /** @var int|null Bytes that were asked for (capacity_recheck_required). */
+    public readonly ?int $requestedbytes;
+
+    /** @var int|null Bytes of the estimate the service holds, or null when it holds none (capacity_recheck_required). */
+    public readonly ?int $estimatedbytes;
+
     /**
      * Constructor.
      *
@@ -50,6 +62,10 @@ class api_exception extends plugin_exception {
      * @param int|null $servertime The service's clock.
      * @param mixed $a Value for the language string.
      * @param string|null $debuginfo Detail without secrets.
+     * @param string|null $runid ID of the run in progress.
+     * @param string|null $runstatus Status of the run.
+     * @param int|null $requestedbytes Bytes asked for.
+     * @param int|null $estimatedbytes Bytes of the estimate.
      */
     public function __construct(
         string $errorcode,
@@ -58,12 +74,20 @@ class api_exception extends plugin_exception {
         ?int $retryafter = null,
         ?int $servertime = null,
         mixed $a = null,
-        ?string $debuginfo = null
+        ?string $debuginfo = null,
+        ?string $runid = null,
+        ?string $runstatus = null,
+        ?int $requestedbytes = null,
+        ?int $estimatedbytes = null
     ) {
         parent::__construct($errorcode, $a, $debuginfo);
         $this->servercode = $servercode;
         $this->httpstatus = $httpstatus;
         $this->retryafter = $retryafter;
         $this->servertime = $servertime;
+        $this->runid = $runid;
+        $this->runstatus = $runstatus;
+        $this->requestedbytes = $requestedbytes;
+        $this->estimatedbytes = $estimatedbytes;
     }
 }

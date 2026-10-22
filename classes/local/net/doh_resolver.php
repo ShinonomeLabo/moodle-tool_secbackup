@@ -16,6 +16,7 @@
 
 namespace tool_secbackup\local\net;
 
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\TransferException;
 use Psr\Http\Message\ResponseInterface;
@@ -122,7 +123,13 @@ final class doh_resolver {
                 ],
             ]);
         } catch (GuzzleException $e) {
-            throw new transport_exception('dns_doh_failed', $this->name);
+            // A connection that failed at once is told apart from a timeout or a lookup, which a denial of the system is not.
+            $errno = $e instanceof ConnectException ? (int) ($e->getHandlerContext()['errno'] ?? 0) : 0;
+            unset($e);
+            throw new transport_exception(
+                'dns_doh_failed',
+                $this->name . ($errno === 7 ? ', ' . transport_exception::CONNECT_FAILED : '')
+            );
         }
         $text = $response->getBody()->read(self::MAX_ANSWER + 1);
         $data = strlen($text) > self::MAX_ANSWER ? null : json_decode($text, true, 8);

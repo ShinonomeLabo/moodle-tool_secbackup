@@ -295,6 +295,39 @@ final class sec_trust_test extends \advanced_testcase {
         $this->assertSame('enrollment', self::trust()->open($body)['type']);
     }
 
+    /**
+     * A decoded envelope (as open_envelope() takes it) whose payload is a signed JSON object of some bytes.
+     *
+     * Base64url without padding makes 4 characters of 3 bytes, so 49,152 bytes give a payload of exactly MAX_BODY characters.
+     *
+     * @param int $bytes Length of the JSON text of the payload.
+     * @return array
+     */
+    private static function envelope_with_payload_of(int $bytes): array {
+        $builder = new envelope_builder();
+        $json = '{"type":"instruction","pad":"';
+        $json .= str_repeat('x', $bytes - strlen($json) - 2) . '"}';
+        $encoded = envelope_builder::b64url($json);
+        return ['v' => 1, 'kid' => $builder->kid(), 'payload' => $encoded, 'sig' => $builder->signature($builder->kid(), $encoded)];
+    }
+
+    public function test_a_decoded_envelope_whose_payload_has_exactly_the_largest_size_is_read(): void {
+        $envelope = self::envelope_with_payload_of(49152);
+        $this->assertSame(sec_trust::MAX_BODY, strlen($envelope['payload']));
+        $this->assertSame('instruction', self::trust()->open_envelope($envelope)['type']);
+    }
+
+    public function test_a_decoded_envelope_whose_payload_is_larger_is_refused(): void {
+        $envelope = self::envelope_with_payload_of(49153);
+        $this->assertSame(sec_trust::MAX_BODY + 2, strlen($envelope['payload']));
+        try {
+            self::trust()->open_envelope($envelope);
+            $this->fail('No exception');
+        } catch (envelope_exception $e) {
+            $this->assertSame('envelope_malformed', $e->errorcode);
+        }
+    }
+
     public function test_a_payload_nested_up_to_the_limit_is_read(): void {
         $this->assertIsArray(self::trust()->open(self::signed_raw_payload(self::nested_object(15)))['a']);
     }

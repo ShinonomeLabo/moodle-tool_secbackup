@@ -5,7 +5,18 @@ on:
     branches:
       - main
   pull_request:
+  # A manual run can leave out the browsers and the virtual machines, for a quicker answer from PHPUnit while a change is
+  # made. Such a run is not the whole check: a change is ready only after a run with the scope all, which a push to main and
+  # every pull request always have (there the input is empty, so every job runs).
   workflow_dispatch:
+    inputs:
+      scope:
+        description: 'all: every job. phpunit: PHPUnit and the code checks on every combination, without Behat, the secure OS machines and the coverage.'
+        type: choice
+        options:
+          - all
+          - phpunit
+        default: all
 
 permissions:
   contents: read
@@ -86,6 +97,14 @@ jobs:
           php .dev/coverage/tests/run.php
           php .dev/coverage/tests/badge.php
 
+      # The mutation testing runs by hand (.github/workflows/infection.yml); a new source file that no shard holds would drop
+      # out of it, so the shards are checked on every run.
+      - name: Test the tools of the mutation testing and check its shards
+        if: ${{ !cancelled() }}
+        run: |
+          php .dev/infection/tests/run.php
+          php .dev/infection/shards.php check
+
   inventory:
     name: UI inventory
     runs-on: ubuntu-24.04
@@ -112,7 +131,13 @@ jobs:
   test:
     name: Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The steps that run the plugin's tests or its scripts (the install, PHPUnit, the trace tests with OPcache, Behat, the
+    # command line scripts, the backup with developer debugging) have limits of their own, 115 minutes together, so that a
+    # stall in one of them fails that step with its log kept. When GitHub stops the job itself, the log of the running step is
+    # lost (run 39493954359: PHPUnit of Moodle 5.1 PHP 8.4 MariaDB stalled until the limit of 60 minutes of the job, and its
+    # log was gone). The other steps (the set-up, the static checks, the two installs of the site) take a few minutes in all
+    # and have no limit of their own.
+    timeout-minutes: 130
 
     strategy:
       fail-fast: false
@@ -176,7 +201,11 @@ jobs:
           sudo locale-gen en_AU.UTF-8
           echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
 
+      # 1 to 5 minutes. When the download of Node.js from nodejs.org fails, nvm builds Node.js from its source, which takes more
+      # than an hour (run 39610496035, Moodle 5.3 PHP 8.4 PostgreSQL: "curl: (56) Recv failure: Connection reset by peer",
+      # "Binary download failed, trying source."): the limit stops that with the log kept.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}
@@ -251,44 +280,82 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci grunt --max-lint-warnings 0
 
+      # 10 to 25 minutes on GitHub.
       - name: PHPUnit tests
         if: ${{ !cancelled() }}
+        timeout-minutes: 40
         run: moodle-plugin-ci phpunit --fail-on-warning --coverage-pcov --coverage-clover
 
+      # The trace tests of the chunk reader once more, with OPcache, whose optimiser the run above lacks
+      # (.dev/ci/phpunit-opcache.sh says why): the traces are checked as a web server with OPcache would make them.
+      - name: PHPUnit trace tests with OPcache
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        working-directory: moodle
+        run: bash "$GITHUB_WORKSPACE/plugin/.dev/ci/phpunit-opcache.sh" "$RUNNER_TEMP/opcache"
+
       # The Behat site is served by the web server of PHP, which has one worker unless it is told otherwise, and a page of
-      # Moodle asks for many files and AJAX calls at once, so the server gets several workers.
+      # Moodle asks for many files and AJAX calls at once, so the server gets several workers. 5 to 11 minutes on GitHub.
+      # Moodle runs its Behat site with developer debugging, and Behat fails a step when the page shows a PHP message or a
+      # debugging() message, so every page of the plugin is checked for them in every browser.
       - name: Behat features
         id: behat
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && inputs.scope != 'phpunit' }}
+        timeout-minutes: 25
+        shell: bash
         env:
           PHP_CLI_SERVER_WORKERS: '4'
-        run: moodle-plugin-ci behat --profile chrome --auto-rerun 0
+          # From Moodle 5.0 on, a page that uses a style of Bootstrap 4 that Moodle has deprecated fails the step.
+          SCSS: ${{ matrix.moodle != '4.5' && 'check' || '' }}
+        run: moodle-plugin-ci behat ${SCSS:+--scss-deprecations} --profile chrome --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
 
-      # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL). Any other code, 255
-      # above all, is a PHP fatal error, and it fails the step even when the lines were covered by another combination.
+      # See the comment of the job behat.
+      - name: Name a known failure of the browser or the runner
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
+
+      # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL, 2: the backup ran
+      # nothing). Any other code, 255 above all, is a PHP fatal error, and it fails the step even when the lines were covered
+      # by another combination.
       # The last run is under open_basedir, which hides /proc and /sys: the diagnostics have to say unknown, with no PHP message
       # (.dev/ci/diagnose-open-basedir.sh says what it checks).
       - name: Command line scripts
         if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: |
-          if [ -d moodle/public ]; then cli=moodle/public/admin/tool/secbackup/cli/diagnose.php; else cli=moodle/admin/tool/secbackup/cli/diagnose.php; fi
+          if [ -d moodle/public ]; then dir=moodle/public/admin/tool/secbackup/cli; else dir=moodle/admin/tool/secbackup/cli; fi
+          cli="$dir/diagnose.php"
           failed=0
+          # check <expected exit code> <script> [argument...]
           check() {
-            local expected="$1" code=0
-            shift
-            SECBK_COVERAGE_CLI=1 php "$cli" "$@" || code=$?
+            local expected="$1" script="$2" code=0
+            shift 2
+            SECBK_COVERAGE_CLI=1 php "$script" "$@" || code=$?
             if [ "$code" != "$expected" ]; then
-              echo "diagnose.php $* ended with exit code $code, expected $expected" >&2
+              echo "$(basename "$script") $* ended with exit code $code, expected $expected" >&2
               failed=1
             fi
           }
-          check 0 --help
-          check 1 --no-such-option
-          check 0 --endpoint=http://localhost:8099/api/lms-backup/v1
-          check 1 --endpoint=ftp://example.org/api
-          check 0
+          check 0 "$cli" --help
+          check 1 "$cli" --no-such-option
+          check 0 "$cli" --endpoint=http://localhost:8099/api/lms-backup/v1
+          check 1 "$cli" --endpoint=ftp://example.org/api
+          check 0 "$cli"
+          # The site of this job has no registration and no running backup, so the plain run runs nothing (2).
+          check 0 "$dir/backup.php" --help
+          check 1 "$dir/backup.php" --no-such-option
+          check 2 "$dir/backup.php"
           bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
           exit "$failed"
+
+      # The command line scripts once more on the site itself, registered with the fake service, so that cli/backup.php --now
+      # makes a whole run. The config.php of moodle-plugin-ci gives the site developer debugging (debug E_ALL, debugdisplay),
+      # and a PHP message or a debugging() message in the output fails the step (.dev/ci/backup-developer-debug.sh, whose
+      # canary shows that it would see one). It leaves the site registered, so it comes after the other runs of the scripts.
+      - name: The backup on the command line with developer debugging
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: bash plugin/.dev/ci/backup-developer-debug.sh "$GITHUB_WORKSPACE/moodle"
 
       - name: Keep the coverage of this combination
         if: ${{ !cancelled() }}
@@ -321,10 +388,22 @@ jobs:
 
   # Behat in Firefox and Edge, in every Moodle version with both databases. The Chrome run, with the coverage, is in the
   # test job. A scenario has to pass the first time (--auto-rerun 0). No secret and no coverage here.
+  #
+  # A known failure of the runner, seen in 2 of about 220 Edge jobs from 2026-10-19 to 2026-10-21, both Moodle 5.3 with
+  # MariaDB (runs 39543279659 and 39610496035), never in Firefox (about 220 jobs): in the hook before the first step of a
+  # scenario, the front page that Moodle opens (behat_hooks::before_step(), "I visit /") did not finish its JavaScript in the
+  # 10 seconds of Behat ("not ready after 10 seconds (theme_boost/loader)"). The plugin has no code on that page and no
+  # JavaScript of its own. Behat empties the data folder of its site before every scenario
+  # (testing_util::reset_dataroot() keeps only the files of the install), so the first page of a scenario makes the caches
+  # of Moodle (its JavaScript among them) again, while the Edge container shares the runner with the web server of PHP. So the
+  # time limits of Behat are doubled for Edge ($CFG->behat_increasetimeout = 2, the setting that Moodle's message names).
+  # When the Behat step fails, the next step names this failure and the one of Safari (job behat-safari) in the summary of
+  # the run (.dev/ci/behat-known-failures.sh); the job fails all the same.
   behat:
     name: Behat ${{ matrix.browser }} Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 55
 
     strategy:
       fail-fast: false
@@ -382,7 +461,11 @@ jobs:
           sudo locale-gen en_AU.UTF-8
           echo "NVM_DIR=$HOME/.nvm" >> "$GITHUB_ENV"
 
+      # 1 to 5 minutes. When the download of Node.js from nodejs.org fails, nvm builds Node.js from its source, which takes more
+      # than an hour (run 39610496035, Moodle 5.3 PHP 8.4 PostgreSQL: "curl: (56) Recv failure: Connection reset by peer",
+      # "Binary download failed, trying source."): the limit stops that with the log kept.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}
@@ -402,26 +485,37 @@ jobs:
           exit 1
 
       # moodle-plugin-ci knows the profiles chrome and firefox. Edge is added to config.php, and the Behat site is enabled
-      # again so that behat.yml has the profile. SECBK_BEHAT_TIMEOUT_FACTOR is not set on GitHub; .dev/ci/act.sh sets it,
-      # because Edge runs emulated (amd64 on Apple silicon) under act and needs longer time limits there.
+      # again so that behat.yml has the profile. The time limits of Behat are doubled for Edge on GitHub (see the comment of
+      # this job); .dev/ci/act.sh sets SECBK_BEHAT_TIMEOUT_FACTOR to 8, because Edge runs emulated (amd64 on Apple silicon)
+      # under act.
       - name: Add the Edge profile
         if: matrix.browser == 'edge'
         env:
-          TIMEOUT_FACTOR: ${{ env.SECBK_BEHAT_TIMEOUT_FACTOR }}
+          TIMEOUT_FACTOR: ${{ env.SECBK_BEHAT_TIMEOUT_FACTOR || '2' }}
         run: |
-          if [ -n "$TIMEOUT_FACTOR" ]; then
-            moodle-plugin-ci add-config "\$CFG->behat_increasetimeout = $TIMEOUT_FACTOR;"
-          fi
+          moodle-plugin-ci add-config "\$CFG->behat_increasetimeout = $TIMEOUT_FACTOR;"
           # shellcheck disable=SC2016
           moodle-plugin-ci add-config '$CFG->behat_profiles["edge"] = ["browser" => "MicrosoftEdge", "wd_host" => "http://localhost:4444/wd/hub", "capabilities" => ["browserName" => "MicrosoftEdge"]];'
           if [ -d moodle/public ]; then cli=moodle/public/admin/tool/behat/cli; else cli=moodle/admin/tool/behat/cli; fi
           php "$cli/util_single_run.php" --enable --add-core-features-to-theme
 
+      # 4 to 8 minutes on GitHub.
       - name: Behat features
         id: behat
+        timeout-minutes: 25
+        shell: bash
         env:
           PHP_CLI_SERVER_WORKERS: '4'
-        run: moodle-plugin-ci behat --profile ${{ matrix.browser }} --selenium selenium/standalone-${{ matrix.browser }}:4 --auto-rerun 0
+          BROWSER: ${{ matrix.browser }}
+          SCSS: ${{ matrix.moodle != '4.5' && 'check' || '' }}
+        run: |
+          moodle-plugin-ci behat ${SCSS:+--scss-deprecations} --profile "$BROWSER" --selenium "selenium/standalone-$BROWSER:4" \
+            --auto-rerun 0 2>&1 \
+            | tee "$RUNNER_TEMP/behat.log"
+
+      - name: Name a known failure of the browser or the runner
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
 
       - name: Upload Behat Faildump
         if: ${{ failure() && steps.behat.outcome == 'failure' }}
@@ -435,10 +529,30 @@ jobs:
   # Behat in Safari, on a macOS runner (the newest image GitHub lists: macos-26, Apple silicon, Safari 26). There is no
   # Docker on it, so the databases come from Homebrew, at the lowest version that Homebrew still has and that the Moodle
   # version supports; the web server is the one of PHP, and safaridriver is the one of macOS.
+  #
+  # A known failure of the browser: safaridriver can answer a command that is sent while a page is being replaced with "no
+  # such window" (php-webdriver's NoSuchWindowException). It failed 4 of 188 Safari jobs from 2026-10-19 to 2026-10-21 (runs
+  # 39237210576, 39447699406, 39543279659, 39554958383), each time in a command right after a click that loads a page; in the
+  # faildumps the new page is there in the same window, and the next scenarios ran in it. The log of safaridriver
+  # (--diagnose) of run 39598980228 shows why: a script that the plugin's wait sent while "Site administration" was loading
+  # got "WindowNotFound;Callback was not called before the unload event." from WebKit, which safaridriver answered as "no
+  # such window"; the wait went on and the job passed. Three were in the step "I open ... in site administration"
+  # of the plugin, which now waits through the answer (click_and_wait_for_new_page() in tests/behat/behat_tool_secbackup.php).
+  # The fourth was in a step of Moodle on Moodle 4.5 ("I follow "Preferences" in the user menu"). Moodle 4.5 and 5.0 import
+  # Mink's NoSuchWindowException (lib/behat/classes/behat_session_trait.php:31) and catch it in
+  # wait_for_pending_js_in_session() (:873) and look_for_exceptions() (:1016), but the php-webdriver driver throws the class
+  # of php-webdriver, so those catches never apply there. From Moodle 5.1 on the file imports the class of php-webdriver
+  # (public/lib/behat/classes/behat_session_trait.php:33) and both catch it (:883, :1022). On every version,
+  # look_for_deprecated_icons() (:1073 in 4.5 and 5.0, :1080 from 5.1), which execute() runs after every action of a step
+  # (:1157, :1164), runs a script with no such catch. So the steps of Moodle can still fail this way: on 4.5 and 5.0 in the
+  # three checks, from 5.1 in the last one. safaridriver runs with --diagnose: every job counts these answers in its log and
+  # shows the commands that got them, and when Behat fails, the failure is named in the summary of the run
+  # (.dev/ci/behat-known-failures.sh); the job fails all the same.
   behat-safari:
     name: Behat safari Moodle ${{ matrix.moodle }} PHP ${{ matrix.php }} ${{ matrix.database }}
+    if: inputs.scope != 'phpunit'
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     strategy:
       fail-fast: false
@@ -513,7 +627,11 @@ jobs:
           echo "$(cd ci/vendor/bin; pwd)" >> "$GITHUB_PATH"
           echo "NVM_DIR=$(brew --prefix nvm)" >> "$GITHUB_ENV"
 
+      # 1 to 5 minutes. When the download of Node.js from nodejs.org fails, nvm builds Node.js from its source, which takes more
+      # than an hour (run 39610496035, Moodle 5.3 PHP 8.4 PostgreSQL: "curl: (56) Recv failure: Connection reset by peer",
+      # "Binary download failed, trying source."): the limit stops that with the log kept.
       - name: Install Moodle with the plugin
+        timeout-minutes: 20
         run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}
@@ -548,7 +666,8 @@ jobs:
       - name: Start safaridriver and the web server of the Behat site
         run: |
           sudo safaridriver --enable
-          nohup safaridriver -p 4444 > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
+          # --diagnose logs every command and answer in ~/Library/Logs/com.apple.WebDriver.
+          nohup safaridriver -p 4444 --diagnose > "$RUNNER_TEMP/safaridriver.log" 2>&1 &
           if [ -d moodle/public ]; then root=moodle/public; else root=moodle; fi
           nohup php -S localhost:8000 -t "$root" > "$RUNNER_TEMP/web.log" 2>&1 &
           ready=no
@@ -595,11 +714,34 @@ jobs:
             exit 1
           fi
 
+      # 4 to 9 minutes on GitHub.
       - name: Behat features
         id: behat
+        timeout-minutes: 35
+        shell: bash
         env:
           MOODLE_START_BEHAT_SERVERS: 'NO'
-        run: moodle-plugin-ci behat --profile safari --auto-rerun 0
+          SCSS: ${{ matrix.moodle != '4.5' && 'check' || '' }}
+        run: moodle-plugin-ci behat ${SCSS:+--scss-deprecations} --profile safari --auto-rerun 0 2>&1 | tee "$RUNNER_TEMP/behat.log"
+
+      - name: Name a known failure of the browser or the runner
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
+
+      # Also when Behat passed: a passed job whose log of safaridriver has such answers shows that the steps waited through
+      # them (see the comment of this job).
+      - name: Count the answers "no such window" of safaridriver
+        if: ${{ !cancelled() }}
+        run: |
+          logs=("$HOME"/Library/Logs/com.apple.WebDriver/*)
+          if [ ! -e "${logs[0]}" ]; then
+            echo "safaridriver wrote no log in $HOME/Library/Logs/com.apple.WebDriver."
+            exit 0
+          fi
+          echo "Answers \"no such window\": $(cat "${logs[@]}" | grep -c -i 'no such window' || true)"
+          echo '::group::The answers with the lines before them (the last 200 lines)'
+          grep -h -i -B 6 -A 2 'no such window' "${logs[@]}" | tail -n 200 || true
+          echo '::endgroup::'
 
       - name: Show the logs of the servers
         if: ${{ failure() && steps.behat.outcome == 'failure' }}
@@ -648,9 +790,11 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The lines of the pages are counted by the Behat run of the job test, so a run without Behat cannot count 100%.
   coverage:
     name: Line coverage of all combinations
     needs: test
+    if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -703,14 +847,16 @@ jobs:
   # The access control that the OS ships, tested in real virtual machines (Lima with QEMU and KVM, on the x86_64 runner):
   # SELinux on Rocky Linux and AlmaLinux, AppArmor on Debian and Ubuntu. Each job builds one machine from the distribution's
   # own packages, copies the plugin in, runs the connection diagnostics from the web server and from the command line in each
-  # state of the access control, and compares the results with .dev/secureos/expect.txt. The same script runs on a Mac
+  # state of the access control, and compares the results with .dev/secureos/expect.txt. The two rows of the state run make a
+  # whole backup run from the web server instead (.dev/secureos/run-check.sh), denied and allowed. The same script runs on a Mac
   # (.dev/secureos/README.md). The secret SECBK_SECUREOS_ENDPOINT holds the connection URL of a real service. Without it (a
   # fork, or until a maintainer sets it) the stand-in expectations are checked. The log has the summary lines (case, check,
   # result), never the URL or any detail text, and the job uploads no artifact.
   secureos:
     name: Secure OS ${{ matrix.template }} ${{ matrix.state }}
+    if: inputs.scope != 'phpunit'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.state == 'run' && 60 || 45 }}
 
     strategy:
       fail-fast: false
@@ -728,6 +874,8 @@ jobs:
           - {template: ubuntu-22.04, state: confined}
           - {template: ubuntu-24.04, state: standard}
           - {template: ubuntu-24.04, state: confined}
+          - {template: rocky-9, state: run}
+          - {template: ubuntu-24.04, state: run}
 
     steps:
       - name: Check out the repository
@@ -737,13 +885,16 @@ jobs:
 
       # Installs QEMU and Lima. The download of Lima is verified with `gh attestation verify` and the token of this job.
       - name: Set up Lima
+        timeout-minutes: 10
         uses: lima-vm/lima-actions/setup@55627e31b78637bf254a8b2a14da8ea7d12564e5 # v1.1.0
         with:
           version: v2.2.1
           ssh: false
 
-      # No set -x here: the connection URL is in the environment of this step.
+      # 4 to 6 minutes (14 for the state run of rocky-9, which builds the sodium extension). No set -x here: the connection
+      # URL is in the environment of this step.
       - name: Test the access control of ${{ matrix.template }} (${{ matrix.state }})
+        timeout-minutes: ${{ matrix.state == 'run' && 45 || 30 }}
         env:
           SECBK_SECUREOS_ENDPOINT: ${{ secrets.SECBK_SECUREOS_ENDPOINT }}
           TEMPLATE: ${{ matrix.template }}

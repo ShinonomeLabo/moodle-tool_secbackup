@@ -33,8 +33,8 @@ final class status_result {
     /** @var int The service's clock minus this server's clock, in seconds. */
     public readonly int $clockskew;
 
-    /** @var int Number of instructions (not used before the backup stage). */
-    public readonly int $instructions;
+    /** @var array The instruction envelopes of the answer, as they came. Nothing here is verified yet. */
+    public readonly array $instructions;
 
     /**
      * Constructor.
@@ -42,9 +42,9 @@ final class status_result {
      * @param string $status Status.
      * @param int $servertime The service's clock.
      * @param int $clockskew Clock difference.
-     * @param int $instructions Number of instructions.
+     * @param array $instructions The instruction envelopes.
      */
-    public function __construct(string $status, int $servertime, int $clockskew, int $instructions) {
+    public function __construct(string $status, int $servertime, int $clockskew, array $instructions) {
         $this->status = $status;
         $this->servertime = $servertime;
         $this->clockskew = $clockskew;
