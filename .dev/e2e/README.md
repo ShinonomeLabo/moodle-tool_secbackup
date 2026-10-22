@@ -19,6 +19,7 @@ Development only; `.dev/` is not part of the plugin package.
 | `summary.php` | The Markdown summary of all the results of a run of the workflow, and its pass or fail (plain PHP) |
 | `install-plugins.sh`, `plugins.json`, `check-data.php` | The extra plugins at fixed commits, and the check of the test data |
 | `make-room.sh` | Removes large tools of a GitHub runner that the test does not use and picks the disk for the site (`--show`: the room left) |
+| `mask.sh` | Masks the URL of the service and its host name in the log of a job (`::add-mask::`); stops the job when the URL is missing |
 | `../../.github/workflows/staging-e2e.yml` | The workflow that runs the scenarios on GitHub's runners (below) |
 | `tests/run.php` | Tests of `sec.php` (against `tests/fake-service.php`), `verdict.php`, `summary.php`, the arguments of `run.sh`, and the functions and the order of the scenarios of `lib.sh` with stubs in the place of Moodle, the service, the firewall and the load (`php .dev/e2e/tests/run.php`; the job "Commit rules and development tools" of CI runs them) |
 
@@ -145,19 +146,31 @@ delay; a site that is ready after that time starts at once, and its result says 
 Limits. Each scenario is one step whose limit is 25 minutes below that of its job: a run that hangs is stopped by the step,
 whose log GitHub keeps, and the next steps still upload the result. The step is `run.sh` itself (`exec`), so the signal
 reaches its trap, which writes `result.json` with the step where it stopped. `SECBK_E2E_BACKUP_TIMEOUT` is set for each
-scenario so that its longest path (each call of `cli/backup.php` and each wait of `lib.sh` at its end, the site and the
-checks at their slowest) ends within the step; the comments of the workflow show the sums. Besides the site and the
-backups, `load` waits 20 minutes for the recount of the service, and `abort` 20 minutes for the recount and about 30
-minutes for the plugin to give up the refused connections to S3.
+scenario so that its typical longest path ends within the step: each point that depends on the speed of a run (the files
+reached, 10 % sent, the stop by the load) comes within 5 minutes, and every other wait is at its limit, also the check
+after a stop (`e2e_wait_stopped`: tries for 600 s, the last request up to 300 s; it runs within the 20 minutes of the wait
+for the recount, which count from the stop) and the checks at the end (three requests of up to 300 s, a minute apart). The
+comments of the workflow show the sums (`normal` 138, `load` 113, `abort` 181, `concurrent` 117 minutes). A slower run
+reaches the limit of the step instead, and the trap writes that step in `result.json`. Besides the site and the backups,
+`load` waits 20 minutes for the recount of the service, and `abort` 20 minutes for the recount and about 30 minutes for the
+plugin to give up the refused connections to S3. The limits are first guesses: they are to be reviewed once the first run
+has measured the speed of the runner to S3.
+
+Runs again. The jobs that reach the service (`reset` and the scenarios) refuse to run again, and fail at their first step
+with that reason: GitHub runs a failed job again without `plan` and `reset`, so the job would take the name of its site,
+the start of the ten sites and the limit of 30 GB from the first attempt. Start a new run of the workflow instead.
+`data-only` may run again.
 
 Results. Each scenario job uploads `result.json` and `inspect.json` of its site as the artifact `e2e-<scenario>`
 (`e2e-concurrent-<n>`); never `logs/` or `private/`. `summary` adds the table of `summary.php` to the summary of the run and
 keeps it as the artifact `summary`. The artifacts are kept 90 days: the clean-up below finds the IDs of the test sites in
 them (`site_uuid` of `inspect.json`). Each job also prints the room left on its disk and in memory at its end.
 
-Pace. One run at a time: the concurrency group `staging-e2e` holds a second run until the first ends (GitHub keeps one
-waiting run; a third replaces it). Not more than two runs in an hour: each registration of a site makes the service send a
-confirmation mail, it allows 30 an hour for the test organization, and a run of `all` registers 13 sites.
+Pace. One run that reaches the service at a time: the concurrency group `staging-e2e` holds a second such run until the
+first ends (GitHub keeps one waiting run; a third replaces it). A run of `data-only` has a group of its own
+(`staging-e2e-data-only-<run ID>`), so it neither waits for such a run nor takes the place of one that waits. Not more than
+two runs in an hour: each registration of a site makes the service send a confirmation mail, it allows 30 an hour for the
+test organization, and a run of `all` registers 13 sites.
 
 What is sent. The 30 GB of `plan` counts the files of the sites. The database of each site and, until the service holds the
 list of the files of this release of Moodle, the code of Moodle (a few hundred MB for each site) come on top; `summary`
@@ -174,7 +187,9 @@ A maintainer makes it once, in the settings of the repository (Environments):
 
 1. A new environment `staging-e2e`.
 2. Required reviewers: the maintainers who may send data to the staging service.
-3. Deployment branches and tags: selected branches only, ones that only maintainers push to (for example `main`).
+3. Deployment branches and tags: selected branches only, ones that only maintainers push to (for example `main`). Until
+   the workflow is on `main`, the branch that the test runs from (`staging-e2e`) has to be among them too: a job of the
+   environment on a branch that is not is refused.
 4. Two environment secrets (not repository secrets, not variables):
    - `SECBK_E2E_BASE_URL`: the URL of the API of the staging service, `https://<host>/<path>`, without `/v1`.
    - `SECBK_E2E_SECRET`: the secret of the test endpoints, the same value that the staging service has (32 characters at

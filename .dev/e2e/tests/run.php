@@ -867,6 +867,27 @@ foreach ($accepted as $label => $args) {
         "exit $exit: $output");
 }
 
+// mask.sh: the URL of the service and its host name (as written and in lower case) are printed only inside ::add-mask::
+// commands, which the runner of GitHub takes out of the log; anywhere else it prints nothing of them. Without the URL (an
+// environment without its secret) it stops the job.
+$mask = static fn(array $env): array => secbk_e2e_command(['bash', "$e2e/mask.sh"], $env);
+$url = 'https://Api.Example.test:8443/base/path';
+[$exit, $output] = $mask(['GITHUB_ACTIONS' => 'true', 'SECBK_E2E_BASE_URL' => $url]);
+secbk_e2e_expect('mask.sh masks the URL and its host name, as written and in lower case',
+    $exit === 0 && $output === "::add-mask::$url\n::add-mask::Api.Example.test\n::add-mask::api.example.test\n",
+    "exit $exit: $output");
+[$exit, $output] = $mask(['GITHUB_ACTIONS' => 'true', 'SECBK_E2E_BASE_URL' => 'https://api.example.test']);
+secbk_e2e_expect('mask.sh masks a host name in lower case once',
+    $exit === 0 && $output === "::add-mask::https://api.example.test\n::add-mask::api.example.test\n", "exit $exit: $output");
+[$exit, $output] = $mask(['SECBK_E2E_BASE_URL' => $url]);
+secbk_e2e_expect('mask.sh runs on GitHub only, and then prints nothing of the URL',
+    $exit === 2 && !str_contains(strtolower($output), 'example'), "exit $exit: $output");
+foreach (['an empty URL' => ['SECBK_E2E_BASE_URL' => ''], 'no URL' => []] as $label => $env) {
+    [$exit, $output] = $mask(['GITHUB_ACTIONS' => 'true'] + $env);
+    secbk_e2e_expect("mask.sh stops the job with $label",
+        $exit === 1 && str_contains($output, 'SECBK_E2E_BASE_URL') && !str_contains($output, '::'), "exit $exit: $output");
+}
+
 proc_terminate($fake);
 proc_close($fake);
 // Development tooling may run commands; the plugin itself never does.

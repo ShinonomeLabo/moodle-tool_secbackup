@@ -42,19 +42,31 @@ on:
 permissions:
   contents: read
 
-# One run at a time: the runs share the test sites of the service (the job reset removes them) and the limit of 30 GB.
+# One run that reaches the service at a time: those runs share the test sites of the service (the job reset removes them)
+# and the limit of 30 GB. A run of data-only reaches nothing and has a group of its own, so it neither waits for such a run
+# nor takes the place of one that waits.
 concurrency:
-  group: staging-e2e
+  group: ${{ inputs.scenarios == 'data-only' && format('staging-e2e-data-only-{0}', github.run_id) || 'staging-e2e' }}
   cancel-in-progress: false
 
+# Each job that reaches the service (reset and the scenarios) first refuses to run again: GitHub runs a failed job again
+# without plan and reset, so the job would take the name of its site, the start of the ten sites and the limit of 30 GB from
+# the first attempt. A new run of the workflow does them all again. The job then checks out the repository and masks the
+# address of the service (.dev/e2e/mask.sh): no step before prints a secret, and only the steps that need one are given it.
+#
 # Each scenario runs in one step whose limit is 25 minutes below the limit of its job: when a run hangs, the step and not the
 # job is stopped, so the log is kept and the next steps upload the result. The step is run.sh itself (exec), so the signal
-# reaches its trap, which writes result.json with the step where it stopped. SECBK_E2E_BACKUP_TIMEOUT (one call of
-# cli/backup.php) is set for each scenario so that its longest path ends before the limit of the step (.dev/e2e/README.md).
-# The sums below count the site at a measure taken from data-only, which built its site of 0.2 GB in 85 s (run 39850020594:
+# reaches its trap, which writes in result.json the step where it stopped. SECBK_E2E_BACKUP_TIMEOUT (one call of
+# cli/backup.php) is set for each scenario so that its typical longest path ends within the step: each point that depends
+# on the speed of a run (the files reached, 10 % sent, the stop by the load) comes within 5 minutes, and every other wait
+# is at its limit. A slower run reaches the limit of the step instead, and the trap writes that step in result.json. The
+# limits are first guesses, to be reviewed once the first run has measured the speed of the runner to S3.
+# The sums count the site at a measure taken from data-only, which built its site of 0.2 GB in 85 s (run 39850020594:
 # Moodle and Composer 9 s, the install 51 s, the extra plugins and the upgrade 18 s, the data 7 s): 15 minutes are allowed
 # for 10 GB, 10 for 4 GB and 5 for 0.8 GB. The connection is counted at 6 minutes (each request to the service at its
-# limit) and the checks at the end at 17 (three tries a minute apart, each at its limit of 300 s).
+# limit), the checks at the end at 17 (three tries a minute apart, each at its limit of 300 s), and the check after a stop
+# at 15 (e2e_wait_stopped: tries for 600 s, the last request at its limit of 300 s); that check runs within the 20 minutes
+# of the wait for the recount, which count from the stop.
 jobs:
   plan:
     name: Check the sizes and set the start of the ten sites
@@ -124,28 +136,24 @@ jobs:
     timeout-minutes: 15
     environment: staging-e2e
     steps:
-      - name: Mask the address of the service
+      - name: Refuse to run again
         env:
-          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          # GitHub masks the URL, a secret; its host name alone is masked too. Neither is ever printed.
-          if [ -z "$SECBK_E2E_BASE_URL" ]; then
-            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+          if [ "$RUN_ATTEMPT" != 1 ]; then
+            echo "This job is not run again (attempt $RUN_ATTEMPT): start a new run of the workflow (.dev/e2e/README.md)" >&2
             exit 1
-          fi
-          echo "::add-mask::$SECBK_E2E_BASE_URL"
-          host="${SECBK_E2E_BASE_URL#*://}"
-          host="${host%%/*}"
-          host="${host%%:*}"
-          if [ -n "$host" ]; then
-            echo "::add-mask::$host"
-            echo "::add-mask::${host,,}"
           fi
 
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: bash .dev/e2e/mask.sh
 
       - name: Set up PHP 8.3
         timeout-minutes: 10
@@ -163,8 +171,8 @@ jobs:
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
         run: php .dev/e2e/sec.php reset
 
-  # The step has 155 minutes: the site (15), the connection (6) and the checks (17) leave 117, and cli/backup.php gets 100
-  # (6000 s): 10 GB at 1.7 MB/s.
+  # Longest path, 138 of the 155 minutes of the step: the site (15), the connection (6), cli/backup.php at its limit (100
+  # minutes, 6000 s: 10 GB at 1.7 MB/s) and the checks (17).
   normal:
     name: normal (one site of ${{ inputs.normal_gb }} GB)
     needs: [plan, reset]
@@ -190,27 +198,24 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Mask the address of the service
+      - name: Refuse to run again
         env:
-          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if [ -z "$SECBK_E2E_BASE_URL" ]; then
-            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+          if [ "$RUN_ATTEMPT" != 1 ]; then
+            echo "This job is not run again (attempt $RUN_ATTEMPT): start a new run of the workflow (.dev/e2e/README.md)" >&2
             exit 1
-          fi
-          echo "::add-mask::$SECBK_E2E_BASE_URL"
-          host="${SECBK_E2E_BASE_URL#*://}"
-          host="${host%%/*}"
-          host="${host%%:*}"
-          if [ -n "$host" ]; then
-            echo "::add-mask::$host"
-            echo "::add-mask::${host,,}"
           fi
 
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: bash .dev/e2e/mask.sh
 
       # The runner image has large tools that the test does not use. The site goes on the disk with the most room after
       # that: the root disk, or the temporary disk at /mnt when the runner has one. run.sh checks the room for its files.
@@ -256,10 +261,10 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Besides the site and the backups: a few minutes until the load stops the run, and 20 minutes of wait for the recount of
-  # the service. Each call of cli/backup.php gets 50 minutes (3000 s): the longest path, a run that never gets to the files
-  # (50) and then never ends (50), with the site (10), the connection (6) and the checks (17), is 133 of the 155 minutes of
-  # the step; the path through the stop, the recount (20) and the next run (50) is about 110.
+  # Typical longest path, 113 of the 155 minutes of the step: the site (10), the connection (6), the run to the files (5),
+  # the load until the plugin stops the run (5), the wait for the recount with the check after the stop in it (20), the next
+  # run at its limit (50 minutes, 3000 s) and the checks (17). A run that takes most of its 50 minutes to get to the files
+  # or to be stopped by the load reaches the limit of the step.
   load:
     name: load (one site of ${{ inputs.load_gb }} GB)
     needs: [plan, reset]
@@ -285,27 +290,24 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Mask the address of the service
+      - name: Refuse to run again
         env:
-          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if [ -z "$SECBK_E2E_BASE_URL" ]; then
-            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+          if [ "$RUN_ATTEMPT" != 1 ]; then
+            echo "This job is not run again (attempt $RUN_ATTEMPT): start a new run of the workflow (.dev/e2e/README.md)" >&2
             exit 1
-          fi
-          echo "::add-mask::$SECBK_E2E_BASE_URL"
-          host="${SECBK_E2E_BASE_URL#*://}"
-          host="${host%%/*}"
-          host="${host%%:*}"
-          if [ -n "$host" ]; then
-            echo "::add-mask::$host"
-            echo "::add-mask::${host,,}"
           fi
 
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: bash .dev/e2e/mask.sh
 
       - name: Make room on the disk
         timeout-minutes: 10
@@ -348,12 +350,11 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Besides the site and the backups: (b) about 30 minutes from the refused connections to the stop (the plugin tries a send
-  # three times, 15 minutes apart) and 20 minutes of wait for the recount; (a) a few minutes to the kill. Each call of
-  # cli/backup.php gets 40 minutes (2400 s): the longest path, the site (10), the connection (6), (b) 15 minutes to the
-  # point of the block, stopped only after the 60 minutes that the script gives the refused connections, the recount (20),
-  # then (a) a run that never gets to the files (40) and never ends (40), and the checks (17), is 208 of the 215 minutes of
-  # the step.
+  # Typical longest path, 181 of the 215 minutes of the step: the site (10), the connection (6), (b) the run to 10 % (5), the
+  # refused connections until the plugin stops the run (60, the limit of the script; the plugin needs about 30: three tries
+  # 15 minutes apart), the wait for the recount with the check after the stop in it (20), (a) the run to 10 % (5), the kill
+  # (1), the check of the killed run (17), the rest of the run at its limit (40 minutes, 2400 s) and the checks (17). A run
+  # that takes most of its 40 minutes to send 10 % reaches the limit of the step.
   abort:
     name: abort (one site of ${{ inputs.abort_gb }} GB)
     needs: [plan, reset]
@@ -379,27 +380,24 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Mask the address of the service
+      - name: Refuse to run again
         env:
-          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if [ -z "$SECBK_E2E_BASE_URL" ]; then
-            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+          if [ "$RUN_ATTEMPT" != 1 ]; then
+            echo "This job is not run again (attempt $RUN_ATTEMPT): start a new run of the workflow (.dev/e2e/README.md)" >&2
             exit 1
-          fi
-          echo "::add-mask::$SECBK_E2E_BASE_URL"
-          host="${SECBK_E2E_BASE_URL#*://}"
-          host="${host%%/*}"
-          host="${host%%:*}"
-          if [ -n "$host" ]; then
-            echo "::add-mask::$host"
-            echo "::add-mask::${host,,}"
           fi
 
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: bash .dev/e2e/mask.sh
 
       - name: Make room on the disk
         timeout-minutes: 10
@@ -442,10 +440,10 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Ten sites, each on its own runner, start their backups together at the time of the job plan. The site (5), the
-  # connection and the wait take at most the 40 minutes to that time (less the approvals); cli/backup.php gets 60 minutes
-  # (3600 s), for the waits that the service may ask of ten sites at once; with the checks (17), 117 of the 125 minutes of
-  # the step.
+  # Ten sites, each on its own runner, start their backups together at the time of the job plan. Longest path, 117 of the
+  # 125 minutes of the step: the site (5), the connection and the wait for the start within the 40 minutes from plan to that
+  # time (less the approvals), cli/backup.php at its limit (60 minutes, 3600 s, for the waits that the service may ask of ten
+  # sites at once) and the checks (17).
   concurrent:
     name: concurrent ${{ matrix.n }} of 10 (${{ inputs.concurrent_gb }} GB)
     needs: [plan, reset]
@@ -477,27 +475,24 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Mask the address of the service
+      - name: Refuse to run again
         env:
-          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if [ -z "$SECBK_E2E_BASE_URL" ]; then
-            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+          if [ "$RUN_ATTEMPT" != 1 ]; then
+            echo "This job is not run again (attempt $RUN_ATTEMPT): start a new run of the workflow (.dev/e2e/README.md)" >&2
             exit 1
-          fi
-          echo "::add-mask::$SECBK_E2E_BASE_URL"
-          host="${SECBK_E2E_BASE_URL#*://}"
-          host="${host%%/*}"
-          host="${host%%:*}"
-          if [ -n "$host" ]; then
-            echo "::add-mask::$host"
-            echo "::add-mask::${host,,}"
           fi
 
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: bash .dev/e2e/mask.sh
 
       - name: Make room on the disk
         timeout-minutes: 10
