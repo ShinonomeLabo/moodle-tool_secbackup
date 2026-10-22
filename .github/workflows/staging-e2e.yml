@@ -51,6 +51,10 @@ concurrency:
 # job is stopped, so the log is kept and the next steps upload the result. The step is run.sh itself (exec), so the signal
 # reaches its trap, which writes result.json with the step where it stopped. SECBK_E2E_BACKUP_TIMEOUT (one call of
 # cli/backup.php) is set for each scenario so that its longest path ends before the limit of the step (.dev/e2e/README.md).
+# The sums below count the site at a measure taken from data-only, which built its site of 0.2 GB in 85 s (run 39850020594:
+# Moodle and Composer 9 s, the install 51 s, the extra plugins and the upgrade 18 s, the data 7 s): 15 minutes are allowed
+# for 10 GB, 10 for 4 GB and 5 for 0.8 GB. The connection is counted at 6 minutes (each request to the service at its
+# limit) and the checks at the end at 17 (three tries a minute apart, each at its limit of 300 s).
 jobs:
   plan:
     name: Check the sizes and set the start of the ten sites
@@ -99,7 +103,8 @@ jobs:
           esac
           shown="$(printf '%d.%09d' $(( total / 1000000000 )) $(( total % 1000000000 )) | sed -E 's/\.?0+$//')"
           {
-            echo "Scenarios: $SCENARIOS. GB of files: normal $NORMAL_GB, load $LOAD_GB, abort $ABORT_GB, concurrent 10 x $CONCURRENT_GB."
+            echo "Scenarios: $SCENARIOS. GB of files: normal $NORMAL_GB, load $LOAD_GB, abort $ABORT_GB," \
+              "concurrent 10 x $CONCURRENT_GB."
             echo "Files of the selected scenarios: ${shown:-0} GB (the limit of a run is 30)."
           } | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$total" -gt 30000000000 ]; then
@@ -158,9 +163,8 @@ jobs:
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
         run: php .dev/e2e/sec.php reset
 
-  # Expected: about 20 minutes for the site of 10 GB, the backup at the speed of the runner to S3, a minute for the checks.
-  # The step has 155 minutes: the site (30 at most) and the connection (6) and the checks (17, three tries with a minute
-  # between) leave 102, so cli/backup.php gets 100 minutes (6000 s): 10 GB at 1.7 MB/s.
+  # The step has 155 minutes: the site (15), the connection (6) and the checks (17) leave 117, and cli/backup.php gets 100
+  # (6000 s): 10 GB at 1.7 MB/s.
   normal:
     name: normal (one site of ${{ inputs.normal_gb }} GB)
     needs: [plan, reset]
@@ -252,10 +256,10 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Expected: about 15 minutes for the site, a few minutes until the load stops the run, 20 minutes of wait for the recount of
-  # the service, the rest of the backup. Each call of cli/backup.php gets 50 minutes (3000 s): the longest path, a run that
-  # never gets to the files (50) and then never ends (50), with the site (20), the connection (6) and the checks (17), is 143
-  # of the 155 minutes of the step; the path through the stop, the recount and the next run is about 113.
+  # Besides the site and the backups: a few minutes until the load stops the run, and 20 minutes of wait for the recount of
+  # the service. Each call of cli/backup.php gets 50 minutes (3000 s): the longest path, a run that never gets to the files
+  # (50) and then never ends (50), with the site (10), the connection (6) and the checks (17), is 133 of the 155 minutes of
+  # the step; the path through the stop, the recount (20) and the next run (50) is about 110.
   load:
     name: load (one site of ${{ inputs.load_gb }} GB)
     needs: [plan, reset]
@@ -344,12 +348,12 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Expected: about 15 minutes for the site; (b) about 30 minutes from the refused connections to the stop (the plugin tries a
-  # send three times, 15 minutes apart), 20 minutes of wait for the recount; (a) a few minutes to the kill and the rest of
-  # the run. About 100 minutes. Each call of cli/backup.php gets 40 minutes (2400 s): the longest path, (b) stopped after the
-  # 60 minutes that the script gives the refused connections, the recount (20), and then (a) a run that never gets to the
-  # files (40) and never ends (40), with the site (20), the connection (6), the wait before (b) (a few minutes) and the checks
-  # (17), is about 210 of the 215 minutes of the step.
+  # Besides the site and the backups: (b) about 30 minutes from the refused connections to the stop (the plugin tries a send
+  # three times, 15 minutes apart) and 20 minutes of wait for the recount; (a) a few minutes to the kill. Each call of
+  # cli/backup.php gets 40 minutes (2400 s): the longest path, the site (10), the connection (6), (b) 15 minutes to the
+  # point of the block, stopped only after the 60 minutes that the script gives the refused connections, the recount (20),
+  # then (a) a run that never gets to the files (40) and never ends (40), and the checks (17), is 208 of the 215 minutes of
+  # the step.
   abort:
     name: abort (one site of ${{ inputs.abort_gb }} GB)
     needs: [plan, reset]
@@ -438,9 +442,10 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Ten sites, each on its own runner, start their backups together at the time of the job plan. The site, the connection
-  # and the wait take at most the 40 minutes to that time (less the approvals); cli/backup.php gets 60 minutes (3600 s), for
-  # the waits that the service may ask of ten sites at once; with the checks (17), 117 of the 125 minutes of the step.
+  # Ten sites, each on its own runner, start their backups together at the time of the job plan. The site (5), the
+  # connection and the wait take at most the 40 minutes to that time (less the approvals); cli/backup.php gets 60 minutes
+  # (3600 s), for the waits that the service may ask of ten sites at once; with the checks (17), 117 of the 125 minutes of
+  # the step.
   concurrent:
     name: concurrent ${{ matrix.n }} of 10 (${{ inputs.concurrent_gb }} GB)
     needs: [plan, reset]

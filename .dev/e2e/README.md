@@ -163,6 +163,11 @@ What is sent. The 30 GB of `plan` counts the files of the sites. The database of
 list of the files of this release of Moodle, the code of Moodle (a few hundred MB for each site) come on top; `summary`
 judges what the service holds of all the sites at the end against 30 GB.
 
+The runner. The first run of `data-only` (run 39850020594) had a root disk of 145 GB with 86 GB free, 111 GB once
+`make-room.sh` had removed the tools, no disk at `/mnt`, and 16 GB of memory with 14.9 GB available after the build. It built
+its site of 0.2 GB in 85 seconds: Moodle 4.5.15+ (build 20261021) on PHP 8.3 and PostgreSQL 13 with all seven extra plugins
+of `plugins.json`, installed, up to date and with their data. None is skipped.
+
 ## The environment staging-e2e
 
 A maintainer makes it once, in the settings of the repository (Environments):
