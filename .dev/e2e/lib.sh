@@ -8,7 +8,8 @@
 # the address https://<name>.moodle.example.invalid. The files of a scenario are in $SECBK_E2E_OUT/<name>:
 #   result.json   what run.sh found (see e2e_write_result); the workflow keeps it
 #   inspect.json  what the service said about the site at the end (sec.php inspect); the workflow keeps it
-#   logs/         the output of the commands, the answers of the service at the other checkpoints, the lists of the result
+#   logs/         the output of the commands, the answers of the service at the other checkpoints, the lists of the result,
+#                 the Moodle of the site (moodle.json) and whether its run had the official list of its files (core.txt)
 #   private/      mode 0700: the registration code (removed once it is used) and the keys of the site, mode 0600; nothing
 #                 prints them and the workflow does not keep them
 # What is printed are steps, states and numbers: never the address of the service, the secret, the code or a key.
@@ -47,6 +48,15 @@ e2e_before=0
 e2e_sent=0
 # The latest run before the command of e2e_backup_start; a wait looks only at the runs after it.
 e2e_after_id=0
+# What the run of the last e2e_wait_sending had sent when it was first seen in the stage files.
+e2e_files_from=0
+# The Moodle that moodle.json fixes (e2e_moodle_pin).
+e2e_moodle_branch=''
+e2e_moodle_commit=''
+e2e_moodle_version=''
+e2e_moodle_release=''
+# The stage of cli/backup.php whose waits are not counted: the run asks the service for its receipt until it has it.
+e2e_receipt_stage='Waiting for the receipt of the backup service'
 # The process that e2e_sleep or e2e_sec runs in the background, which the trap stops.
 e2e_bg=''
 
@@ -96,8 +106,12 @@ e2e_number() {
     printf '%s %d\n' "$1" "$2" >> "$e2e_logs/numbers.txt"
 }
 
-# e2e_begin <scenario> <name>: makes the folders of the scenario and sets the trap that cleans up and writes the result.
+# e2e_begin <scenario> <name> [all|site|scenario]: makes the folders of the scenario and sets the trap that cleans up and writes
+# the result. A scenario runs whole (all), or in two parts, each a step of the job: the site, which needs no secret, and then
+# the scenario, which reaches the service. The scenario part goes on with what the site part recorded (the reasons, the
+# durations, the numbers, the time of the start), so that one result holds both.
 e2e_begin() {
+    local started
     e2e_scenario="$1"
     e2e_name="$2"
     e2e_folder="$SECBK_E2E_OUT/$e2e_name"
@@ -105,11 +119,21 @@ e2e_begin() {
     e2e_private="$e2e_folder/private"
     mkdir -p "$e2e_logs" "$e2e_private"
     chmod 700 "$e2e_private"
-    rm -f "$e2e_folder/result.json" "$e2e_folder/inspect.json"
-    : > "$e2e_logs/reasons.txt"
-    : > "$e2e_logs/durations.txt"
-    : > "$e2e_logs/numbers.txt"
-    e2e_started="$(date +%s)"
+    if [ "${3:-all}" = scenario ]; then
+        rm -f "$e2e_logs/pending.txt"
+        touch "$e2e_logs/reasons.txt" "$e2e_logs/durations.txt" "$e2e_logs/numbers.txt"
+        started="$(cat "$e2e_logs/started.txt" 2> /dev/null)" || started=''
+        [[ "$started" =~ ^[0-9]+$ ]] || started="$(date +%s)"
+        e2e_started="$started"
+    else
+        rm -f "$e2e_folder/result.json" "$e2e_folder/inspect.json" "$e2e_logs/pending.txt" "$e2e_logs/site.done" \
+            "$e2e_logs/moodle.json" "$e2e_logs/core.txt"
+        : > "$e2e_logs/reasons.txt"
+        : > "$e2e_logs/durations.txt"
+        : > "$e2e_logs/numbers.txt"
+        e2e_started="$(date +%s)"
+        echo "$e2e_started" > "$e2e_logs/started.txt"
+    fi
     trap e2e_end EXIT
     # A cancelled job stops with a signal: the trap of EXIT then cleans up all the same.
     trap 'exit 143' TERM
@@ -119,6 +143,20 @@ e2e_begin() {
 # Marks the scenario as run to its end. Without it, the result says at which step the script stopped.
 e2e_finish() {
     e2e_finished=yes
+}
+
+# The end of the site part of a scenario that reaches the service: the result says that the scenario has not run, until the
+# scenario part takes this away. The site part still ends with 0, so that the job goes on to the scenario.
+e2e_pending() {
+    echo "the scenario has not run yet: only the site was built (run.sh --part=scenario runs it)" > "$e2e_logs/pending.txt"
+}
+
+# The start of the scenario part: the site part has built the site (e2e_build_site leaves logs/site.done at its end).
+e2e_require_site() {
+    if [ ! -e "$e2e_logs/site.done" ]; then
+        e2e_fail "the site was not built: run.sh --part=site comes first"
+        return 1
+    fi
 }
 
 # The trap of EXIT: stops the load, opens the firewall again, stops a backup that still runs and the sleep or sec.php that a
@@ -147,19 +185,28 @@ e2e_end() {
         echo "result: FAILED ($(wc -l < "$e2e_logs/reasons.txt" | tr -d ' ') reasons in result.json)"
         exit 1
     fi
+    if [ -s "$e2e_logs/pending.txt" ]; then
+        echo "result: the site is built; the scenario runs in the next step"
+        exit 0
+    fi
     echo "result: passed"
     exit 0
 }
 
-# Writes result.json: {scenario, name, passed, reasons, sent_bytes, durations, retries, numbers, requested_bytes}.
-# sent_bytes is objects.bytes of inspect.json (what the service holds of the site at the end; 0 without it), retries counts
-# the lines of the output of cli/backup.php that say that it waited ("Waiting until", for example when the service asked it
-# to come back later) or that a step failed, and requested_bytes lists the bytes that each run of the site asked the
-# service for. passed is true when no reason was recorded.
+# Writes result.json: {scenario, name, passed, reasons, sent_bytes, durations, retries, numbers, requested_bytes, moodle}.
+# sent_bytes is objects.bytes of inspect.json (what the service holds of the site at the end; 0 without it), and
+# requested_bytes lists the bytes that each run of the site asked the service for. retries counts lines of the output of
+# cli/backup.php: refused, the steps that failed because the service was rate limited or unavailable (api_rate_limited,
+# api_unavailable); waits, the waits ("Waiting until") in any stage but the one of the receipt, where the run asks again and
+# again until it has it; and failed_steps, every step that failed. The plugin makes a run wait, without a failed step, when
+# the service answers that it is busy, so the requests that the service refused are among the waits. moodle is the code of
+# Moodle of the site (logs/moodle.json) with core_manifest, whether its last run had the official list of the files of that
+# build (logs/core.txt; null when it is not known). passed is true when no reason was recorded; the site part of a scenario
+# adds the reason that the scenario has not run yet (logs/pending.txt).
 e2e_write_result() {
     # shellcheck disable=SC2016
     php -r '
-        [, $folder, $scenario, $name] = $argv;
+        [, $folder, $scenario, $name, $receipt] = $argv;
         $lines = static function (string $file): array {
             $text = is_file($file) ? (string) file_get_contents($file) : "";
             return array_values(array_filter(explode("\n", $text), "strlen"));
@@ -173,16 +220,31 @@ e2e_write_result() {
             }
             return $values;
         };
-        $reasons = $lines("$folder/logs/reasons.txt");
+        $reasons = array_merge($lines("$folder/logs/reasons.txt"), $lines("$folder/logs/pending.txt"));
         $file = "$folder/inspect.json";
         $inspection = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
         $runs = is_array($inspection) && is_array($inspection["runs"] ?? null) ? $inspection["runs"] : [];
         $waits = 0;
+        $refused = 0;
         $failed = 0;
         foreach (glob("$folder/logs/backup-*.log") ?: [] as $log) {
-            $text = (string) file_get_contents($log);
-            $waits += preg_match_all("/^Waiting until /m", $text);
-            $failed += preg_match_all("/^A step of the backup failed /m", $text);
+            $stage = "";
+            foreach ($lines($log) as $line) {
+                if (str_starts_with($line, "Stage: ")) {
+                    $stage = substr($line, 7);
+                } else if (str_starts_with($line, "Waiting until ")) {
+                    $waits += $stage === $receipt ? 0 : 1;
+                } else if (preg_match("/^A step of the backup failed \\((.*)\\)\\. /", $line, $m) === 1) {
+                    $failed++;
+                    $refused += preg_match("/(^|[^a-z_])(api_rate_limited|api_unavailable)([^a-z_]|\\z)/", $m[1]);
+                }
+            }
+        }
+        $moodle = json_decode((string) @file_get_contents("$folder/logs/moodle.json"), true);
+        if (is_array($moodle)) {
+            $core = trim((string) @file_get_contents("$folder/logs/core.txt"));
+            $moodle = array_map("strval", array_intersect_key($moodle, array_flip(["commit", "version", "release", "build"])))
+                + ["core_manifest" => $core === "1" ? true : ($core === "0" ? false : null)];
         }
         $result = [
             "scenario" => $scenario,
@@ -192,14 +254,15 @@ e2e_write_result() {
             "sent_bytes" => is_array($inspection) && is_int($inspection["objects"]["bytes"] ?? null)
                 ? $inspection["objects"]["bytes"] : 0,
             "durations" => (object) $pairs("$folder/logs/durations.txt"),
-            "retries" => ["waits" => $waits, "failed_steps" => $failed],
+            "retries" => ["refused" => $refused, "waits" => $waits, "failed_steps" => $failed],
             "numbers" => (object) $pairs("$folder/logs/numbers.txt"),
             "requested_bytes" => array_map(static fn($run) => is_array($run) ? ($run["requested_bytes"] ?? null) : null, $runs),
+            "moodle" => is_array($moodle) ? $moodle : null,
         ];
         $text = json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
         file_put_contents("$folder/result.json.part", $text);
         rename("$folder/result.json.part", "$folder/result.json");
-    ' "$e2e_folder" "$e2e_scenario" "$e2e_name"
+    ' "$e2e_folder" "$e2e_scenario" "$e2e_name" "$e2e_receipt_stage"
 }
 
 # e2e_check_disk <files GB>: stops the scenario before anything is made when the disk that will hold the site has less room
@@ -263,15 +326,112 @@ PHP
     php -r "$code" "$secbk_moodle/config.php" "$1" "$2"
 }
 
-# e2e_build_site <name> <files GB> [--skip=<component>[,<component>...]]...: Moodle 4.5 with the plugin and the extra plugins
-# (the ones that --skip names are left out), installed on PostgreSQL, with the address https://<name>.moodle.example.invalid,
-# dummy data, the data of the extra plugins and files of <files GB> GB (10^9 bytes) in all; then check-data.php.
+# e2e_moodle_pin [<file>]: reads the Moodle that the sites are built with (moodle.json): the branch, the commit (40
+# hexadecimal digits), and the $version and $release of the code of that commit. The commit is fixed, as the extra plugins
+# are: the head of the branch moves every week, and the service holds the official list of the files of one build only, so a
+# site of another build sends the whole code of Moodle. Sets e2e_moodle_branch, e2e_moodle_commit, e2e_moodle_version and
+# e2e_moodle_release; a file that is not of that form is a reason, and 1.
+e2e_moodle_pin() {
+    local file="${1:-$e2e_dir/moodle.json}" values code
+    code="$(cat <<'PHP'
+$pin = json_decode((string) @file_get_contents($argv[1]), true);
+if (
+    !is_array($pin) || array_keys($pin) !== ['branch', 'commit', 'version', 'release']
+    || !is_string($pin['branch']) || preg_match('/^MOODLE_[0-9]+_STABLE\z/', $pin['branch']) !== 1
+    || !is_string($pin['commit']) || preg_match('/^[0-9a-f]{40}\z/', $pin['commit']) !== 1
+    || !is_string($pin['version']) || preg_match('/^[0-9]{10}\.[0-9]{2}\z/', $pin['version']) !== 1
+    || !is_string($pin['release']) || preg_match('/^[0-9][^\n]{0,60} \(Build: [0-9]{8}\)\z/', $pin['release']) !== 1
+) {
+    exit(1);
+}
+echo implode("\n", $pin), "\n";
+PHP
+)"
+    if ! values="$(php -r "$code" "$file")"; then
+        e2e_fail "moodle.json does not fix the code of Moodle: it has branch (MOODLE_<n>_STABLE), commit (40 hexadecimal" \
+            "digits), version and release (with its build), in that order and nothing else"
+        return 1
+    fi
+    {
+        read -r e2e_moodle_branch
+        read -r e2e_moodle_commit
+        read -r e2e_moodle_version
+        IFS= read -r e2e_moodle_release
+    } <<< "$values"
+}
+
+# Checks that the code of Moodle of the site is the one that moodle.json fixes (e2e_moodle_pin): its commit, and the $version
+# and $release of its version.php. Writes them, with the build, to logs/moodle.json for the result; a difference is a reason.
+e2e_check_moodle() {
+    local head found code
+    head="$(git -C "$secbk_moodle" rev-parse HEAD 2> /dev/null)" || head=''
+    if [ "$head" != "$e2e_moodle_commit" ]; then
+        e2e_fail "the code of Moodle is at commit ${head:-unknown}, moodle.json fixes $e2e_moodle_commit"
+        return 1
+    fi
+    code="$(cat <<'PHP'
+[, $root, $commit, $file] = $argv;
+$text = '';
+foreach (["$root/version.php", "$root/public/version.php"] as $path) {
+    if ($text === '' && is_file($path)) {
+        $text = (string) file_get_contents($path);
+    }
+}
+$version = preg_match('~^\s*\$version\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*;~m', $text, $v) === 1 ? $v[1] : '';
+$release = preg_match('~^\s*\$release\s*=\s*(?:\'([^\']*)\'|"([^"]*)")\s*;~m', $text, $r) === 1 ? $r[1] . ($r[2] ?? '') : '';
+$build = preg_match('/Build: ([0-9]{8})/', $release, $b) === 1 ? $b[1] : '';
+file_put_contents($file, json_encode(['commit' => $commit, 'version' => $version, 'release' => $release, 'build' => $build],
+    JSON_UNESCAPED_SLASHES) . "\n");
+echo "$version\n$release\n";
+PHP
+)"
+    found="$(php -r "$code" "$secbk_moodle" "$head" "$e2e_logs/moodle.json")" || found=''
+    if [ "$found" != "$e2e_moodle_version"$'\n'"$e2e_moodle_release" ]; then
+        e2e_fail "the code of Moodle at commit $head has \$version ${found%%$'\n'*} and \$release ${found#*$'\n'}," \
+            "moodle.json says $e2e_moodle_version and $e2e_moodle_release"
+        return 1
+    fi
+    echo "Moodle $e2e_moodle_release, \$version $e2e_moodle_version, commit $head"
+}
+
+# Whether the last run of the site that compared the code of Moodle with the official list of its build had that list, from
+# the progress that the plugin keeps in the record of the run (run.core.official): logs/core.txt, 1 or 0. Nothing is written
+# when no run compared or the database cannot be read; the result then says that it is not known. It is a note, not a
+# condition: a site without the list sends the code of Moodle, and the backup is still whole.
+e2e_read_core() {
+    local rows
+    rows="$(psql -h 127.0.0.1 -U postgres -d moodle -At -c 'SELECT progress FROM mdl_tool_secbackup_runs ORDER BY id DESC' \
+        2>> "$e2e_logs/psql.log")" || return 0
+    # shellcheck disable=SC2016
+    if printf '%s\n' "$rows" | php -r '
+        while (($line = fgets(STDIN)) !== false) {
+            $progress = json_decode(trim($line), true);
+            $official = is_array($progress) ? ($progress["run"]["core"]["official"] ?? null) : null;
+            if (is_bool($official)) {
+                echo $official ? "1" : "0", "\n";
+                exit(0);
+            }
+        }
+        exit(1);
+    ' > "$e2e_logs/core.txt.part"; then
+        mv "$e2e_logs/core.txt.part" "$e2e_logs/core.txt"
+    else
+        rm -f "$e2e_logs/core.txt.part"
+    fi
+}
+
+# e2e_build_site <name> <files GB> [--skip=<component>[,<component>...]]...: Moodle 4.5 at the commit of moodle.json with the
+# plugin and the extra plugins (the ones that --skip names are left out), installed on PostgreSQL, with the address
+# https://<name>.moodle.example.invalid, dummy data, the data of the extra plugins and files of <files GB> GB (10^9 bytes) in
+# all; then check-data.php. Leaves logs/site.done at its end, for the scenario part.
 e2e_build_site() {
     local name="$1" gb="$2" since
     shift 2
     since="$(date +%s)"
-    e2e_step "Moodle MOODLE_405_STABLE with the plugin"
-    storage_moodle MOODLE_405_STABLE
+    e2e_moodle_pin
+    e2e_step "Moodle $e2e_moodle_branch at commit $e2e_moodle_commit with the plugin"
+    storage_moodle "$e2e_moodle_branch" "$e2e_moodle_commit"
+    e2e_check_moodle
     e2e_step "the site on PostgreSQL"
     storage_install "$SECBK_STORAGE_DIR/moodledata"
     e2e_step "the extra plugins"
@@ -290,6 +450,7 @@ e2e_build_site() {
     e2e_step "the check of the data"
     storage_php "$(storage_plugin)/.dev/e2e/check-data.php" --files-gb="$gb" "$@"
     e2e_duration build "$since"
+    : > "$e2e_logs/site.done"
 }
 
 # The public address that this runner sends from (one line of checkip.amazonaws.com), which the service is told to allow.
@@ -472,15 +633,17 @@ e2e_backup() {
     e2e_wait_exit "$e2e_backup_timeout"
 }
 
-# e2e_wait_sending <percent> [<bytes>]: waits until the run of the command of e2e_backup_start (a run later than
-# e2e_after_id, active or paused) is in the stage files (it sends the files of the site) and has sent <percent> % of the
-# bytes it expects, and at least <bytes> bytes. Until the command has written the record of its run, the latest record is
-# from before it, and is not looked at. Returns 1 when the command ends first, when its run ends or leaves the stage files
-# first, after SECBK_E2E_BACKUP_TIMEOUT seconds, or when the database of the site cannot be read five times in a row (with
-# that reason).
+# e2e_wait_sending <percent> [<bytes>] [<bytes in the stage files>]: waits until the run of the command of e2e_backup_start (a
+# run later than e2e_after_id, active or paused) is in the stage files (it sends the files of the site) and has sent
+# <percent> % of the bytes it expects, at least <bytes> bytes, and at least <bytes in the stage files> more than when it was
+# first seen in that stage (e2e_files_from: what it had sent before, in the stage db, does not count). Until the command
+# has written the record of its run, the latest record is from before it, and is not looked at. Returns 1 when the command
+# ends first, when its run ends or leaves the stage files first, after SECBK_E2E_BACKUP_TIMEOUT seconds, or when the
+# database of the site cannot be read five times in a row (with that reason).
 e2e_wait_sending() {
-    local percent="$1" least="${2:-1}" deadline next=0 wanted misses=0
+    local percent="$1" least="${2:-1}" files="${3:-0}" deadline next=0 wanted misses=0
     deadline=$(( $(date +%s) + e2e_backup_timeout ))
+    e2e_files_from=''
     while e2e_alive "$e2e_pid"; do
         if ! e2e_read_run; then
             misses=$(( misses + 1 ))
@@ -508,10 +671,13 @@ e2e_wait_sending() {
                 return 1
                 ;;
         esac
+        if [ "$e2e_run_stage" = files ] && [ -z "$e2e_files_from" ]; then
+            e2e_files_from="$e2e_run_bytes"
+        fi
         if [ "$e2e_run_stage" = files ] && [ "$e2e_run_estimate" -gt 0 ]; then
             wanted=$(( e2e_run_estimate * percent / 100 ))
             if [ "$wanted" -lt "$least" ]; then wanted="$least"; fi
-            if [ "$e2e_run_bytes" -ge "$wanted" ]; then
+            if [ "$e2e_run_bytes" -ge "$wanted" ] && [ $(( e2e_run_bytes - e2e_files_from )) -ge "$files" ]; then
                 e2e_progress
                 return 0
             fi
@@ -652,6 +818,7 @@ e2e_wait_stopped() {
 
 # e2e_final <options of verdict.php>...: what the service holds at the end, in inspect.json, and the verdict on it.
 e2e_final() {
+    e2e_read_core
     e2e_step "the state of the site at the service"
     e2e_inspect "$e2e_folder/inspect.json" || e2e_fail "the service did not answer the inspection"
     e2e_verdict "at the end" "$e2e_folder/inspect.json" --done "$@" || true
@@ -759,14 +926,16 @@ e2e_checks_after_stop() {
 }
 
 # The scenario load: the load stops the run (server_busy) while it sends the files of the site; after the recount, the next
-# run completes and does not send again what the first one sent.
+# run completes and does not send again what the first one sent. The load starts once the run has sent a chunk (32 MiB) in
+# the stage files, so that the check of a resend covers chunks of files and not only those of the database; what the run
+# sent in that stage until the stop is a number of the result, and nothing is a reason.
 e2e_scenario_load() {
-    local since loaded
+    local since loaded files
     e2e_step "backup: cli/backup.php --now, in the background"
     since="$(date +%s)"
     e2e_backup_start "$e2e_logs/backup-1.log" --now
-    e2e_step "waiting until the run sends the files of the site"
-    if ! e2e_wait_sending 0; then
+    e2e_step "waiting until the run has sent a chunk of the files of the site"
+    if ! e2e_wait_sending 0 1 33554432; then
         e2e_fail "the run did not get to the stage files, where the load is to stop it"
         e2e_wait_exit "$e2e_backup_timeout"
         e2e_final --runs=1
@@ -782,6 +951,13 @@ e2e_scenario_load() {
     if ! e2e_stopped_run server_busy "the load"; then
         e2e_final --runs=1
         return
+    fi
+    files=$(( e2e_run_bytes - e2e_files_from ))
+    if [ "$files" -lt 0 ]; then files=0; fi
+    e2e_number files_sent_before_stop "$files"
+    if [ "$files" -eq 0 ]; then
+        e2e_fail "the load stopped the run before it sent anything in the stage files, so the check of a resend does not" \
+            "cover the files of the site"
     fi
     e2e_checks_after_stop '' server_busy "$(date +%s)"
     e2e_step "backup again: cli/backup.php --now"

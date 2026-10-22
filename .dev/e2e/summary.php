@@ -23,13 +23,22 @@
  * (the workflow downloads them, one folder for each job). The amount sent is the sum of objects.bytes of the inspections:
  * what the service holds of each site at the end. A GB is 10^9 bytes.
  *
- * The amount of a site whose inspection is missing or failed is not known: its cell says unknown, the line of the total says
- * for how many sites, and the limit is judged on the amounts that are known.
+ * The amount of a site whose inspection is missing, failed or not of its form is not known: its cell says unknown, the site
+ * has that problem, the line of the total says for how many sites, and the limit is judged on the amounts that are known.
+ *
+ * For each site the table shows the Moodle it was built with and whether its run had the official list of the files of that
+ * build at the service (moodle of result.json), the requests that the service refused and the waits of its runs that were
+ * not for the receipt (retries), and its minutes. For the scenario concurrent it says how long the runs of the ten sites
+ * ran together, from the latest start to the earliest end of their completed runs by the times of the service, and how late
+ * the latest site started (numbers.start_late).
  *
  * It fails (exit 1) when there is no result at all, when the amount sent is over the limit, when a result did not pass or is
- * missing, and when the inspection of a site is missing, failed (an error such as lock_read_failed or too_many_objects), or
- * shows an object that is not locked in COMPLIANCE mode (compliance false, or missing, expired or gone keys). The scenario
- * data-only, which does not reach the service, has no inspection. Exit 2: wrong usage.
+ * missing, when the inspection of a site is missing, failed (an error such as lock_read_failed or too_many_objects), or
+ * shows an object that is not locked in COMPLIANCE mode (compliance false, or missing, expired or gone keys), when the amount
+ * of a site is not known, and when the runs of concurrent never ran together or a completed one has no times. The scenario
+ * data-only, which does not reach the service, has no inspection. Notes, which do not fail it: the sites that sent the code
+ * of Moodle because the service has no official list of its build, and the sites of concurrent that started late.
+ * Exit 2: wrong usage.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -77,6 +86,23 @@ function secbk_e2e_cell(mixed $value): string {
 }
 
 /**
+ * A time of the service as a UNIX time, or null.
+ *
+ * @param mixed $value The time, such as 2026-10-23T01:30:00+00:00.
+ * @return int|null
+ */
+function secbk_e2e_time(mixed $value): ?int {
+    if (!is_string($value) || $value === '') {
+        return null;
+    }
+    try {
+        return (new DateTimeImmutable($value))->getTimestamp();
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
+/**
  * Bytes as GB of 10^9 bytes.
  *
  * @param int $bytes The bytes.
@@ -99,6 +125,13 @@ sort($sites);
 
 $rows = [];
 $failures = [];
+$notes = [];
+// The sites that sent the code of Moodle, by the build that the service has no official list of.
+$codesent = [];
+// The sites of concurrent: how many, the start and the end of their completed runs, and how late each started.
+$concurrent = 0;
+$together = [];
+$lates = [];
 $total = 0;
 // Sites whose amount is not known: their inspection is missing or failed.
 $unknown = 0;
@@ -157,14 +190,54 @@ foreach ($sites as $site) {
     }
     if ($sent === null) {
         $unknown++;
+        $problems[] = 'the amount that the service holds is not known';
     } else {
         $total += $sent;
     }
+
+    $moodle = is_array($result['moodle'] ?? null) ? $result['moodle'] : [];
+    $core = $moodle['core_manifest'] ?? null;
+    // Empty for a result without the record (written before the Moodle was recorded).
+    $version = is_string($moodle['release'] ?? null) ? $moodle['release'] : '';
+    if ($version !== '') {
+        $version .= $core === true ? ', list used' : ($core === false ? ', code sent' : '');
+    }
+    if ($core === false) {
+        $build = is_string($moodle['build'] ?? null) && $moodle['build'] !== '' ? $moodle['build'] : 'unknown';
+        $codesent[$build][] = "$scenario $name";
+    }
+
+    if ($scenario === 'concurrent') {
+        $concurrent++;
+        $late = $result['numbers']['start_late'] ?? null;
+        if (is_int($late)) {
+            $lates[] = $late;
+            if ($late > 0) {
+                $notes[] = "concurrent $name: started $late s after the start of the ten sites";
+            }
+        }
+        $completed = null;
+        foreach (is_array($inspection['runs'] ?? null) && !isset($inspection['error']) ? $inspection['runs'] : [] as $run) {
+            if (is_array($run) && ($run['status'] ?? null) === 'completed') {
+                $completed = $run;
+            }
+        }
+        if ($completed !== null) {
+            $from = secbk_e2e_time($completed['created_at'] ?? null);
+            $to = secbk_e2e_time($completed['updated_at'] ?? null);
+            if ($from === null || $to === null) {
+                $problems[] = 'the service gave no times of a completed run, so the time that the ten ran together is not known';
+            } else {
+                $together[] = [$from, $to];
+            }
+        }
+    }
+
     $retries = is_array($result['retries'] ?? null) ? $result['retries'] : [];
     $minutes = is_numeric($result['durations']['total'] ?? null) ? (int) round($result['durations']['total'] / 60) : '';
     $rows[] = [$scenario, $name, $problems ? 'FAILED' : 'passed', $sent === null ? 'unknown' : secbk_e2e_gb($sent), $runs, $lock,
-        $classes,
-        (int) ($retries['waits'] ?? 0) . ' / ' . (int) ($retries['failed_steps'] ?? 0), $minutes, implode('; ', $problems)];
+        $classes, $version, (int) ($retries['refused'] ?? 0) . ' / ' . (int) ($retries['waits'] ?? 0), $minutes,
+        implode('; ', $problems)];
     foreach ($problems as $problem) {
         $failures[] = "$scenario $name: $problem";
     }
@@ -178,11 +251,33 @@ if ($total > $limitbytes) {
     $failures[] = sprintf('the amount sent, %s GB (%d bytes), is over the limit of %s GB', secbk_e2e_gb($total), $total,
         $limittext);
 }
+// The runs of concurrent ran together from the latest start to the earliest end.
+$lines = [];
+if ($together) {
+    $start = max(array_column($together, 0));
+    $end = min(array_column($together, 1));
+    $sites = count($together) === $concurrent ? sprintf('the %d %s', $concurrent, $concurrent === 1 ? 'site' : 'sites')
+        : sprintf('%d of the %d sites', count($together), $concurrent);
+    if ($end > $start) {
+        $lines[] = sprintf('Concurrent: the runs of %s ran together for %d s (%s to %s UTC); %s.', $sites, $end - $start,
+            gmdate('H:i:s', $start), gmdate('H:i:s', $end), $lates
+                ? sprintf('the latest site started %d s after the start of the ten sites', max($lates))
+                : 'the latest start of a site is not known');
+    } else {
+        $failures[] = sprintf('the runs of %s of concurrent never ran together: the latest started at %s, after the earliest'
+            . ' ended at %s (UTC)', $sites, gmdate('H:i:s', $start), gmdate('H:i:s', $end));
+    }
+}
+ksort($codesent);
+foreach ($codesent as $build => $names) {
+    $notes[] = sprintf('sent the code of Moodle (%s): the service has no official list of the files of Build %s'
+        . ' (.dev/e2e/README.md)', implode(', ', $names), $build);
+}
 
 echo "## Staging end-to-end test\n\n";
-echo "| Scenario | Site | Result | Sent (GB) | Runs / objects | Lock | Storage classes | Waits / failed steps | Minutes |",
+echo "| Scenario | Site | Result | Sent (GB) | Runs / objects | Lock | Storage classes | Moodle | Refused / waits | Minutes |",
     " Problems |\n";
-echo "|---|---|---|---:|---|---|---|---:|---:|---|\n";
+echo "|---|---|---|---:|---|---|---|---|---:|---:|---|\n";
 foreach ($rows as $row) {
     echo '| ', implode(' | ', array_map('secbk_e2e_cell', $row)), " |\n";
 }
@@ -190,6 +285,16 @@ foreach ($rows as $row) {
 printf("\nSent in total: %s GB (%d bytes) of the limit of %s GB%s.\n\n", secbk_e2e_gb($total), $total, $limittext,
     $unknown > 0 ? sprintf('; not known for %d %s whose inspection is missing or failed', $unknown,
         $unknown === 1 ? 'site' : 'sites') : '');
+foreach ($lines as $line) {
+    echo $line, "\n\n";
+}
+if ($notes) {
+    echo "**Notes** (they do not fail the run):\n\n";
+    foreach ($notes as $note) {
+        echo '- ', secbk_e2e_cell($note), "\n";
+    }
+    echo "\n";
+}
 if ($failures) {
     echo "**Failed:**\n\n";
     foreach ($failures as $failure) {

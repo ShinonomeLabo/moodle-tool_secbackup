@@ -54,16 +54,17 @@ concurrency:
 # the first attempt. A new run of the workflow does them all again. The job then checks out the repository and masks the
 # address of the service (.dev/e2e/mask.sh): no step before prints a secret, and only the steps that need one are given it.
 #
-# Each scenario runs in one step whose limit is 25 minutes below the limit of its job: when a run hangs, the step and not the
-# job is stopped, so the log is kept and the next steps upload the result. The step is run.sh itself (exec), so the signal
-# reaches its trap, which writes in result.json the step where it stopped. SECBK_E2E_BACKUP_TIMEOUT (one call of
-# cli/backup.php) is set for each scenario so that its typical longest path ends within the step: each point that depends
-# on the speed of a run (the files reached, 10 % sent, the stop by the load) comes within 5 minutes, and every other wait
-# is at its limit. A slower run reaches the limit of the step instead, and the trap writes that step in result.json. The
-# limits are first guesses, to be reviewed once the first run has measured the speed of the runner to S3.
-# The sums count the site at a measure taken from data-only, which built its site of 0.2 GB in 85 s (run 39850020594:
-# Moodle and Composer 9 s, the install 51 s, the extra plugins and the upgrade 18 s, the data 7 s): 15 minutes are allowed
-# for 10 GB, 10 for 4 GB and 5 for 0.8 GB. The connection is counted at 6 minutes (each request to the service at its
+# Each scenario runs in two steps, run.sh --part=site and then --part=scenario, whose limits together are 25 minutes below
+# the limit of its job: when a run hangs, a step and not the job is stopped, so the log is kept and the next steps upload
+# the result. The site step has no secret: the code of Moodle, Composer and the extra plugins run in it. Each step is run.sh
+# itself (exec), so the signal reaches its trap, which writes in result.json the step where it stopped. The site step has
+# 25 minutes for 10 GB, 20 for 4 GB and 8 for 0.8 GB, against 85 s for the site of 0.2 GB of data-only (run 39850020594:
+# Moodle and Composer 9 s, the install 51 s, the extra plugins and the upgrade 18 s, the data 7 s).
+# SECBK_E2E_BACKUP_TIMEOUT (one call of cli/backup.php) is set for each scenario so that the typical longest path of its
+# scenario step ends within that step: each point that depends on the speed of a run (the files reached, 10 % sent, the
+# stop by the load) comes within 5 minutes, and every other wait is at its limit. A slower run reaches the limit of the step
+# instead, and the trap writes that step in result.json. The limits are first guesses, to be reviewed once the first run has
+# measured the speed of the runner to S3. The connection is counted at 6 minutes (each request to the service at its
 # limit), the checks at the end at 17 (three tries a minute apart, each at its limit of 300 s), and the check after a stop
 # at 15 (e2e_wait_stopped: tries for 600 s, the last request at its limit of 300 s); that check runs within the 20 minutes
 # of the wait for the recount, which count from the stop.
@@ -171,8 +172,8 @@ jobs:
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
         run: php .dev/e2e/sec.php reset
 
-  # Longest path, 138 of the 155 minutes of the step: the site (15), the connection (6), cli/backup.php at its limit (100
-  # minutes, 6000 s: 10 GB at 1.7 MB/s) and the checks (17).
+  # Longest path of the scenario step, 123 of its 130 minutes: the connection (6), cli/backup.php at its limit (100 minutes,
+  # 6000 s: 10 GB at 1.7 MB/s) and the checks (17).
   normal:
     name: normal (one site of ${{ inputs.normal_gb }} GB)
     needs: [plan, reset]
@@ -235,15 +236,23 @@ jobs:
       - name: Create the database
         run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
 
+      # Without the secrets: the code of Moodle, Composer and the extra plugins run in this step.
+      - name: The site of normal
+        timeout-minutes: 25
+        env:
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          FILES_GB: ${{ inputs.normal_gb }}
+        run: exec bash .dev/e2e/run.sh normal --part=site --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+
       - name: The scenario normal
-        timeout-minutes: 155
+        timeout-minutes: 130
         env:
           SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
           SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
           SECBK_E2E_BACKUP_TIMEOUT: '6000'
           FILES_GB: ${{ inputs.normal_gb }}
-        run: exec bash .dev/e2e/run.sh normal --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+        run: exec bash .dev/e2e/run.sh normal --part=scenario --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
 
       - name: Show the room left on the disk and in memory
         if: always()
@@ -261,10 +270,10 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Typical longest path, 113 of the 155 minutes of the step: the site (10), the connection (6), the run to the files (5),
-  # the load until the plugin stops the run (5), the wait for the recount with the check after the stop in it (20), the next
-  # run at its limit (50 minutes, 3000 s) and the checks (17). A run that takes most of its 50 minutes to get to the files
-  # or to be stopped by the load reaches the limit of the step.
+  # Typical longest path of the scenario step, 103 of its 135 minutes: the connection (6), the run to a chunk of the files
+  # (5), the load until the plugin stops the run (5), the wait for the recount with the check after the stop in it (20), the
+  # next run at its limit (50 minutes, 3000 s) and the checks (17). A run that takes most of its 50 minutes to get to the
+  # files or to be stopped by the load reaches the limit of the step.
   load:
     name: load (one site of ${{ inputs.load_gb }} GB)
     needs: [plan, reset]
@@ -325,15 +334,23 @@ jobs:
       - name: Create the database
         run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
 
+      # Without the secrets: the code of Moodle, Composer and the extra plugins run in this step.
+      - name: The site of load
+        timeout-minutes: 20
+        env:
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          FILES_GB: ${{ inputs.load_gb }}
+        run: exec bash .dev/e2e/run.sh load --part=site --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+
       - name: The scenario load
-        timeout-minutes: 155
+        timeout-minutes: 135
         env:
           SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
           SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
           SECBK_E2E_BACKUP_TIMEOUT: '3000'
           FILES_GB: ${{ inputs.load_gb }}
-        run: exec bash .dev/e2e/run.sh load --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+        run: exec bash .dev/e2e/run.sh load --part=scenario --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
 
       - name: Show the room left on the disk and in memory
         if: always()
@@ -350,7 +367,7 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Typical longest path, 181 of the 215 minutes of the step: the site (10), the connection (6), (b) the run to 10 % (5), the
+  # Typical longest path of the scenario step, 171 of its 195 minutes: the connection (6), (b) the run to 10 % (5), the
   # refused connections until the plugin stops the run (60, the limit of the script; the plugin needs about 30: three tries
   # 15 minutes apart), the wait for the recount with the check after the stop in it (20), (a) the run to 10 % (5), the kill
   # (1), the check of the killed run (17), the rest of the run at its limit (40 minutes, 2400 s) and the checks (17). A run
@@ -415,15 +432,23 @@ jobs:
       - name: Create the database
         run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
 
+      # Without the secrets: the code of Moodle, Composer and the extra plugins run in this step.
+      - name: The site of abort
+        timeout-minutes: 20
+        env:
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          FILES_GB: ${{ inputs.abort_gb }}
+        run: exec bash .dev/e2e/run.sh abort --part=site --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+
       - name: The scenario abort
-        timeout-minutes: 215
+        timeout-minutes: 195
         env:
           SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
           SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
           SECBK_E2E_BACKUP_TIMEOUT: '2400'
           FILES_GB: ${{ inputs.abort_gb }}
-        run: exec bash .dev/e2e/run.sh abort --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+        run: exec bash .dev/e2e/run.sh abort --part=scenario --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
 
       - name: Show the room left on the disk and in memory
         if: always()
@@ -440,10 +465,11 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-  # Ten sites, each on its own runner, start their backups together at the time of the job plan. Longest path, 117 of the
-  # 125 minutes of the step: the site (5), the connection and the wait for the start within the 40 minutes from plan to that
-  # time (less the approvals), cli/backup.php at its limit (60 minutes, 3600 s, for the waits that the service may ask of ten
-  # sites at once) and the checks (17).
+  # Ten sites, each on its own runner, start their backups together at the time of the job plan. Longest path of the
+  # scenario step, 114 of its 117 minutes: the connection and the wait end at the start, 40 minutes after plan, which is at
+  # most 37 minutes into this step (the set-up of the job and the site come before it: about 3 minutes in data-only), then
+  # cli/backup.php at its limit (60 minutes, 3600 s, for the waits that the service may ask of ten sites at once) and the
+  # checks (17).
   concurrent:
     name: concurrent ${{ matrix.n }} of 10 (${{ inputs.concurrent_gb }} GB)
     needs: [plan, reset]
@@ -510,8 +536,19 @@ jobs:
       - name: Create the database
         run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
 
+      # Without the secrets: the code of Moodle, Composer and the extra plugins run in this step.
+      - name: The site of concurrent
+        timeout-minutes: 8
+        env:
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          FILES_GB: ${{ inputs.concurrent_gb }}
+          START_AT: ${{ needs.plan.outputs.start_at }}
+        run: |
+          exec bash .dev/e2e/run.sh concurrent --part=site --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB" \
+            --start-at="$START_AT"
+
       - name: The scenario concurrent
-        timeout-minutes: 125
+        timeout-minutes: 117
         env:
           SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
           SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
@@ -519,7 +556,9 @@ jobs:
           SECBK_E2E_BACKUP_TIMEOUT: '3600'
           FILES_GB: ${{ inputs.concurrent_gb }}
           START_AT: ${{ needs.plan.outputs.start_at }}
-        run: exec bash .dev/e2e/run.sh concurrent --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB" --start-at="$START_AT"
+        run: |
+          exec bash .dev/e2e/run.sh concurrent --part=scenario --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB" \
+            --start-at="$START_AT"
 
       - name: Show the room left on the disk and in memory
         if: always()

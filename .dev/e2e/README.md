@@ -11,7 +11,8 @@ Development only; `.dev/` is not part of the plugin package.
 
 | File | What it does |
 |---|---|
-| `run.sh` | One scenario: `run.sh <normal\|load\|abort\|concurrent\|data-only> --name=<name> --files-gb=<GB> [--start-at=<UNIX time>] [--skip=<component>[,...]]...` |
+| `run.sh` | One scenario: `run.sh <normal\|load\|abort\|concurrent\|data-only> --name=<name> --files-gb=<GB> [--start-at=<UNIX time>] [--skip=<component>[,...]]... [--part=site\|scenario]` |
+| `moodle.json` | The Moodle of the sites: a commit of `MOODLE_405_STABLE`, with the `$version` and `$release` of its code (below) |
 | `lib.sh` | The steps and the scenarios of `run.sh` (sourced): the site, the connection, the background run, the load, the firewall, the checks, the result |
 | `sec.php` | The test endpoints: `reset`, `provision`, `inspect` (plain PHP, no Moodle) |
 | `enroll.php` | Registers the site with the code and the key of the site, read as JSON on its standard input (a Moodle command line script) |
@@ -48,11 +49,16 @@ backup and the sleep or the request to the service that runs in the background, 
 ## A scenario
 
 Every scenario first checks that the disk has room (the files, 3 GB for Moodle and the rest, and the free space below which
-the plugin does not back up), then builds the site: Moodle 4.5 (`MOODLE_405_STABLE`) from git with the plugin, installed on
-PostgreSQL; the extra plugins of `plugins.json` (but those that `--skip` names) and the upgrade that installs them; the
-address `https://<name>.moodle.example.invalid` (a name and not an IP address: the firewall of the service refuses an address
+the plugin does not back up), then builds the site: Moodle 4.5 at the commit of `moodle.json` (below) with the plugin,
+installed on PostgreSQL; the extra plugins of `plugins.json` (but those that `--skip` names) and the upgrade that installs
+them; the address `https://<name>.moodle.example.invalid` (a name and not an IP address: the firewall of the service refuses an address
 that is an IP); dummy data, the data of the extra plugins and `--files-gb` GB (10^9 bytes) of files of random content; and
 `check-data.php`. `data-only` stops there and does not reach the service.
+
+`--part=site` does only this, without the secrets of the service in the environment: the code of Moodle, Composer and the
+extra plugins run here. Its result says that the scenario has not run yet, and it ends with 0 once the site is built.
+`--part=scenario`, with the same arguments, does the rest on that site and writes the one result of both parts (the
+reasons, durations and numbers of the site part go on into it). Without `--part`, one call does both.
 
 The other scenarios then:
 
@@ -67,7 +73,7 @@ The other scenarios then:
 | Scenario | How it runs | What has to hold |
 |---|---|---|
 | `normal` | `cli/backup.php --now` | It ends with 0. The service has one run, completed with a receipt |
-| `load` | `cli/backup.php --now` in the background. When the run sends the files of the site, 4 processes per CPU that only use it raise the load above 2 per CPU, the limit of the plugin. The load stops when the command ends. After the recount of the service, `cli/backup.php --now` | The first command ends with 1 and the run is stopped with `server_busy`; the service has it as failed (`server_busy`) and no completed generation. The second command ends with 0; the service has two runs, failed (`server_busy`) and completed with a receipt; the second run did not send again what the first sent |
+| `load` | `cli/backup.php --now` in the background. When the run has sent a chunk (32 MiB) in the stage of the files of the site, 4 processes per CPU that only use it raise the load above 2 per CPU, the limit of the plugin. The load stops when the command ends. After the recount of the service, `cli/backup.php --now` | The first command ends with 1 and the run is stopped with `server_busy`, after it sent something in the stage of the files (`numbers.files_sent_before_stop` above 0); the service has it as failed (`server_busy`) and no completed generation. The second command ends with 0; the service has two runs, failed (`server_busy`) and completed with a receipt; the second run did not send again what the first sent |
 | `abort` | (b) `cli/backup.php --now` in the background; when the run has sent 10 % of its bytes in the stage of the files, every connection to S3 is refused with iptables until the command ends; then allowed again. After the recount of the service: (a) `cli/backup.php --now` in the background; when that run has sent 10 % of its bytes in the stage of the files, `kill -9` of its php, then `cli/backup.php` again, without `--now` | (b) The command ends with 1 and the run is stopped with `upload_failed` (the plugin tries a send three times, 15 minutes apart); the service has it as failed (`upload_failed`) and no completed generation. (a) The killed command ends with 137; the service has no completed generation and the run is still open. The command without `--now` ends with 0, and the run it went on with is the one that was killed, now completed. The service has two runs, failed (`upload_failed`) and completed with a receipt (the one completed generation); the run of (a) did not send again what the run of (b) sent |
 | `concurrent` | Waits until `--start-at` (one time for the ten jobs of the workflow, at most 3 hours from now; a time that has passed starts at once, and the result says how late), then as `normal` | As `normal`. The waits and the failed steps of the run (for example when the service asked it to come back later) are counted in the result |
 
@@ -93,9 +99,20 @@ with that reason.
 
 `$SECBK_E2E_OUT/<name>/`:
 
-- `result.json`: `{scenario, name, passed, reasons, sent_bytes, durations, retries, numbers, requested_bytes}`. `passed` is
-  true when no condition failed and the script ran to its end; `reasons` says what failed, also the step where the script
-  stopped. `sent_bytes` is what the service holds of the site at the end. The trap of the script writes it in every case.
+- `result.json`: `{scenario, name, passed, reasons, sent_bytes, durations, retries, numbers, requested_bytes, moodle}`.
+  `passed` is true when no condition failed and the script ran to its end; `reasons` says what failed, also the step where
+  the script stopped. `sent_bytes` is what the service holds of the site at the end. The trap of the script writes it in
+  every case.
+  - `retries` counts lines of the output of `cli/backup.php`: `refused`, the steps that failed because the service was rate
+    limited or unavailable (`api_rate_limited`, `api_unavailable`); `waits`, the waits in any stage but the one of the
+    receipt (where the run asks for its receipt again and again); `failed_steps`, all the steps that failed. The plugin
+    makes a run wait, without a failed step, when the service answers that it is busy (429, 503) and when a send to S3 is to
+    be tried again, so the requests that the service refused are counted among the waits; `refused` stays 0 until the
+    plugin reports them as failed steps.
+  - `moodle` is the code of Moodle of the site: `commit`, `version`, `release`, `build`, and `core_manifest`, whether the
+    last run of the site had the official list of the files of that build at the service (it then sends only the files
+    that differ from it), from the record of the run on the site; null when it is not known.
+  - `numbers` holds what the scenarios measure, such as `start_late` (concurrent) and `files_sent_before_stop` (load).
 - `inspect.json`: what the service said about the site at the end, with only the fields that `sec.php` knows; an error answer
   is `{"error": <code>, "http_status": <status>}`.
 - `logs/`: the output of the commands and the answers of the service at the other checkpoints.
@@ -109,8 +126,16 @@ key; `sec.php` prints of an error answer only its status (and, for refused input
 table. It ends with 1 when the sum of `objects.bytes` (what was sent) is over the limit, when a result did not pass or is
 missing, or when the inspection of a site is missing, failed (for example `lock_read_failed` or `too_many_objects`) or shows
 an object that is not locked (`compliance` false, or `missing_keys`, `expired_keys` or `gone_keys` above 0). The amount of a
-site whose inspection is missing or failed is not known: the table says `unknown`, the line of the total says for how many
-sites, and the limit is judged on the amounts that are known.
+site whose inspection is missing, failed or not of its form is not known: the table says `unknown`, the site has that
+problem, the line of the total says for how many sites, and the limit is judged on the amounts that are known.
+
+The table also shows the Moodle of each site (its release, and `list used` or `code sent`) and `Refused / waits`
+(`retries` above). For `concurrent` a line says how long the runs of the ten sites ran together, from the latest start to
+the earliest end of their completed runs by the times that the service gives (`created_at` and `updated_at` of the run;
+the service gives no other time of its end), and how late the latest site started (`numbers.start_late`); runs that never
+ran together fail the summary. Notes, which do not fail it: the sites that sent the code of Moodle because the service has
+no official list of the files of their build (see "The Moodle of the sites"), and the sites of `concurrent` that started
+after the time of the ten.
 
 ## The workflow
 
@@ -128,14 +153,14 @@ public repository. It starts only by hand, on the branch that holds the version 
 | `abort_gb` | `4` | GB of files of the site of `abort` |
 | `concurrent_gb` | `0.8` | GB of files of each of the ten sites of `concurrent` |
 
-| Job | Environment | What it does | Limits: the job, the step of the scenario, one `cli/backup.php` (minutes) |
+| Job | Environment | What it does | Limits: the job, the steps of the site and of the scenario, one `cli/backup.php` (minutes) |
 |---|---|---|---|
 | `plan` | none | Refuses a size that is not a number of GB (up to nine decimals) or is below 0.2, and a selection whose files add up to more than 30 GB (`normal + load + abort + 10 x concurrent`); sets the start of the ten sites, 40 minutes later | 5 |
 | `reset` | `staging-e2e` | `sec.php reset`: removes the test sites that earlier runs made | 15 |
-| `normal` | `staging-e2e` | `run.sh normal` | 180, 155, 100 |
-| `load` | `staging-e2e` | `run.sh load` | 180, 155, 50 |
-| `abort` | `staging-e2e` | `run.sh abort` | 240, 215, 40 |
-| `concurrent` (1 to 10) | `staging-e2e` | `run.sh concurrent` on ten runners, which start their backups together at the time that `plan` set | 150, 125, 60 |
+| `normal` | `staging-e2e` | `run.sh normal --part=site`, then `--part=scenario` | 180, 25 + 130, 100 |
+| `load` | `staging-e2e` | `run.sh load --part=site`, then `--part=scenario` | 180, 20 + 135, 50 |
+| `abort` | `staging-e2e` | `run.sh abort --part=site`, then `--part=scenario` | 240, 20 + 195, 40 |
+| `concurrent` (1 to 10) | `staging-e2e` | `run.sh concurrent --part=site`, then `--part=scenario`, on ten runners, which start their backups together at the time that `plan` set | 150, 8 + 117, 60 |
 | `data-only` | none | `run.sh data-only` with 0.2 GB: Moodle, the extra plugins and the data are made and checked on the runner; the service is not reached | 60, 35 |
 | `summary` | none | `summary.php` over the results of all the jobs, with the limit of 30 GB; it also fails when a job did not run to its end | 10 |
 
@@ -143,15 +168,22 @@ Approvals. Each job with the environment waits for a reviewer: first `reset`, th
 for `reset` and are approved together. The ten sites of `concurrent` start 40 minutes after `plan`, so approve both without
 delay; a site that is ready after that time starts at once, and its result says how late (`numbers.start_late`).
 
-Limits. Each scenario is one step whose limit is 25 minutes below that of its job: a run that hangs is stopped by the step,
-whose log GitHub keeps, and the next steps still upload the result. The step is `run.sh` itself (`exec`), so the signal
-reaches its trap, which writes `result.json` with the step where it stopped. `SECBK_E2E_BACKUP_TIMEOUT` is set for each
-scenario so that its typical longest path ends within the step: each point that depends on the speed of a run (the files
-reached, 10 % sent, the stop by the load) comes within 5 minutes, and every other wait is at its limit, also the check
-after a stop (`e2e_wait_stopped`: tries for 600 s, the last request up to 300 s; it runs within the 20 minutes of the wait
-for the recount, which count from the stop) and the checks at the end (three requests of up to 300 s, a minute apart). The
-comments of the workflow show the sums (`normal` 138, `load` 113, `abort` 181, `concurrent` 117 minutes). A slower run
-reaches the limit of the step instead, and the trap writes that step in `result.json`. Besides the site and the backups,
+Two steps. Each scenario runs in two steps of its job: the site (`--part=site`), which has no secret of the environment,
+since the code of Moodle, Composer and the extra plugins run in it, and the scenario (`--part=scenario`), which alone is
+given the URL and the secret of the service. A site step that fails writes `result.json` with the step where it stopped,
+the scenario step does not run, and the result is still uploaded.
+
+Limits. The two steps of a scenario have limits that add up to 25 minutes below that of its job: a run that hangs is
+stopped by a step, whose log GitHub keeps, and the next steps still upload the result. Each step is `run.sh` itself
+(`exec`), so the signal reaches its trap, which writes `result.json` with the step where it stopped. The site step has 25
+minutes for 10 GB, 20 for 4 GB and 8 for 0.8 GB (`data-only` built its site of 0.2 GB in 85 seconds).
+`SECBK_E2E_BACKUP_TIMEOUT` is set for each scenario so that the typical longest path of its scenario step ends within that
+step: each point that depends on the speed of a run (the files reached, 10 % sent, the stop by the load) comes within 5
+minutes, and every other wait is at its limit, also the check after a stop (`e2e_wait_stopped`: tries for 600 s, the last
+request up to 300 s; it runs within the 20 minutes of the wait for the recount, which count from the stop) and the checks at
+the end (three requests of up to 300 s, a minute apart). The comments of the workflow show the sums (`normal` 123 of 130,
+`load` 103 of 135, `abort` 171 of 195, `concurrent` 114 of 117 minutes). A slower run reaches the limit of the step
+instead, and the trap writes that step in `result.json`. Besides the site and the backups,
 `load` waits 20 minutes for the recount of the service, and `abort` 20 minutes for the recount and about 30 minutes for the
 plugin to give up the refused connections to S3. The limits are first guesses: they are to be reviewed once the first run
 has measured the speed of the runner to S3.
@@ -180,6 +212,29 @@ The runner. The first run of `data-only` (run 39850020594) had a root disk of 14
 `make-room.sh` had removed the tools, no disk at `/mnt`, and 16 GB of memory with 14.9 GB available after the build. It built
 its site of 0.2 GB in 85 seconds: Moodle 4.5.15+ (build 20261021) on PHP 8.3 and PostgreSQL 13 with all seven extra plugins
 of `plugins.json`, installed, up to date and with their data. None is skipped.
+
+## The Moodle of the sites
+
+The sites are built with Moodle 4.5 at one commit of `MOODLE_405_STABLE`, fixed in `moodle.json` with the `$version` and the
+`$release` of its code, as the extra plugins are fixed in `plugins.json`. The head of the branch moves every week, and the
+service compares the code of a site with the official list of the files of its build (by `$version` and the build of
+`$release`): with the list, a run sends only the files that differ from it; without it, each site sends the whole code of
+Moodle (a few hundred MB, not compressed), and the 13 sites of `all` can then pass the 30 GB of a run. The site step
+fetches that commit alone, and stops when the code is not at it or its `version.php` does not have the `$version` and
+`$release` of `moodle.json`. The result keeps the Moodle of the site and whether its last run had the list (`moodle` of
+`result.json`), and the summary notes the sites that sent the code.
+
+It is now the commit `cae172ee4aeec1d7a6eaba7bb5ae12a5f0fe3772` (weekly release 4.5.15+): `$version` 2024100715.01,
+`$release` `4.5.15+ (Build: 20261021)`, the Moodle that the first runs of `data-only` built.
+
+To move it to a later commit:
+
+1. Take the commit (`git ls-remote https://github.com/moodle/moodle.git refs/heads/MOODLE_405_STABLE`) and the `$version`
+   and `$release` of its `version.php`, and write the three values in `moodle.json`.
+2. Run `data-only`: its site step checks the commit and the version.
+3. Before the next run that reaches the service, have the official list of the files of the new build loaded at the staging
+   service (its operators load it from the official package of that build). Until then each site sends the code of Moodle,
+   and the summary notes it.
 
 ## The environment staging-e2e
 

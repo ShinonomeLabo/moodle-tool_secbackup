@@ -372,15 +372,19 @@ foreach ($cases as $label => [$result, $inspection, $words]) {
 $folder = "$work/results-good";
 secbk_e2e_site($folder, 'r1-normal');
 for ($n = 1; $n <= 10; $n++) {
-    secbk_e2e_site($folder, sprintf('r1-c%02d', $n), ['scenario' => 'concurrent', 'retries' => ['waits' => 2, 'failed_steps' => 1]],
-        ['objects' => ['bytes' => 900000000]]);
+    secbk_e2e_site($folder, sprintf('r1-c%02d', $n), ['scenario' => 'concurrent',
+        'retries' => ['refused' => 1, 'waits' => 2, 'failed_steps' => 5]], ['objects' => ['bytes' => 900000000]]);
 }
 secbk_e2e_site($folder, 'r1-data', ['scenario' => 'data-only', 'sent_bytes' => 0], null);
 [$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
 secbk_e2e_expect('sites that all passed pass; the scenario data-only needs no inspection', $exit === 0
     && substr_count($output, '| concurrent |') === 10 && str_contains($output, '| data-only |')
     && str_contains($output, '9.000 GB'), "exit $exit: $output");
-secbk_e2e_expect('the summary shows the waits and failed steps of the runs', str_contains($output, '2 / 1'), $output);
+secbk_e2e_expect('the summary shows the refused requests and the waits of the runs', str_contains($output, '| 1 / 2 |'),
+    $output);
+secbk_e2e_expect('the ten sites of concurrent ran together; the latest start is not known without the numbers',
+    str_contains($output, 'Concurrent: the runs of the 10 sites ran together for 600 s (01:30:00 to 01:40:00 UTC); the latest'
+    . ' start of a site is not known.'), $output);
 secbk_e2e_expect('the summary does not show the IDs', !str_contains($output, '11111111-2222')
     && !str_contains($output, 'bbbbbbbb-2222'), $output);
 @mkdir("$work/results-empty");
@@ -413,6 +417,71 @@ secbk_e2e_site($folder, 'r1-load', ['scenario' => 'load'], null);
 [$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
 secbk_e2e_expect('the limit is judged on the amounts that are known', $exit === 1 && str_contains($output, 'over the limit'),
     "exit $exit: $output");
+// An amount that is not known has a problem of its own, whatever the reason: here an inspection whose bytes are not a number.
+$folder = "$work/results-bytes-text";
+secbk_e2e_site($folder, 'r1-normal', [], json_encode(array_merge(secbk_e2e_inspection(),
+    ['objects' => array_merge(secbk_e2e_inspection()['objects'], ['bytes' => '5000'])])));
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('an amount that is not known fails, also without an error in the inspection', $exit === 1
+    && str_contains($output, '| unknown |') && str_contains($output, 'r1-normal: the amount that the service holds is not known'),
+    "exit $exit: $output");
+
+// The Moodle of each site and whether the service had the official list of its files; a site that sent the code of Moodle is
+// a note, which does not fail the summary.
+$moodle = ['commit' => str_repeat('c', 40), 'version' => '2024100715.01', 'release' => '4.5.15+ (Build: 20261021)',
+    'build' => '20261021'];
+$folder = "$work/results-moodle";
+secbk_e2e_site($folder, 'r1-normal', ['moodle' => $moodle + ['core_manifest' => true]]);
+secbk_e2e_site($folder, 'r1-load', ['scenario' => 'load', 'moodle' => $moodle + ['core_manifest' => false]]);
+secbk_e2e_site($folder, 'r1-abort', ['scenario' => 'abort', 'moodle' => $moodle + ['core_manifest' => false]]);
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('the summary shows the Moodle of each site and whether its official list was used', $exit === 0
+    && str_contains($output, '| 4.5.15+ (Build: 20261021), list used |')
+    && substr_count($output, '| 4.5.15+ (Build: 20261021), code sent |') === 2, "exit $exit: $output");
+secbk_e2e_expect('the sites that sent the code of Moodle are one note, which does not fail the summary', $exit === 0
+    && str_contains($output, '**Notes**') && str_contains($output, 'sent the code of Moodle (abort r1-abort, load r1-load): the'
+    . ' service has no official list of the files of Build 20261021 (.dev/e2e/README.md)') && str_contains($output, '**Passed.**'),
+    "exit $exit: $output");
+
+// concurrent: how long the runs of the ten sites ran together (from the latest start to the earliest end, by the times of
+// the service), and how late the latest site started. Runs that never ran together fail; a late site is a note.
+$concurrentrun = static fn(string $from, string $to): array => ['runs' => [['uuid' => 'bbbbbbbb-2222-4333-8444-555555555555',
+    'status' => 'completed', 'failure_code' => null, 'requested_bytes' => 3000, 'has_receipt' => true,
+    'created_at' => "2026-10-23T$from+00:00", 'updated_at' => "2026-10-23T$to+00:00"]]];
+$folder = "$work/results-together";
+secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent', 'numbers' => ['start_late' => 0]],
+    $concurrentrun('01:00:00', '01:20:00'));
+secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent', 'numbers' => ['start_late' => 0]],
+    $concurrentrun('01:05:00', '01:15:00'));
+secbk_e2e_site($folder, 'r1-c03', ['scenario' => 'concurrent', 'numbers' => ['start_late' => 45]],
+    $concurrentrun('01:10:00', '01:30:00'));
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('concurrent: the time that the runs ran together, and the latest start', $exit === 0
+    && str_contains($output, 'Concurrent: the runs of the 3 sites ran together for 300 s (01:10:00 to 01:15:00 UTC); the latest'
+    . ' site started 45 s after the start of the ten sites.'), "exit $exit: $output");
+secbk_e2e_expect('concurrent: a site that started late is a note', $exit === 0
+    && str_contains($output, 'concurrent r1-c03: started 45 s after the start of the ten sites'), "exit $exit: $output");
+secbk_e2e_site($folder, 'r1-c04', ['scenario' => 'concurrent', 'numbers' => ['start_late' => 0]],
+    $concurrentrun('01:16:00', '01:40:00'));
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('concurrent: runs that never ran together fail', $exit === 1
+    && str_contains($output, 'the runs of the 4 sites of concurrent never ran together: the latest started at 01:16:00, after'
+    . ' the earliest ended at 01:15:00 (UTC)'), "exit $exit: $output");
+$folder = "$work/results-together-unknown";
+secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:20:00'));
+secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], ['runs' => [['uuid' => null, 'status' => 'completed',
+    'failure_code' => null, 'requested_bytes' => 3000, 'has_receipt' => true, 'created_at' => null, 'updated_at' => null]]]);
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('concurrent: a site whose run has no times fails, since the overlap cannot be known', $exit === 1
+    && str_contains($output, 'concurrent r1-c02: the service gave no times of a completed run'), "exit $exit: $output");
+
+// The requests that the service refused (a step that failed as rate limited or unavailable) and the waits of the runs that
+// were not for the receipt.
+$folder = "$work/results-refused";
+secbk_e2e_site($folder, 'r1-normal', ['retries' => ['refused' => 2, 'waits' => 3, 'failed_steps' => 4]]);
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('the summary shows the refused requests and the waits that were not for the receipt', $exit === 0
+    && str_contains($output, '| Refused / waits |') && str_contains($output, '| 2 / 3 |'), "exit $exit: $output");
 
 // verdict.php: the conditions of the scenarios on the answer of the inspection.
 $good = secbk_e2e_inspection();
@@ -541,13 +610,17 @@ foreach ($resends as $label => [$before, $sent, $after, $words]) {
 $inspection = json_encode(secbk_e2e_inspection(['runs' => [$failedrun, $completed], 'objects' => ['bytes' => 4242]]));
 [$exit, $output] = secbk_e2e_lib('e2e_begin load r1-result; e2e_number s3_bytes_after_stop 1000; e2e_number start_late 0;'
     . ' e2e_duration build $(( $(date +%s) - 5 ));'
-    . ' printf "Waiting until x\nA step of the backup failed (y). It is tried again in 5 minutes.\nWaiting until z\n"'
-    . ' > "$e2e_logs/backup-1.log"; printf "Stage: files\nWaiting until w\n" > "$e2e_logs/backup-2.log";'
+    . ' printf "Stage: Sending the files of the site\nWaiting until x\nA step of the backup failed (api_exception'
+    . ' api_rate_limited). It is tried again in 5 minutes.\nStage: Waiting for the receipt of the backup service\n'
+    . 'Waiting until z\n" > "$e2e_logs/backup-1.log"; printf "A step of the backup failed (plugin_exception upload_failed).'
+    . ' It is tried again in 5 minutes.\nStage: Sending the files of the site\nWaiting until w\n" > "$e2e_logs/backup-2.log";'
     . ' printf "%s" "$E2E_INSPECT" > "$e2e_folder/inspect.json"; e2e_finish', ['E2E_INSPECT' => $inspection]);
 $result = secbk_e2e_result('r1-result') ?? [];
 secbk_e2e_expect('the result of a scenario that passed', $exit === 0 && ($result['scenario'] ?? '') === 'load'
     && ($result['name'] ?? '') === 'r1-result' && ($result['passed'] ?? null) === true && ($result['reasons'] ?? null) === []
-    && ($result['sent_bytes'] ?? null) === 4242 && ($result['retries'] ?? null) === ['waits' => 3, 'failed_steps' => 1]
+    && ($result['sent_bytes'] ?? null) === 4242
+    && ($result['retries'] ?? null) === ['refused' => 1, 'waits' => 2, 'failed_steps' => 2]
+    && array_key_exists('moodle', $result) && $result['moodle'] === null
     && ($result['numbers'] ?? null) === ['s3_bytes_after_stop' => 1000, 'start_late' => 0]
     && ($result['requested_bytes'] ?? null) === [4000, 3000] && ($result['durations']['build'] ?? 0) >= 5
     && isset($result['durations']['total']), "exit $exit: $output " . json_encode($result));
@@ -556,6 +629,123 @@ $result = secbk_e2e_result('r1-stopped') ?? [];
 secbk_e2e_expect('the result of a script that stopped', $exit === 1 && ($result['passed'] ?? null) === false
     && ($result['reasons'] ?? null) === ['the script stopped (exit 1) at the step: a step that fails']
     && ($result['sent_bytes'] ?? null) === 0, "exit $exit: $output " . json_encode($result));
+
+// lib.sh: the result keeps the Moodle of the site (logs/moodle.json, written when the site is built) and whether its run
+// used the official list of the files of that build (logs/core.txt, read from the record of the run at the end).
+$moodle = ['commit' => str_repeat('c', 40), 'version' => '2024100715.01', 'release' => '4.5.15+ (Build: 20261021)',
+    'build' => '20261021'];
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-moodle; printf "%s" "$E2E_MOODLE" > "$e2e_logs/moodle.json";'
+    . ' echo 0 > "$e2e_logs/core.txt"; e2e_finish', ['E2E_MOODLE' => json_encode($moodle)]);
+$result = secbk_e2e_result('r1-moodle') ?? [];
+secbk_e2e_expect('the result keeps the Moodle of the site and whether the official list was used', $exit === 0
+    && ($result['moodle'] ?? null) === $moodle + ['core_manifest' => false], "exit $exit: $output " . json_encode($result));
+// The record of the runs, newest first: the latest run that compared the code with the official list says whether it had it.
+$cores = [
+    'the latest comparison had no list' => [['{"run":{"stored_bytes":5}}', '{"run":{"core":{"official":false}}}',
+        '{"run":{"core":{"official":true}}}'], '0'],
+    'the latest comparison had the list' => [['{"run":{"core":{"official":true}}}'], '1'],
+    'no run compared' => [['{"run":{}}', ''], null],
+];
+foreach ($cores as $label => [$rows, $wanted]) {
+    $name = 'r1-core-' . md5($label);
+    $list = implode(' ', array_map('escapeshellarg', $rows));
+    [$exit, $output] = secbk_e2e_lib("e2e_begin normal $name; psql() { printf '%s\\n' $list; }; e2e_read_core; e2e_finish");
+    $core = @file_get_contents("$work/out/$name/logs/core.txt");
+    secbk_e2e_expect("the use of the official list: $label", $exit === 0
+        && ($wanted === null ? $core === false : trim((string) $core) === $wanted),
+        "exit $exit: $output " . var_export($core, true));
+}
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-core-db; psql() { return 2; }; e2e_read_core; e2e_finish');
+secbk_e2e_expect('the use of the official list is not known when the database cannot be read, which is no reason to fail',
+    $exit === 0 && !is_file("$work/out/r1-core-db/logs/core.txt"), "exit $exit: $output");
+
+// lib.sh: the Moodle of the sites is fixed by moodle.json: a branch, a commit of 40 hexadecimal digits, and the $version and
+// $release that the code of that commit has; the check after the fetch compares all three with the code.
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-pin; e2e_moodle_pin;'
+    . ' echo "pin $e2e_moodle_branch $e2e_moodle_commit $e2e_moodle_version $e2e_moodle_release"; e2e_finish');
+secbk_e2e_expect('moodle.json fixes a commit of MOODLE_405_STABLE', $exit === 0
+    && preg_match('/^pin MOODLE_405_STABLE [0-9a-f]{40} [0-9]{10}\.[0-9]{2} 4\.5\.[0-9]+\+? \(Build: [0-9]{8}\)$/m', $output) === 1,
+    "exit $exit: $output");
+$pin = ['branch' => 'MOODLE_405_STABLE', 'commit' => str_repeat('a', 40), 'version' => '2024100715.01',
+    'release' => '4.5.15+ (Build: 20261021)'];
+$badpins = [
+    'a short commit' => array_merge($pin, ['commit' => 'abc123']),
+    'a commit in upper case' => array_merge($pin, ['commit' => str_repeat('A', 40)]),
+    'a branch that is not a stable branch' => array_merge($pin, ['branch' => 'main']),
+    'a version that is not one' => array_merge($pin, ['version' => '2024100715']),
+    'a release without its build' => array_merge($pin, ['release' => '4.5.15+']),
+    'a key that it does not know' => $pin + ['tag' => 'v4.5.15'],
+    'the keys in another order' => ['commit' => $pin['commit']] + $pin,
+    'no release' => array_diff_key($pin, ['release' => true]),
+    'not JSON' => 'not json',
+];
+foreach ($badpins as $label => $value) {
+    $file = secbk_e2e_inspect_file('pin-' . md5($label) . '.json', is_string($value) ? $value : json_encode($value));
+    $name = 'r1-pin-' . md5($label);
+    [$exit, $output] = secbk_e2e_lib("e2e_begin normal $name; e2e_moodle_pin " . escapeshellarg($file) . '; e2e_finish');
+    secbk_e2e_expect("moodle.json with $label is refused", $exit === 1
+        && str_contains(implode("\n", secbk_e2e_result($name)['reasons'] ?? []), 'moodle.json does not fix'),
+        "exit $exit: $output");
+}
+// A git repository with the version.php of the build in the place of the code of Moodle.
+$pinstorage = "$work/pin-storage";
+@mkdir("$pinstorage/moodle", 0777, true);
+file_put_contents("$pinstorage/moodle/version.php", "<?php\ndefined('MOODLE_INTERNAL') || die();\n\n"
+    . "\$version  = 2024100715.01;              // 20241007      = branching date YYYYMMDD - do not modify!\n"
+    . "\$release  = '4.5.15+ (Build: 20261021)';    // Human-friendly version name\n\$branch   = '405';\n");
+$git = 'git -C ' . escapeshellarg("$pinstorage/moodle") . ' -c core.hooksPath=/dev/null -c commit.gpgsign=false'
+    . ' -c user.name=test -c user.email=test@example.invalid';
+// Development tooling may run commands; the plugin itself never does.
+\exec("$git init -q && $git add version.php && $git commit -q -m build && $git rev-parse HEAD", $gitout, $gitexit);
+$head = (string) end($gitout);
+$checks = [
+    'the code of the commit and the version it fixes' => [array_merge($pin, ['commit' => $head]), null],
+    'another commit' => [array_merge($pin, ['commit' => str_repeat('b', 40)]), "the code of Moodle is at commit $head,"
+        . ' moodle.json fixes ' . str_repeat('b', 40)],
+    'another release' => [array_merge($pin, ['commit' => $head, 'release' => '4.5.14+ (Build: 20261014)']),
+        "has \$version 2024100715.01 and \$release 4.5.15+ (Build: 20261021), moodle.json says 2024100715.01 and"
+        . ' 4.5.14+ (Build: 20261014)'],
+];
+foreach ($checks as $label => [$value, $words]) {
+    $file = secbk_e2e_inspect_file('check-' . md5($label) . '.json', json_encode($value));
+    $name = 'r1-check-' . md5($label);
+    [$exit, $output] = secbk_e2e_lib("e2e_begin normal $name; e2e_moodle_pin " . escapeshellarg($file)
+        . '; e2e_check_moodle; e2e_finish', ['SECBK_STORAGE_DIR' => $pinstorage]);
+    $result = secbk_e2e_result($name) ?? [];
+    secbk_e2e_expect("the check of the code of Moodle: $label", $gitexit === 0 && ($words === null
+        ? $exit === 0 && ($result['moodle'] ?? null) === ['commit' => $head, 'version' => '2024100715.01',
+            'release' => '4.5.15+ (Build: 20261021)', 'build' => '20261021', 'core_manifest' => null]
+        : $exit === 1 && str_contains(implode("\n", $result['reasons'] ?? []), $words)),
+        "exit $exit: $output " . json_encode($result));
+}
+
+// lib.sh: a scenario in two parts, the site (no secret) and then the scenario (the service), each its own step of the job.
+// After the site, the result does not pass yet and says why, but the script ends with 0; the scenario goes on with the same
+// reasons, durations and numbers, and its total counts from the start of the site.
+// The site part started 10 s ago (its start is in logs/started.txt).
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-parts site; echo $(( $(date +%s) - 10 )) > "$e2e_logs/started.txt";'
+    . ' e2e_duration build $(( $(date +%s) - 5 ));'
+    . ' e2e_number start_late 0; : > "$e2e_logs/site.done"; e2e_pending; e2e_finish');
+$result = secbk_e2e_result('r1-parts') ?? [];
+secbk_e2e_expect('the site part: the result says that the scenario has not run, and the step ends with 0', $exit === 0
+    && ($result['passed'] ?? null) === false && ($result['reasons'] ?? null) === ['the scenario has not run yet: only the site'
+    . ' was built (run.sh --part=scenario runs it)'] && str_contains($output, 'the scenario runs in the next step'),
+    "exit $exit: $output " . json_encode($result));
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-parts scenario; e2e_require_site; e2e_duration backup $(( $(date +%s) - 3 ));'
+    . ' e2e_finish');
+$result = secbk_e2e_result('r1-parts') ?? [];
+secbk_e2e_expect('the scenario part goes on with the result of the site part', $exit === 0 && ($result['passed'] ?? null) === true
+    && ($result['reasons'] ?? null) === [] && ($result['durations']['build'] ?? 0) >= 5
+    && ($result['durations']['backup'] ?? 0) >= 3
+    && ($result['durations']['total'] ?? 0) >= 10 && ($result['numbers'] ?? null) === ['start_late' => 0],
+    "exit $exit: $output " . json_encode($result));
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-parts-failed site; e2e_step "the extra plugins"; false; e2e_finish');
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-parts-failed scenario; e2e_require_site; e2e_finish');
+$result = secbk_e2e_result('r1-parts-failed') ?? [];
+secbk_e2e_expect('the scenario part of a site that was not built stops, and keeps the reason of the site', $exit === 1
+    && ($result['reasons'] ?? null) === ['the script stopped (exit 1) at the step: the extra plugins',
+    'the site was not built: run.sh --part=site comes first', 'the script stopped (exit 1) at the step: the start'],
+    "exit $exit: $output " . json_encode($result));
 
 /**
  * The command lines of the processes of this machine that match a pattern.
@@ -694,6 +884,17 @@ foreach ($waits as $label => [$rows, $now, $words]) {
         && ($words !== 'not reached' || str_contains($output, 'the run ended (aborted) before it got there')),
         "exit $exit: $output");
 }
+// The load waits until the run has sent a chunk (here 1000 bytes) in the stage files, counted from the bytes it had when it
+// was first seen in that stage: what it sent in the stage db is not counted.
+$list = implode(' ', array_map('escapeshellarg', ['2|db|active||500|10000', '2|db|active||500|10000', '2|db|active||500|10000',
+    '2|files|active||600|10000', '2|files|active||1000|10000', '2|files|active||1700|10000']));
+[$exit, $output] = secbk_e2e_lib("$rowpsql\ne2e_test_rows=($list)\ne2e_begin load r1-sending-files\n"
+    . "e2e_after_id=1; sleep $commandlength & e2e_pid=\$!\n"
+    . 'if e2e_wait_sending 0 1 1000; then echo "reached bytes=$e2e_run_bytes from=$e2e_files_from"; fi;'
+    . ' kill "$e2e_pid"; e2e_finish',
+    ['E2E_NAME' => 'r1-sending-files', 'SECBK_E2E_BACKUP_TIMEOUT' => '20']);
+secbk_e2e_expect('the wait for a chunk of the files counts from the start of the stage files',
+    str_contains($output, 'reached bytes=1700 from=600'), "exit $exit: $output");
 $left = secbk_e2e_left("~^sleep $commandlength\$~");
 secbk_e2e_expect('the commands of the waits are stopped by the trap', $left === [], implode("\n", $left));
 
@@ -730,6 +931,7 @@ e2e_launch_backup() {
 e2e_wait_sending() {
     e2e_test_call "wait_sending $*"
     e2e_test_row "$(e2e_test_field 1)" files active '' $(( 10000 * $1 / 100 + 1 )) 10000
+    e2e_files_from="${E2E_FILES_FROM:-0}"
     e2e_read_run
 }
 e2e_wait_exit() {
@@ -809,11 +1011,17 @@ secbk_e2e_expect('abort: a database that cannot be read after (a) gives only tha
     && !str_contains($reasons, 'went on with run') && !str_contains($reasons, 'expected completed'), "exit $exit: $reasons");
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load', 'e2e_scenario_load',
     ['1 aborted server_busy', '0 completed -']);
-$wanted = ['start backup-1.log --now', 'wait_sending 0', 'load_start', 'wait_exit 7200', 'load_stop',
+$wanted = ['start backup-1.log --now', 'wait_sending 0 1 33554432', 'load_start', 'wait_exit 7200', 'load_stop',
     'wait_stopped server_busy | after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_exit 7200',
     'final --runs=2 --failed=server_busy', 'resend 1000 0 1000'];
-secbk_e2e_expect('load: the load, the stop, the recount and the next run', $exit === 0 && $calls === $wanted
-    && ($result['reasons'] ?? null) === [], "exit $exit: $output\n" . implode("\n", $calls));
+secbk_e2e_expect('load: the load after a chunk of the files, the stop, the recount and the next run', $exit === 0
+    && $calls === $wanted && ($result['reasons'] ?? null) === [] && ($result['numbers']['files_sent_before_stop'] ?? null) === 1,
+    "exit $exit: $output\n" . implode("\n", $calls) . json_encode($result));
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load-nofiles', 'e2e_scenario_load',
+    ['1 aborted server_busy', '0 completed -'], ['E2E_FILES_FROM' => '1']);
+secbk_e2e_expect('load: a run that the load stopped before it sent anything in the stage files fails', $exit === 1
+    && ($result['numbers']['files_sent_before_stop'] ?? null) === 0 && str_contains(implode("\n", $result['reasons'] ?? []),
+    'the load stopped the run before it sent anything in the stage files'), "exit $exit: $output " . json_encode($result));
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load-busy', 'e2e_scenario_load', ['0 completed -']);
 secbk_e2e_expect('load: a run that the load did not stop', $exit === 1
     && str_contains(implode("\n", $result['reasons'] ?? []), 'the load did not stop the run'), "exit $exit: $output");
@@ -846,6 +1054,8 @@ $refused = [
     'a start more than 3 hours away' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', '--start-at=' . ($now + 10900)],
     'a start that is not a time' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', '--start-at=soon'],
     'an unknown option' => ['normal', '--name=r1-normal', '--files-gb=1', '--fast'],
+    'a part that it does not know' => ['normal', '--name=r1-normal', '--files-gb=1', '--part=all'],
+    'the scenario part of data-only' => ['data-only', '--name=r1-data', '--files-gb=0.2', '--part=scenario'],
 ];
 foreach ($refused as $label => $args) {
     [$exit, $output] = secbk_e2e_command(array_merge(['bash', "$e2e/run.sh"], $args));
@@ -860,6 +1070,9 @@ $accepted = [
         '--start-at=' . ($now + 10000)],
     'data-only with skips' => ['data-only', '--name=r1-data', '--files-gb=0.2', '--skip=mod_videoassessment',
         '--skip=block_autoattend,mod_autoattendmod'],
+    'the site part' => ['normal', '--name=r1-normal', '--files-gb=10', '--part=site'],
+    'the scenario part' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', "--start-at=$now", '--part=scenario'],
+    'the site part of data-only' => ['data-only', '--name=r1-data', '--files-gb=0.2', '--part=site'],
 ];
 foreach ($accepted as $label => $args) {
     [$exit, $output] = secbk_e2e_command(array_merge(['bash', "$e2e/run.sh"], $args));

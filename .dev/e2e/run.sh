@@ -3,13 +3,13 @@
 # the test endpoints of the service say what it holds. Development only, for a disposable runner (lib.sh), with
 # SECBK_E2E_BASE_URL and SECBK_E2E_SECRET in the environment (sec.php).
 # Usage: .dev/e2e/run.sh <normal|load|abort|concurrent|data-only> --name=<name> --files-gb=<GB>
-#            [--start-at=<UNIX time>] [--skip=<component>[,<component>...]]...
+#            [--start-at=<UNIX time>] [--skip=<component>[,<component>...]]... [--part=site|scenario]
 #
-# Every scenario first builds the site (lib.sh e2e_build_site: Moodle, the extra plugins of plugins.json but those --skip
-# names, dummy data and <GB> GB of files of random content, checked by check-data.php). data-only stops there and does not
-# reach the service. The others then get a test site from the service for the address of this runner (sec.php provision),
-# trust the key of the service, register the site (enroll.php), check that the database of the site can be read, and run
-# (the functions e2e_scenario_* of lib.sh):
+# Every scenario first builds the site (lib.sh e2e_build_site: Moodle at the commit of moodle.json, the extra plugins of
+# plugins.json but those --skip names, dummy data and <GB> GB of files of random content, checked by check-data.php).
+# data-only stops there and does not reach the service. The others then get a test site from the service for the address
+# of this runner (sec.php provision), trust the key of the service, register the site (enroll.php), check that the database
+# of the site can be read, and run (the functions e2e_scenario_* of lib.sh):
 #   normal      cli/backup.php --now. It ends with 0; the site has one run, completed with a receipt.
 #   load        cli/backup.php --now in the background. When the run sends the files of the site, processes that use the CPU
 #               raise the load above 2 per CPU (the limit of the plugin); the plugin stops the run (exit 1, server_busy).
@@ -30,10 +30,15 @@
 # At the end of each scenario that reaches the service, every object of the site is locked in COMPLIANCE mode and is in the
 # storage class INTELLIGENT_TIERING (verdict.php). The result is in $SECBK_E2E_OUT/<name>/result.json and inspect.json
 # (lib.sh); the script ends with 0 when the scenario passed, and with 2 on wrong arguments.
+#
+# --part=site builds the site only, without the secrets of the service in the environment (the code of Moodle, Composer and
+# the extra plugins run in that part); its result says that the scenario has not run yet, and it ends with 0 once the site is
+# built. --part=scenario, with the same arguments, does the rest on that site, and writes the one result of both parts.
+# Without --part, one call does both.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 usage="usage: run.sh <normal|load|abort|concurrent|data-only> --name=<name> --files-gb=<GB> [--start-at=<UNIX time>]"
-usage="$usage [--skip=<component>[,<component>...]]..."
+usage="$usage [--skip=<component>[,<component>...]]... [--part=site|scenario]"
 
 scenario="${1:-}"
 case "$scenario" in
@@ -43,6 +48,7 @@ esac
 name=''
 gb=''
 start_at=''
+part=''
 skips=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +56,7 @@ while [ $# -gt 0 ]; do
         --files-gb=*) gb="${1#--files-gb=}" ;;
         --start-at=*) start_at="${1#--start-at=}" ;;
         --skip=*) skips+=("$1") ;;
+        --part=*) part="${1#--part=}" ;;
         *) echo "$usage" >&2; exit 2 ;;
     esac
     shift
@@ -77,6 +84,14 @@ elif [ -n "$start_at" ]; then
     echo "run.sh: --start-at is for the scenario concurrent only" >&2
     exit 2
 fi
+case "$part" in
+    '' | site | scenario) ;;
+    *) echo "run.sh: --part is site or scenario" >&2; exit 2 ;;
+esac
+if [ "$scenario" = data-only ] && [ "$part" = scenario ]; then
+    echo "run.sh: data-only builds the site only; it has no scenario part" >&2
+    exit 2
+fi
 # The scenarios fill the CPUs and change the firewall: only a machine that is thrown away after the job may run them.
 if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${SECBK_E2E_DISPOSABLE:-}" != yes ]; then
     echo "run.sh: this runs on a disposable runner only (GITHUB_ACTIONS=true, or SECBK_E2E_DISPOSABLE=yes)" >&2
@@ -86,11 +101,19 @@ fi
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$here/lib.sh"
 
-e2e_begin "$scenario" "$name"
-e2e_step "the scenario $scenario, site $name, $gb GB of files"
-e2e_check_disk "$gb"
-e2e_build_site "$name" "$gb" ${skips[@]+"${skips[@]}"}
-if [ "$scenario" != data-only ]; then
+e2e_begin "$scenario" "$name" "${part:-all}"
+if [ "$part" != scenario ]; then
+    e2e_step "the scenario $scenario, site $name, $gb GB of files"
+    e2e_check_disk "$gb"
+    e2e_build_site "$name" "$gb" ${skips[@]+"${skips[@]}"}
+    if [ "$part" = site ] && [ "$scenario" != data-only ]; then
+        e2e_pending
+    fi
+fi
+if [ "$part" != site ] && [ "$scenario" != data-only ]; then
+    if [ "$part" = scenario ]; then
+        e2e_require_site
+    fi
     e2e_connect "$name"
     e2e_check_db
     case "$scenario" in

@@ -30,12 +30,25 @@ storage_plugin() { echo "$(storage_docroot)/admin/tool/secbackup"; }
 # Runs PHP in the folder of the site with no memory limit (the scripts of the plugin and of Moodle find config.php from there).
 storage_php() { (cd "$(storage_docroot)" && php -d memory_limit=-1 "$@"); }
 
-# storage_moodle <branch>: clones Moodle, installs its Composer dependencies (the dummy data of .dev/env/generate_site_data.php
-# needs the testing generators, which need PHPUnit; the jobs of ci.yml install the same with moodle-plugin-ci) and copies the
-# tracked files of this repository into it as the plugin.
+# storage_moodle <branch> [<commit>]: clones Moodle, installs its Composer dependencies (the dummy data of
+# .dev/env/generate_site_data.php needs the testing generators, which need PHPUnit; the jobs of ci.yml install the same with
+# moodle-plugin-ci) and copies the tracked files of this repository into it as the plugin. Without a commit it takes the head
+# of the branch. With one (40 hexadecimal digits) it fetches that commit alone and stops when the code is not at it; the
+# branch is where the commit comes from, which a fetch by commit does not check (the caller checks the version).
 storage_moodle() {
-    local branch="$1" plugin
-    git clone --quiet --depth 1 --branch "$branch" https://github.com/moodle/moodle.git "$secbk_moodle"
+    local branch="$1" commit="${2:-}" plugin
+    if [ -z "$commit" ]; then
+        git clone --quiet --depth 1 --branch "$branch" https://github.com/moodle/moodle.git "$secbk_moodle"
+    else
+        git init --quiet "$secbk_moodle"
+        git -C "$secbk_moodle" remote add origin https://github.com/moodle/moodle.git
+        git -C "$secbk_moodle" fetch --quiet --depth 1 origin "$commit"
+        git -C "$secbk_moodle" checkout --quiet --detach FETCH_HEAD
+        if [ "$(git -C "$secbk_moodle" rev-parse HEAD)" != "$commit" ]; then
+            echo "storage_moodle: the code of Moodle is not at the commit $commit of $branch" >&2
+            return 1
+        fi
+    fi
     composer install --no-interaction --no-progress --quiet --working-dir="$secbk_moodle"
     plugin="$(storage_plugin)"
     mkdir -p "$plugin"
