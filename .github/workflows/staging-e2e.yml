@@ -1,0 +1,666 @@
+name: Staging end-to-end test
+
+# Whole backups of real Moodle 4.5 sites, through the plugin, to the staging backup service and its real S3 storage, in the
+# scenarios of .dev/e2e/README.md: normal, load (the load stops a run and the next one completes), abort (a run cut off by
+# refused connections to S3 and by kill -9, then completed) and concurrent (ten sites at once). Manual only. Every job that
+# reaches the service waits for the approval of the environment staging-e2e, which holds the only two secrets: the URL of the
+# API of the service and the value of the header of its test endpoints. GitHub holds no AWS credentials.
+# What a run sends stays locked in S3 for about 15 days, so a run sends 30 GB at most: the job plan refuses larger sizes
+# before anything starts, and the job summary fails a run whose sites the service holds more of. data-only builds one site
+# and checks its data without the service and without the environment.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'all (the four scenarios, 13 sites), normal, load, abort, concurrent (ten sites at once), or data-only (one site of 0.2 GB checked on the runner; the service is not reached).'
+        type: choice
+        options:
+          - all
+          - normal
+          - load
+          - abort
+          - concurrent
+          - data-only
+        default: data-only
+      normal_gb:
+        description: 'GB (10^9 bytes) of files of the site of normal. At least 0.2; normal + load + abort + 10 x concurrent of the selected scenarios is 30 at most.'
+        type: string
+        default: '10'
+      load_gb:
+        description: 'GB of files of the site of load.'
+        type: string
+        default: '4'
+      abort_gb:
+        description: 'GB of files of the site of abort.'
+        type: string
+        default: '4'
+      concurrent_gb:
+        description: 'GB of files of each of the ten sites of concurrent (counted ten times).'
+        type: string
+        default: '0.8'
+
+permissions:
+  contents: read
+
+# One run at a time: the runs share the test sites of the service (the job reset removes them) and the limit of 30 GB.
+concurrency:
+  group: staging-e2e
+  cancel-in-progress: false
+
+# Each scenario runs in one step whose limit is 25 minutes below the limit of its job: when a run hangs, the step and not the
+# job is stopped, so the log is kept and the next steps upload the result. The step is run.sh itself (exec), so the signal
+# reaches its trap, which writes result.json with the step where it stopped. SECBK_E2E_BACKUP_TIMEOUT (one call of
+# cli/backup.php) is set for each scenario so that its longest path ends before the limit of the step (.dev/e2e/README.md).
+jobs:
+  plan:
+    name: Check the sizes and set the start of the ten sites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      start_at: ${{ steps.plan.outputs.start_at }}
+    steps:
+      - name: Check the sizes against the limit of 30 GB
+        id: plan
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+          NORMAL_GB: ${{ inputs.normal_gb }}
+          LOAD_GB: ${{ inputs.load_gb }}
+          ABORT_GB: ${{ inputs.abort_gb }}
+          CONCURRENT_GB: ${{ inputs.concurrent_gb }}
+        run: |
+          # bytes <input> <value>: a number of GB as bytes; a GB is 10^9 bytes, as for the files of the sites and the summary.
+          # At least 0.2 GB: the dummy data and the data of the extra plugins alone are about 0.1 GB, and the generator
+          # refuses a size below what the site already holds.
+          bytes() {
+            if [[ ! "$2" =~ ^([0-9]{1,3})(\.([0-9]{1,9}))?$ ]]; then
+              echo "$1 is not a number of GB (digits, and up to nine decimals): $2" >&2
+              return 1
+            fi
+            local fraction="${BASH_REMATCH[3]}000000000" value
+            value=$(( 10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:9} ))
+            if [ "$value" -lt 200000000 ]; then
+              echo "$1 is below 0.2 GB: $2" >&2
+              return 1
+            fi
+            echo "$value"
+          }
+          normal="$(bytes normal_gb "$NORMAL_GB")" || exit 1
+          load="$(bytes load_gb "$LOAD_GB")" || exit 1
+          abort="$(bytes abort_gb "$ABORT_GB")" || exit 1
+          concurrent="$(bytes concurrent_gb "$CONCURRENT_GB")" || exit 1
+          case "$SCENARIOS" in
+            all) total=$(( normal + load + abort + 10 * concurrent )) ;;
+            normal) total="$normal" ;;
+            load) total="$load" ;;
+            abort) total="$abort" ;;
+            concurrent) total=$(( 10 * concurrent )) ;;
+            data-only) total=0 ;;
+            *) echo "scenarios is not one of its choices: $SCENARIOS" >&2; exit 1 ;;
+          esac
+          shown="$(printf '%d.%09d' $(( total / 1000000000 )) $(( total % 1000000000 )) | sed -E 's/\.?0+$//')"
+          {
+            echo "Scenarios: $SCENARIOS. GB of files: normal $NORMAL_GB, load $LOAD_GB, abort $ABORT_GB, concurrent 10 x $CONCURRENT_GB."
+            echo "Files of the selected scenarios: ${shown:-0} GB (the limit of a run is 30)."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$total" -gt 30000000000 ]; then
+            echo "The selected scenarios have ${shown} GB of files (normal + load + abort + 10 x concurrent), more than 30 GB" >&2
+            exit 1
+          fi
+          # The ten sites of concurrent start together 40 minutes from now: time for the two approvals of the environment,
+          # the job reset and the sites themselves (run.sh starts at once when the time has passed, and says how late).
+          echo "start_at=$(( $(date +%s) + 2400 ))" >> "$GITHUB_OUTPUT"
+
+  # Removes the test sites of the service that earlier runs made, so that the places of the test organization are free.
+  reset:
+    name: Remove the test sites of the service
+    needs: plan
+    if: inputs.scenarios != 'data-only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: staging-e2e
+    steps:
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: |
+          # GitHub masks the URL, a secret; its host name alone is masked too. Neither is ever printed.
+          if [ -z "$SECBK_E2E_BASE_URL" ]; then
+            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+            exit 1
+          fi
+          echo "::add-mask::$SECBK_E2E_BASE_URL"
+          host="${SECBK_E2E_BASE_URL#*://}"
+          host="${host%%/*}"
+          host="${host%%:*}"
+          if [ -n "$host" ]; then
+            echo "::add-mask::$host"
+            echo "::add-mask::${host,,}"
+          fi
+
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: curl, sodium
+          coverage: none
+
+      # sec.php gives the request two minutes; it prints the number of sites removed.
+      - name: Remove the test sites
+        timeout-minutes: 5
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
+        run: php .dev/e2e/sec.php reset
+
+  # Expected: about 20 minutes for the site of 10 GB, the backup at the speed of the runner to S3, a minute for the checks.
+  # The step has 155 minutes: the site (30 at most) and the connection (6) and the checks (17, three tries with a minute
+  # between) leave 102, so cli/backup.php gets 100 minutes (6000 s): 10 GB at 1.7 MB/s.
+  normal:
+    name: normal (one site of ${{ inputs.normal_gb }} GB)
+    needs: [plan, reset]
+    if: inputs.scenarios == 'all' || inputs.scenarios == 'normal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: staging-e2e
+    env:
+      SECBK_E2E_NAME: r${{ github.run_id }}-normal
+
+    services:
+      db:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: |
+          if [ -z "$SECBK_E2E_BASE_URL" ]; then
+            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+            exit 1
+          fi
+          echo "::add-mask::$SECBK_E2E_BASE_URL"
+          host="${SECBK_E2E_BASE_URL#*://}"
+          host="${host%%/*}"
+          host="${host%%:*}"
+          if [ -n "$host" ]; then
+            echo "::add-mask::$host"
+            echo "::add-mask::${host,,}"
+          fi
+
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner image has large tools that the test does not use. The site goes on the disk with the most room after
+      # that: the root disk, or the temporary disk at /mnt when the runner has one. run.sh checks the room for its files.
+      - name: Make room on the disk
+        timeout-minutes: 10
+        run: bash .dev/e2e/make-room.sh
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: pgsql, curl, sodium
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      - name: The scenario normal
+        timeout-minutes: 155
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          SECBK_E2E_BACKUP_TIMEOUT: '6000'
+          FILES_GB: ${{ inputs.normal_gb }}
+        run: exec bash .dev/e2e/run.sh normal --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+
+      - name: Show the room left on the disk and in memory
+        if: always()
+        run: bash .dev/e2e/make-room.sh --show
+
+      # result.json and inspect.json only: never logs/ or private/ (the registration code and the keys of the site).
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-normal
+          path: |
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/result.json
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/inspect.json
+          retention-days: 90
+          if-no-files-found: warn
+
+  # Expected: about 15 minutes for the site, a few minutes until the load stops the run, 20 minutes of wait for the recount of
+  # the service, the rest of the backup. Each call of cli/backup.php gets 50 minutes (3000 s): the longest path, a run that
+  # never gets to the files (50) and then never ends (50), with the site (20), the connection (6) and the checks (17), is 143
+  # of the 155 minutes of the step; the path through the stop, the recount and the next run is about 113.
+  load:
+    name: load (one site of ${{ inputs.load_gb }} GB)
+    needs: [plan, reset]
+    if: inputs.scenarios == 'all' || inputs.scenarios == 'load'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: staging-e2e
+    env:
+      SECBK_E2E_NAME: r${{ github.run_id }}-load
+
+    services:
+      db:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: |
+          if [ -z "$SECBK_E2E_BASE_URL" ]; then
+            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+            exit 1
+          fi
+          echo "::add-mask::$SECBK_E2E_BASE_URL"
+          host="${SECBK_E2E_BASE_URL#*://}"
+          host="${host%%/*}"
+          host="${host%%:*}"
+          if [ -n "$host" ]; then
+            echo "::add-mask::$host"
+            echo "::add-mask::${host,,}"
+          fi
+
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make room on the disk
+        timeout-minutes: 10
+        run: bash .dev/e2e/make-room.sh
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: pgsql, curl, sodium
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      - name: The scenario load
+        timeout-minutes: 155
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          SECBK_E2E_BACKUP_TIMEOUT: '3000'
+          FILES_GB: ${{ inputs.load_gb }}
+        run: exec bash .dev/e2e/run.sh load --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+
+      - name: Show the room left on the disk and in memory
+        if: always()
+        run: bash .dev/e2e/make-room.sh --show
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-load
+          path: |
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/result.json
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/inspect.json
+          retention-days: 90
+          if-no-files-found: warn
+
+  # Expected: about 15 minutes for the site; (b) about 30 minutes from the refused connections to the stop (the plugin tries a
+  # send three times, 15 minutes apart), 20 minutes of wait for the recount; (a) a few minutes to the kill and the rest of
+  # the run. About 100 minutes. Each call of cli/backup.php gets 40 minutes (2400 s): the longest path, (b) stopped after the
+  # 60 minutes that the script gives the refused connections, the recount (20), and then (a) a run that never gets to the
+  # files (40) and never ends (40), with the site (20), the connection (6), the wait before (b) (a few minutes) and the checks
+  # (17), is about 210 of the 215 minutes of the step.
+  abort:
+    name: abort (one site of ${{ inputs.abort_gb }} GB)
+    needs: [plan, reset]
+    if: inputs.scenarios == 'all' || inputs.scenarios == 'abort'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    environment: staging-e2e
+    env:
+      SECBK_E2E_NAME: r${{ github.run_id }}-abort
+
+    services:
+      db:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: |
+          if [ -z "$SECBK_E2E_BASE_URL" ]; then
+            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+            exit 1
+          fi
+          echo "::add-mask::$SECBK_E2E_BASE_URL"
+          host="${SECBK_E2E_BASE_URL#*://}"
+          host="${host%%/*}"
+          host="${host%%:*}"
+          if [ -n "$host" ]; then
+            echo "::add-mask::$host"
+            echo "::add-mask::${host,,}"
+          fi
+
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make room on the disk
+        timeout-minutes: 10
+        run: bash .dev/e2e/make-room.sh
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: pgsql, curl, sodium
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      - name: The scenario abort
+        timeout-minutes: 215
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          SECBK_E2E_BACKUP_TIMEOUT: '2400'
+          FILES_GB: ${{ inputs.abort_gb }}
+        run: exec bash .dev/e2e/run.sh abort --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB"
+
+      - name: Show the room left on the disk and in memory
+        if: always()
+        run: bash .dev/e2e/make-room.sh --show
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-abort
+          path: |
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/result.json
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/inspect.json
+          retention-days: 90
+          if-no-files-found: warn
+
+  # Ten sites, each on its own runner, start their backups together at the time of the job plan. The site, the connection
+  # and the wait take at most the 40 minutes to that time (less the approvals); cli/backup.php gets 60 minutes (3600 s), for
+  # the waits that the service may ask of ten sites at once; with the checks (17), 117 of the 125 minutes of the step.
+  concurrent:
+    name: concurrent ${{ matrix.n }} of 10 (${{ inputs.concurrent_gb }} GB)
+    needs: [plan, reset]
+    if: inputs.scenarios == 'all' || inputs.scenarios == 'concurrent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    environment: staging-e2e
+    env:
+      SECBK_E2E_NAME: r${{ github.run_id }}-concurrent-${{ matrix.n }}
+
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    services:
+      db:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Mask the address of the service
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+        run: |
+          if [ -z "$SECBK_E2E_BASE_URL" ]; then
+            echo "The environment staging-e2e has no secret SECBK_E2E_BASE_URL (.dev/e2e/README.md)" >&2
+            exit 1
+          fi
+          echo "::add-mask::$SECBK_E2E_BASE_URL"
+          host="${SECBK_E2E_BASE_URL#*://}"
+          host="${host%%/*}"
+          host="${host%%:*}"
+          if [ -n "$host" ]; then
+            echo "::add-mask::$host"
+            echo "::add-mask::${host,,}"
+          fi
+
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make room on the disk
+        timeout-minutes: 10
+        run: bash .dev/e2e/make-room.sh
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: pgsql, curl, sodium
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      - name: The scenario concurrent
+        timeout-minutes: 125
+        env:
+          SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
+          SECBK_E2E_SECRET: ${{ secrets.SECBK_E2E_SECRET }}
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+          SECBK_E2E_BACKUP_TIMEOUT: '3600'
+          FILES_GB: ${{ inputs.concurrent_gb }}
+          START_AT: ${{ needs.plan.outputs.start_at }}
+        run: exec bash .dev/e2e/run.sh concurrent --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB" --start-at="$START_AT"
+
+      - name: Show the room left on the disk and in memory
+        if: always()
+        run: bash .dev/e2e/make-room.sh --show
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-concurrent-${{ matrix.n }}
+          path: |
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/result.json
+            ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/inspect.json
+          retention-days: 90
+          if-no-files-found: warn
+
+  # The site of the scenarios with 0.2 GB of files, and the check of its data: Moodle 4.5, the extra plugins and their data
+  # on this runner. It does not reach the service and does not use the environment, so it needs no approval.
+  data-only:
+    name: data-only (one site of 0.2 GB, on the runner only)
+    needs: plan
+    if: inputs.scenarios == 'data-only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SECBK_E2E_NAME: r${{ github.run_id }}-data-only
+
+    services:
+      db:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Make room on the disk
+        timeout-minutes: 10
+        run: bash .dev/e2e/make-room.sh
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: pgsql, curl, sodium
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      - name: The site and the check of its data
+        timeout-minutes: 35
+        env:
+          SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
+        run: exec bash .dev/e2e/run.sh data-only --name="$SECBK_E2E_NAME" --files-gb=0.2
+
+      - name: Show the room left on the disk and in memory
+        if: always()
+        run: bash .dev/e2e/make-room.sh --show
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-data-only
+          path: ${{ runner.temp }}/secbk-e2e/${{ env.SECBK_E2E_NAME }}/result.json
+          retention-days: 90
+          if-no-files-found: warn
+
+  # The table of all the results, with the amount that the service holds of the sites against the limit of 30 GB; it fails
+  # the run when a result did not pass or is missing, and when a job did not run to its end.
+  summary:
+    name: Summary
+    needs: [plan, reset, normal, load, abort, concurrent, data-only]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 5
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Download the results of the sites
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-*
+          path: ${{ runner.temp }}/results
+
+      - name: Write the summary
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/summary"
+          status=0
+          php .dev/e2e/summary.php "$RUNNER_TEMP/results" --limit-gb=30 > "$RUNNER_TEMP/summary/summary.md" || status=$?
+          cat "$RUNNER_TEMP/summary/summary.md"
+          cat "$RUNNER_TEMP/summary/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload the summary
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: summary
+          path: ${{ runner.temp }}/summary/summary.md
+          retention-days: 90
+          if-no-files-found: warn
+
+      # A job that stopped before its scenario wrote a result (the approval refused, the set-up failed, the run cancelled)
+      # leaves nothing for the table: its state here fails the run.
+      - name: Check that every job ran to its end
+        if: always()
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          status=0
+          while read -r job result; do
+            echo "$job: $result"
+            case "$result" in
+              success | skipped) ;;
+              *) status=1 ;;
+            esac
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
+          exit "$status"

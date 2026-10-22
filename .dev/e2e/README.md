@@ -18,6 +18,8 @@ Development only; `.dev/` is not part of the plugin package.
 | `verdict.php` | Checks an answer of `inspect` against what a scenario expects (plain PHP) |
 | `summary.php` | The Markdown summary of all the results of a run of the workflow, and its pass or fail (plain PHP) |
 | `install-plugins.sh`, `plugins.json`, `check-data.php` | The extra plugins at fixed commits, and the check of the test data |
+| `make-room.sh` | Removes large tools of a GitHub runner that the test does not use and picks the disk for the site (`--show`: the room left) |
+| `../../.github/workflows/staging-e2e.yml` | The workflow that runs the scenarios on GitHub's runners (below) |
 | `tests/run.php` | Tests of `sec.php` (against `tests/fake-service.php`), `verdict.php`, `summary.php`, the arguments of `run.sh`, and the functions and the order of the scenarios of `lib.sh` with stubs in the place of Moodle, the service, the firewall and the load (`php .dev/e2e/tests/run.php`; the job "Commit rules and development tools" of CI runs them) |
 
 ## Settings
@@ -108,3 +110,102 @@ missing, or when the inspection of a site is missing, failed (for example `lock_
 an object that is not locked (`compliance` false, or `missing_keys`, `expired_keys` or `gone_keys` above 0). The amount of a
 site whose inspection is missing or failed is not known: the table says `unknown`, the line of the total says for how many
 sites, and the limit is judged on the amounts that are known.
+
+## The workflow
+
+`.github/workflows/staging-e2e.yml` runs the scenarios on GitHub's standard Ubuntu 24.04 runners, which are free for a
+public repository. It starts only by hand, on the branch that holds the version of the test to run:
+
+    gh workflow run staging-e2e.yml --ref main -f scenarios=normal -f normal_gb=1
+    gh workflow run staging-e2e.yml --ref main -f scenarios=all
+
+| Input | Default | What it is |
+|---|---|---|
+| `scenarios` | `data-only` | `all` (the four scenarios, 13 sites), `normal`, `load`, `abort`, `concurrent` (ten sites), or `data-only` |
+| `normal_gb` | `10` | GB (10^9 bytes) of files of the site of `normal` |
+| `load_gb` | `4` | GB of files of the site of `load` |
+| `abort_gb` | `4` | GB of files of the site of `abort` |
+| `concurrent_gb` | `0.8` | GB of files of each of the ten sites of `concurrent` |
+
+| Job | Environment | What it does | Limits: the job, the step of the scenario, one `cli/backup.php` (minutes) |
+|---|---|---|---|
+| `plan` | none | Refuses a size that is not a number of GB (up to nine decimals) or is below 0.2, and a selection whose files add up to more than 30 GB (`normal + load + abort + 10 x concurrent`); sets the start of the ten sites, 40 minutes later | 5 |
+| `reset` | `staging-e2e` | `sec.php reset`: removes the test sites that earlier runs made | 15 |
+| `normal` | `staging-e2e` | `run.sh normal` | 180, 155, 100 |
+| `load` | `staging-e2e` | `run.sh load` | 180, 155, 50 |
+| `abort` | `staging-e2e` | `run.sh abort` | 240, 215, 40 |
+| `concurrent` (1 to 10) | `staging-e2e` | `run.sh concurrent` on ten runners, which start their backups together at the time that `plan` set | 150, 125, 60 |
+| `data-only` | none | `run.sh data-only` with 0.2 GB: Moodle, the extra plugins and the data are made and checked on the runner; the service is not reached | 60, 35 |
+| `summary` | none | `summary.php` over the results of all the jobs, with the limit of 30 GB; it also fails when a job did not run to its end | 10 |
+
+Approvals. Each job with the environment waits for a reviewer: first `reset`, then the jobs of the scenarios, which all wait
+for `reset` and are approved together. The ten sites of `concurrent` start 40 minutes after `plan`, so approve both without
+delay; a site that is ready after that time starts at once, and its result says how late (`numbers.start_late`).
+
+Limits. Each scenario is one step whose limit is 25 minutes below that of its job: a run that hangs is stopped by the step,
+whose log GitHub keeps, and the next steps still upload the result. The step is `run.sh` itself (`exec`), so the signal
+reaches its trap, which writes `result.json` with the step where it stopped. `SECBK_E2E_BACKUP_TIMEOUT` is set for each
+scenario so that its longest path (each call of `cli/backup.php` and each wait of `lib.sh` at its end, the site and the
+checks at their slowest) ends within the step; the comments of the workflow show the sums. Besides the site and the
+backups, `load` waits 20 minutes for the recount of the service, and `abort` 20 minutes for the recount and about 30
+minutes for the plugin to give up the refused connections to S3.
+
+Results. Each scenario job uploads `result.json` and `inspect.json` of its site as the artifact `e2e-<scenario>`
+(`e2e-concurrent-<n>`); never `logs/` or `private/`. `summary` adds the table of `summary.php` to the summary of the run and
+keeps it as the artifact `summary`. The artifacts are kept 90 days: the clean-up below finds the IDs of the test sites in
+them (`site_uuid` of `inspect.json`). Each job also prints the room left on its disk and in memory at its end.
+
+Pace. One run at a time: the concurrency group `staging-e2e` holds a second run until the first ends (GitHub keeps one
+waiting run; a third replaces it). Not more than two runs in an hour: each registration of a site makes the service send a
+confirmation mail, it allows 30 an hour for the test organization, and a run of `all` registers 13 sites.
+
+What is sent. The 30 GB of `plan` counts the files of the sites. The database of each site and, until the service holds the
+list of the files of this release of Moodle, the code of Moodle (a few hundred MB for each site) come on top; `summary`
+judges what the service holds of all the sites at the end against 30 GB.
+
+## The environment staging-e2e
+
+A maintainer makes it once, in the settings of the repository (Environments):
+
+1. A new environment `staging-e2e`.
+2. Required reviewers: the maintainers who may send data to the staging service.
+3. Deployment branches and tags: selected branches only, ones that only maintainers push to (for example `main`).
+4. Two environment secrets (not repository secrets, not variables):
+   - `SECBK_E2E_BASE_URL`: the URL of the API of the staging service, `https://<host>/<path>`, without `/v1`.
+   - `SECBK_E2E_SECRET`: the secret of the test endpoints, the same value that the staging service has (32 characters at
+     least). `gh secret set SECBK_E2E_SECRET --env staging-e2e` reads it from its standard input, so that it is on no
+     command line and in no history.
+5. No AWS credentials, here or anywhere in GitHub: the runners reach S3 only with the upload URLs that the service signs.
+
+The workflow has no trigger but `workflow_dispatch`, so no pull request (from a fork or not) runs it, and GitHub gives the
+secrets of the environment only to the jobs that a reviewer approved. `data-only` uses no environment and needs no approval.
+
+## Cost
+
+GitHub: nothing. A run of `all` uses 13 standard runners at once (a free account runs 20 jobs at once), each for one to four
+hours.
+
+AWS: every object that a run sends stays in the staging storage, locked in COMPLIANCE mode for the lock period of the plan of
+the test organization and 14 days more (about 15 days), in the storage class S3 Intelligent-Tiering: about JPY 1.8 per GB
+for those 15 days (1 USD = JPY 160), so about JPY 55 for a run of 30 GB. The objects stay after their lock ends until they
+are removed (below), at about JPY 3.7 per GB for each month. The summary of each run shows how much the service holds of its
+sites.
+
+## Clean-up, once a month
+
+The service does not yet remove the objects of a site that it removed: the job `reset` removes the test sites, not their
+objects. Once a month, an administrator of the AWS account of the staging service removes the objects of the test sites
+whose lock has ended, with their own credentials on their own machine:
+
+1. The IDs of the test sites of the runs that ended more than 15 days ago: `site_uuid` in `inspect.json` of the artifacts
+   of those runs (kept 90 days), or the test sites that the service lists.
+2. For each site, the versions and the delete markers under its folder:
+   `aws s3api list-object-versions --bucket <bucket> --prefix sites/<site ID>/`.
+3. For each version, its lock: `aws s3api get-object-retention --bucket <bucket> --key <key> --version-id <version>`.
+   The versions whose `RetainUntilDate` has passed, those without a lock (the list of what the service holds of a site is not
+   locked), and then the delete markers, are removed one by one:
+   `aws s3api delete-object --bucket <bucket> --key <key> --version-id <version>`. S3 refuses to remove a version whose
+   lock has not ended (COMPLIANCE mode binds every user, the root user too): those wait for the next month.
+4. The folder is listed again: it is empty once every lock has ended.
+
+These steps have not been run yet: the first objects of the test lose their lock about 15 days after the first run.
