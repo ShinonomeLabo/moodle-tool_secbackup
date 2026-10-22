@@ -195,10 +195,11 @@ final class core_diff_test extends \advanced_testcase {
         symlink($outside, $root . '/dirlink');
         symlink($root . '/nothing', $root . '/dangling');
         $this->assertTrue(posix_mkfifo($root . '/pipe', 0600));
-        $this->assertSame(
-            ['dir/in.php', 'real.php', 'version.php'],
-            array_keys(self::hashes(new core_diff($root, [])))
-        );
+        $diff = new core_diff($root, []);
+        $this->assertSame([], $diff->skipped_links());
+        $this->assertSame(['dir/in.php', 'real.php', 'version.php'], array_keys(self::hashes($diff)));
+        // The links are not followed, and the list of the backup names them.
+        $this->assertSame(['dangling', 'dirlink', 'link.php'], $diff->skipped_links());
     }
 
     public function test_a_plugin_folder_outside_the_root_or_missing_changes_nothing(): void {

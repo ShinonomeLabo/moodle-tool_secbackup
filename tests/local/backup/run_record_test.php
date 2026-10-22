@@ -475,4 +475,20 @@ final class run_record_test extends \advanced_testcase {
         $this->expectException(\coding_exception::class);
         $run->keep(['address' => 'https://example.com/']);
     }
+
+    public function test_what_a_backup_does_not_hold_is_read_from_its_progress(): void {
+        $this->resetAfterTest();
+        $run = run_record::create('cli', 1000);
+        // A run that did not get to its list.
+        $this->assertNull($run->not_backed_up());
+        $run->keep(['notbackedup' => 'none']);
+        $this->assertNull(run_record::active()->not_backed_up());
+        $counts = ['missing' => 2, 'unreadable' => 1, 'skippedlinks' => 0, 'secret' => 3];
+        $run->keep(['notbackedup' => $counts]);
+        $this->assertSame($counts, run_record::active()->not_backed_up());
+        // A count that is missing or not a whole number reads as none.
+        $run->keep(['notbackedup' => ['missing' => '2', 'unreadable' => 1.5, 'secret' => 4]]);
+        $expected = ['missing' => 0, 'unreadable' => 0, 'skippedlinks' => 0, 'secret' => 4];
+        $this->assertSame($expected, run_record::active()->not_backed_up());
+    }
 }

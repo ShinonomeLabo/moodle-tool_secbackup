@@ -285,6 +285,50 @@ final class file_source_test extends \advanced_testcase {
         $this->assertSame([], $this->slept);
     }
 
+    public function test_a_content_in_a_file_system_of_a_plugin_is_waited_for(): void {
+        global $CFG;
+        require_once($CFG->libdir . '/filestorage/file_system_filedir.php');
+        $CFG->alternative_file_system_class = '\\tool_secbackup\\tests\\other_file_system';
+        get_file_storage(true);
+        try {
+            // The file directory does not tell whether the store of the plugin has the content: it is looked for again.
+            $this->assertNull($this->source()->pack(sha1('in no file directory'), 20, $this->packer(make_request_directory())));
+            $this->assertSame([1, 5, 15], $this->slept);
+        } finally {
+            unset($CFG->alternative_file_system_class);
+            get_file_storage(true);
+        }
+    }
+
+    /**
+     * Values of the content hash column and whether Moodle stores a content under them.
+     *
+     * @return array[]
+     */
+    public static function hashes(): array {
+        return [
+            'a SHA-1' => [sha1('content'), true],
+            'upper case' => [strtoupper(sha1('content')), false],
+            'too short' => [substr(sha1('content'), 1), false],
+            'a line feed after it' => [sha1('content') . "\n", false],
+            'not hexadecimal' => [str_repeat('g', 40), false],
+            'a number' => [12345, false],
+            'null' => [null, false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('hashes')]
+    /**
+     * A content hash is a SHA-1 in lower-case hexadecimal.
+     *
+     * @dataProvider hashes
+     * @param mixed $value The value of the column.
+     * @param bool $valid Whether it is a content hash.
+     */
+    public function test_a_valid_content_hash_is_a_sha1_in_lower_case(mixed $value, bool $valid): void {
+        $this->assertSame($valid, file_source::valid_hash($value));
+    }
+
     public function test_pack_gives_the_chunks_and_closes_the_file(): void {
         global $DB;
         $dir = make_request_directory();

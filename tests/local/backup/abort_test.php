@@ -473,4 +473,33 @@ final class abort_test extends \advanced_testcase {
         $this->assertSame('network_check_failed', abort::classify(new transport_exception('transport_connect'), $files));
         $this->assertSame('disk_low', abort::classify(new plugin_exception('temp_write_failed'), $files));
     }
+
+    public function test_a_stop_for_a_content_names_where_it_is_and_the_first_file_of_the_site_that_has_it(): void {
+        global $DB;
+        $files = new system_files(make_request_directory());
+        $hash = sha1('the essay of a student');
+        $where = ['contenthash' => $hash, 'path' => 'filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash];
+        // No file of the site has the content (any more): where the content is.
+        $tamper = new plugin_exception('tamper_detected', null, 'contenthash ' . $hash);
+        $this->assertSame(['tamper_detected', ['file' => $where]], abort::reason($tamper, $files));
+        $storage = get_file_storage();
+        $record = ['contextid' => \context_system::instance()->id, 'component' => 'tool_secbackup', 'filearea' => 'test',
+            'itemid' => 7, 'filepath' => '/', 'filename' => 'essay.txt'];
+        $first = $storage->create_file_from_string($record, 'the essay of a student');
+        $storage->create_file_from_string(['filename' => 'copy.txt', 'itemid' => 8] + $record, 'the essay of a student');
+        $file = $where + ['component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 7, 'filename' => 'essay.txt'];
+        $this->assertSame(['tamper_detected', ['file' => $file]], abort::reason($tamper, $files));
+        // A content that could not be read, with the warning of PHP after its hash.
+        $slow = new plugin_exception('nfs_slow', null, 'contenthash ' . $hash . ': fread(): Read of 8192 bytes failed');
+        $this->assertSame(['nfs_slow', ['file' => $file]], abort::reason($slow, $files));
+        // The record of a run never holds a URL: a value that holds one is left out.
+        $DB->set_field('files', 'filename', 'https://example.com/essay.txt', ['id' => $first->get_id()]);
+        unset($file['filename']);
+        $this->assertSame(['tamper_detected', ['file' => $file]], abort::reason($tamper, $files));
+        // Another reason, or debug information that names no content, names no file.
+        $this->assertSame(['tamper_detected', []], abort::reason(new plugin_exception('tamper_detected'), $files));
+        $upper = new plugin_exception('nfs_slow', null, 'contenthash ' . strtoupper($hash));
+        $this->assertSame(['nfs_slow', []], abort::reason($upper, $files));
+        $this->assertSame(['db_slow', []], abort::reason(new plugin_exception('db_slow', null, 'contenthash ' . $hash), $files));
+    }
 }

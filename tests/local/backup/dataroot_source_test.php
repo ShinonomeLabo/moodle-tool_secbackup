@@ -165,6 +165,40 @@ final class dataroot_source_test extends \advanced_testcase {
         $this->assertSame(['dataroot'], array_keys(dataroot_source::roots()));
     }
 
+    public function test_the_secret_folder_is_named_as_the_lists_of_a_backup_name_it(): void {
+        global $CFG;
+        $real = $this->dataroot();
+        // Not set: the folder secret of the data directory, whether it exists yet or not.
+        $this->assertSame(['dataroot:secret'], dataroot_source::secret_names());
+        mkdir($real . '/secret');
+        $this->assertSame(['dataroot:secret'], dataroot_source::secret_names());
+        // Set to a folder inside the data directory: its path there.
+        mkdir($real . '/keys/site', 0777, true);
+        $CFG->secretdataroot = $real . '/keys/site';
+        $this->assertSame(['dataroot:keys/site'], dataroot_source::secret_names());
+        // Set to a folder outside it: a root of its own.
+        $CFG->secretdataroot = realpath(make_request_directory());
+        $this->assertSame(['secret:'], dataroot_source::secret_names());
+        // A data directory that does not exist.
+        unset($CFG->secretdataroot);
+        $CFG->dataroot = $real . '/missing';
+        $this->assertSame(['dataroot:secret'], dataroot_source::secret_names());
+    }
+
+    public function test_a_name_is_in_the_secret_folder_when_it_is_the_folder_or_under_it(): void {
+        $inside = ['dataroot:keys/site'];
+        $this->assertTrue(dataroot_source::in_secret('dataroot:keys/site', $inside));
+        $this->assertTrue(dataroot_source::in_secret('dataroot:keys/site/key/aes-256-gcm.key', $inside));
+        $this->assertFalse(dataroot_source::in_secret('dataroot:keys/site-old/key', $inside));
+        $this->assertFalse(dataroot_source::in_secret('dataroot:keys', $inside));
+        $this->assertFalse(dataroot_source::in_secret('secret:key', $inside));
+        $outside = ['secret:'];
+        $this->assertTrue(dataroot_source::in_secret('secret:', $outside));
+        $this->assertTrue(dataroot_source::in_secret('secret:key/aes-256-gcm.key', $outside));
+        $this->assertFalse(dataroot_source::in_secret('dataroot:secret', $outside));
+        $this->assertFalse(dataroot_source::in_secret('dataroot:secret', []));
+    }
+
     public function test_the_place_of_a_folder_for_the_temporary_files(): void {
         global $CFG;
         $real = $this->dataroot();

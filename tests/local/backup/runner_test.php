@@ -945,6 +945,27 @@ final class runner_test extends \advanced_testcase {
         $this->assertStringContainsString($file['path'], abort_reason::text('nfs_slow', null, $run->abort_note()));
     }
 
+    public function test_a_temporary_file_that_cannot_be_written_while_a_content_is_packed_names_no_file(): void {
+        $runner = $this->runner(['filesource' => fn(\moodle_database $db): file_source => new class ($db) extends file_source {
+            /**
+             * Fails as the packer does when it cannot rename a chunk that it wrote.
+             *
+             * @param string $contenthash Content hash.
+             * @param int $size Size.
+             * @param packer $packer The packer.
+             * @return array|null
+             */
+            public function pack(string $contenthash, int $size, packer $packer): ?array {
+                throw new \tool_secbackup\local\plugin_exception('temp_write_failed', null, 'rename: No space left on device');
+            }
+        }]);
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('aborted', $this->finish($runner, $run));
+        // The temporary folder is full, not a file of the site: the stop names none.
+        $this->assertSame('disk_low', $run->abort_code());
+        $this->assertArrayNotHasKey('file', $run->abort_note());
+    }
+
     public function test_a_row_of_the_file_store_with_a_broken_content_hash_is_listed_as_missing(): void {
         global $DB;
         $row = $DB->get_record('files', ['contenthash' => $this->hashes['big']], '*', IGNORE_MULTIPLE);
@@ -1588,6 +1609,17 @@ final class runner_test extends \advanced_testcase {
         [, $entries] = $this->manifest($run->run_uuid());
         $paths = array_column(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'local_example'), 'path');
         $this->assertEqualsCanonicalizing(['.gitmodules', 'lib.php', 'node_modules/lib/file', 'version.php'], $paths);
+    }
+
+    public function test_an_added_plugin_whose_folder_cannot_be_listed_is_listed_as_unreadable(): void {
+        // The folder of a plugin that is removed while the backup runs.
+        $gone = make_request_directory() . '/gone';
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner(['coderoots' => fn(): array => ['local_example' => $this->plugin, 'local_gone' => $gone]]);
+        $this->assertSame('done', $this->finish($runner, $run));
+        [$header, $entries] = $this->manifest($run->run_uuid());
+        $this->assertSame(['local_gone:.'], $header['unreadable']);
+        $this->assertSame([], array_values(array_filter($entries, fn($e) => $e['t'] === 'code' && $e['root'] === 'local_gone')));
     }
 
     public function test_official_files_under_a_symbolic_link_are_not_listed_as_deleted(): void {
