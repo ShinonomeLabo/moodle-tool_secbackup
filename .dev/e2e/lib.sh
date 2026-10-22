@@ -196,10 +196,11 @@ e2e_end() {
 # Writes result.json: {scenario, name, passed, reasons, sent_bytes, durations, retries, numbers, requested_bytes, moodle}.
 # sent_bytes is objects.bytes of inspect.json (what the service holds of the site at the end; 0 without it), and
 # requested_bytes lists the bytes that each run of the site asked the service for. retries counts lines of the output of
-# cli/backup.php: refused, the steps that failed because the service was rate limited or unavailable (api_rate_limited,
-# api_unavailable); waits, the waits ("Waiting until") in any stage but the one of the receipt, where the run asks again and
-# again until it has it; and failed_steps, every step that failed. The plugin makes a run wait, without a failed step, when
-# the service answers that it is busy, so the requests that the service refused are among the waits. moodle is the code of
+# cli/backup.php. waits_without_failure: the waits ("Waiting until") that no failed step comes before, in any stage but the
+# one of the receipt (where the run asks again and again until it has it). The plugin waits without a failed step when the
+# service answers that it is busy (429, 503: api_rate_limited, api_unavailable), and when a send to S3 is to be tried
+# again, so both are counted here; the command prints no line that tells them apart. failed_steps: the steps that failed
+# ("A step of the backup failed"); the wait of five minutes after each of them is not among the waits. moodle is the code of
 # Moodle of the site (logs/moodle.json) with core_manifest, whether its last run had the official list of the files of that
 # build (logs/core.txt; null when it is not known). passed is true when no reason was recorded; the site part of a scenario
 # adds the reason that the scenario has not run yet (logs/pending.txt).
@@ -225,18 +226,22 @@ e2e_write_result() {
         $inspection = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
         $runs = is_array($inspection) && is_array($inspection["runs"] ?? null) ? $inspection["runs"] : [];
         $waits = 0;
-        $refused = 0;
         $failed = 0;
         foreach (glob("$folder/logs/backup-*.log") ?: [] as $log) {
+            // A pass of the command prints a failed step (when one failed), its stage, and the wait (when it waits): the
+            // wait of a pass that began with a failed step belongs to that step.
             $stage = "";
+            $afterfailure = 0;
             foreach ($lines($log) as $line) {
                 if (str_starts_with($line, "Stage: ")) {
                     $stage = substr($line, 7);
+                    $afterfailure = $afterfailure === 1 ? 2 : 0;
                 } else if (str_starts_with($line, "Waiting until ")) {
-                    $waits += $stage === $receipt ? 0 : 1;
-                } else if (preg_match("/^A step of the backup failed \\((.*)\\)\\. /", $line, $m) === 1) {
+                    $waits += $afterfailure === 0 && $stage !== $receipt ? 1 : 0;
+                    $afterfailure = 0;
+                } else if (str_starts_with($line, "A step of the backup failed ")) {
                     $failed++;
-                    $refused += preg_match("/(^|[^a-z_])(api_rate_limited|api_unavailable)([^a-z_]|\\z)/", $m[1]);
+                    $afterfailure = 1;
                 }
             }
         }
@@ -254,7 +259,7 @@ e2e_write_result() {
             "sent_bytes" => is_array($inspection) && is_int($inspection["objects"]["bytes"] ?? null)
                 ? $inspection["objects"]["bytes"] : 0,
             "durations" => (object) $pairs("$folder/logs/durations.txt"),
-            "retries" => ["refused" => $refused, "waits" => $waits, "failed_steps" => $failed],
+            "retries" => ["waits_without_failure" => $waits, "failed_steps" => $failed],
             "numbers" => (object) $pairs("$folder/logs/numbers.txt"),
             "requested_bytes" => array_map(static fn($run) => is_array($run) ? ($run["requested_bytes"] ?? null) : null, $runs),
             "moodle" => is_array($moodle) ? $moodle : null,

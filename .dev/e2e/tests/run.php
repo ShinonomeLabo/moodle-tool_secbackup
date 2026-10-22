@@ -373,15 +373,15 @@ $folder = "$work/results-good";
 secbk_e2e_site($folder, 'r1-normal');
 for ($n = 1; $n <= 10; $n++) {
     secbk_e2e_site($folder, sprintf('r1-c%02d', $n), ['scenario' => 'concurrent',
-        'retries' => ['refused' => 1, 'waits' => 2, 'failed_steps' => 5]], ['objects' => ['bytes' => 900000000]]);
+        'retries' => ['waits_without_failure' => 2, 'failed_steps' => 5]], ['objects' => ['bytes' => 900000000]]);
 }
 secbk_e2e_site($folder, 'r1-data', ['scenario' => 'data-only', 'sent_bytes' => 0], null);
 [$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
 secbk_e2e_expect('sites that all passed pass; the scenario data-only needs no inspection', $exit === 0
     && substr_count($output, '| concurrent |') === 10 && str_contains($output, '| data-only |')
     && str_contains($output, '9.000 GB'), "exit $exit: $output");
-secbk_e2e_expect('the summary shows the refused requests and the waits of the runs', str_contains($output, '| 1 / 2 |'),
-    $output);
+secbk_e2e_expect('the summary shows the waits without a failed step and the failed steps of the runs',
+    str_contains($output, '| 2 | 5 |'), $output);
 secbk_e2e_expect('the ten sites of concurrent ran together; the latest start is not known without the numbers',
     str_contains($output, 'Concurrent: the runs of the 10 sites ran together for 600 s (01:30:00 to 01:40:00 UTC); the latest'
     . ' start of a site is not known.'), $output);
@@ -475,13 +475,16 @@ secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], ['runs' => [['uu
 secbk_e2e_expect('concurrent: a site whose run has no times fails, since the overlap cannot be known', $exit === 1
     && str_contains($output, 'concurrent r1-c02: the service gave no times of a completed run'), "exit $exit: $output");
 
-// The requests that the service refused (a step that failed as rate limited or unavailable) and the waits of the runs that
-// were not for the receipt.
-$folder = "$work/results-refused";
-secbk_e2e_site($folder, 'r1-normal', ['retries' => ['refused' => 2, 'waits' => 3, 'failed_steps' => 4]]);
+// The waits of the runs that no failed step comes before, but in the stage of the receipt (the requests that the service
+// answered as busy are among them, and the sends to S3 that are tried again), and the failed steps, in a column of their own.
+$folder = "$work/results-waits";
+secbk_e2e_site($folder, 'r1-normal', ['retries' => ['waits_without_failure' => 3, 'failed_steps' => 4]]);
 [$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
-secbk_e2e_expect('the summary shows the refused requests and the waits that were not for the receipt', $exit === 0
-    && str_contains($output, '| Refused / waits |') && str_contains($output, '| 2 / 3 |'), "exit $exit: $output");
+secbk_e2e_expect('the summary shows the waits without a failed step and the failed steps', $exit === 0
+    && str_contains($output, '| Waits without a failed step | Failed steps |') && str_contains($output, '| 3 | 4 |'),
+    "exit $exit: $output");
+secbk_e2e_expect('the summary says what the waits without a failed step count', str_contains($output, 'the requests that the'
+    . ' service answered as busy (429, 503)') && str_contains($output, 'the sends to S3 that are tried again'), $output);
 
 // verdict.php: the conditions of the scenarios on the answer of the inspection.
 $good = secbk_e2e_inspection();
@@ -610,16 +613,20 @@ foreach ($resends as $label => [$before, $sent, $after, $words]) {
 $inspection = json_encode(secbk_e2e_inspection(['runs' => [$failedrun, $completed], 'objects' => ['bytes' => 4242]]));
 [$exit, $output] = secbk_e2e_lib('e2e_begin load r1-result; e2e_number s3_bytes_after_stop 1000; e2e_number start_late 0;'
     . ' e2e_duration build $(( $(date +%s) - 5 ));'
-    . ' printf "Stage: Sending the files of the site\nWaiting until x\nA step of the backup failed (api_exception'
-    . ' api_rate_limited). It is tried again in 5 minutes.\nStage: Waiting for the receipt of the backup service\n'
-    . 'Waiting until z\n" > "$e2e_logs/backup-1.log"; printf "A step of the backup failed (plugin_exception upload_failed).'
-    . ' It is tried again in 5 minutes.\nStage: Sending the files of the site\nWaiting until w\n" > "$e2e_logs/backup-2.log";'
+    // A wait that no failed step comes before (counted), the wait after a failed step (not counted: the failed steps are
+    // counted on their own), a wait in the stage of the receipt (not counted), and a failed step without a wait, after which
+    // the next pass of the command waits again (counted).
+    . ' printf "Stage: Sending the database\nWaiting until a\nA step of the backup failed (plugin_exception temp_write_failed).'
+    . ' It is tried again in 5 minutes.\nStage: Sending the files of the site\nWaiting until b\nStage: Waiting for the receipt'
+    . ' of the backup service\nWaiting until c\n" > "$e2e_logs/backup-1.log"; printf "A step of the backup failed (x). It is'
+    . ' tried again in 5 minutes.\nStage: Sending the files of the site\nStage: Sending the files of the site\nWaiting until'
+    . ' d\n" > "$e2e_logs/backup-2.log";'
     . ' printf "%s" "$E2E_INSPECT" > "$e2e_folder/inspect.json"; e2e_finish', ['E2E_INSPECT' => $inspection]);
 $result = secbk_e2e_result('r1-result') ?? [];
 secbk_e2e_expect('the result of a scenario that passed', $exit === 0 && ($result['scenario'] ?? '') === 'load'
     && ($result['name'] ?? '') === 'r1-result' && ($result['passed'] ?? null) === true && ($result['reasons'] ?? null) === []
     && ($result['sent_bytes'] ?? null) === 4242
-    && ($result['retries'] ?? null) === ['refused' => 1, 'waits' => 2, 'failed_steps' => 2]
+    && ($result['retries'] ?? null) === ['waits_without_failure' => 2, 'failed_steps' => 2]
     && array_key_exists('moodle', $result) && $result['moodle'] === null
     && ($result['numbers'] ?? null) === ['s3_bytes_after_stop' => 1000, 'start_late' => 0]
     && ($result['requested_bytes'] ?? null) === [4000, 3000] && ($result['durations']['build'] ?? 0) >= 5

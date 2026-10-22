@@ -27,8 +27,9 @@
  * has that problem, the line of the total says for how many sites, and the limit is judged on the amounts that are known.
  *
  * For each site the table shows the Moodle it was built with and whether its run had the official list of the files of that
- * build at the service (moodle of result.json), the requests that the service refused and the waits of its runs that were
- * not for the receipt (retries), and its minutes. For the scenario concurrent it says how long the runs of the ten sites
+ * build at the service (moodle of result.json), the waits of its runs that no failed step comes before, but in the stage of
+ * the receipt (the requests that the service answered as busy, and the sends to S3 that are tried again), and its failed
+ * steps (retries), and its minutes. For the scenario concurrent it says how long the runs of the ten sites
  * ran together, from the latest start to the earliest end of their completed runs by the times of the service, and how late
  * the latest site started (numbers.start_late).
  *
@@ -236,7 +237,7 @@ foreach ($sites as $site) {
     $retries = is_array($result['retries'] ?? null) ? $result['retries'] : [];
     $minutes = is_numeric($result['durations']['total'] ?? null) ? (int) round($result['durations']['total'] / 60) : '';
     $rows[] = [$scenario, $name, $problems ? 'FAILED' : 'passed', $sent === null ? 'unknown' : secbk_e2e_gb($sent), $runs, $lock,
-        $classes, $version, (int) ($retries['refused'] ?? 0) . ' / ' . (int) ($retries['waits'] ?? 0), $minutes,
+        $classes, $version, (int) ($retries['waits_without_failure'] ?? 0), (int) ($retries['failed_steps'] ?? 0), $minutes,
         implode('; ', $problems)];
     foreach ($problems as $problem) {
         $failures[] = "$scenario $name: $problem";
@@ -275,12 +276,16 @@ foreach ($codesent as $build => $names) {
 }
 
 echo "## Staging end-to-end test\n\n";
-echo "| Scenario | Site | Result | Sent (GB) | Runs / objects | Lock | Storage classes | Moodle | Refused / waits | Minutes |",
-    " Problems |\n";
-echo "|---|---|---|---:|---|---|---|---|---:|---:|---|\n";
+echo "| Scenario | Site | Result | Sent (GB) | Runs / objects | Lock | Storage classes | Moodle | Waits without a failed step |",
+    " Failed steps | Minutes | Problems |\n";
+echo "|---|---|---|---:|---|---|---|---|---:|---:|---:|---|\n";
 foreach ($rows as $row) {
     echo '| ', implode(' | ', array_map('secbk_e2e_cell', $row)), " |\n";
 }
+echo "\nWaits without a failed step: the waits of the runs that no failed step comes before, but in the stage of the receipt.",
+    " They count the requests that the service answered as busy (429, 503), which the plugin waits for without a failed step,",
+    " and the sends to S3 that are tried again; the output of cli/backup.php does not tell them apart. The wait after a failed",
+    " step is not among them.\n";
 // The limit is judged on the amounts that are known; a site whose amount is not known has failed already.
 printf("\nSent in total: %s GB (%d bytes) of the limit of %s GB%s.\n\n", secbk_e2e_gb($total), $total, $limittext,
     $unknown > 0 ? sprintf('; not known for %d %s whose inspection is missing or failed', $unknown,

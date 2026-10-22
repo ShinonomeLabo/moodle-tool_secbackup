@@ -51,9 +51,9 @@ backup and the sleep or the request to the service that runs in the background, 
 Every scenario first checks that the disk has room (the files, 3 GB for Moodle and the rest, and the free space below which
 the plugin does not back up), then builds the site: Moodle 4.5 at the commit of `moodle.json` (below) with the plugin,
 installed on PostgreSQL; the extra plugins of `plugins.json` (but those that `--skip` names) and the upgrade that installs
-them; the address `https://<name>.moodle.example.invalid` (a name and not an IP address: the firewall of the service refuses an address
-that is an IP); dummy data, the data of the extra plugins and `--files-gb` GB (10^9 bytes) of files of random content; and
-`check-data.php`. `data-only` stops there and does not reach the service.
+them; the address `https://<name>.moodle.example.invalid` (a name and not an IP address: the firewall of the service refuses
+an address that is an IP); dummy data, the data of the extra plugins and `--files-gb` GB (10^9 bytes) of files of random
+content; and `check-data.php`. `data-only` stops there and does not reach the service.
 
 `--part=site` does only this, without the secrets of the service in the environment: the code of Moodle, Composer and the
 extra plugins run here. Its result says that the scenario has not run yet, and it ends with 0 once the site is built.
@@ -103,12 +103,12 @@ with that reason.
   `passed` is true when no condition failed and the script ran to its end; `reasons` says what failed, also the step where
   the script stopped. `sent_bytes` is what the service holds of the site at the end. The trap of the script writes it in
   every case.
-  - `retries` counts lines of the output of `cli/backup.php`: `refused`, the steps that failed because the service was rate
-    limited or unavailable (`api_rate_limited`, `api_unavailable`); `waits`, the waits in any stage but the one of the
-    receipt (where the run asks for its receipt again and again); `failed_steps`, all the steps that failed. The plugin
-    makes a run wait, without a failed step, when the service answers that it is busy (429, 503) and when a send to S3 is to
-    be tried again, so the requests that the service refused are counted among the waits; `refused` stays 0 until the
-    plugin reports them as failed steps.
+  - `retries` counts lines of the output of `cli/backup.php`. `waits_without_failure`: the waits that no failed step comes
+    before, in any stage but the one of the receipt (where the run asks for its receipt again and again). The requests that
+    the service answered as busy (429, 503) are counted here: the plugin does not report them as failed steps, it waits as
+    long as the service asks. So are the sends to S3 that are tried again (the plugin waits 15 minutes before it sends a
+    chunk again). The output of the command does not tell the two apart. `failed_steps`: the steps that failed; the wait of
+    five minutes after each of them is not among the waits.
   - `moodle` is the code of Moodle of the site: `commit`, `version`, `release`, `build`, and `core_manifest`, whether the
     last run of the site had the official list of the files of that build at the service (it then sends only the files
     that differ from it), from the record of the run on the site; null when it is not known.
@@ -129,13 +129,13 @@ an object that is not locked (`compliance` false, or `missing_keys`, `expired_ke
 site whose inspection is missing, failed or not of its form is not known: the table says `unknown`, the site has that
 problem, the line of the total says for how many sites, and the limit is judged on the amounts that are known.
 
-The table also shows the Moodle of each site (its release, and `list used` or `code sent`) and `Refused / waits`
-(`retries` above). For `concurrent` a line says how long the runs of the ten sites ran together, from the latest start to
-the earliest end of their completed runs by the times that the service gives (`created_at` and `updated_at` of the run;
-the service gives no other time of its end), and how late the latest site started (`numbers.start_late`); runs that never
-ran together fail the summary. Notes, which do not fail it: the sites that sent the code of Moodle because the service has
-no official list of the files of their build (see "The Moodle of the sites"), and the sites of `concurrent` that started
-after the time of the ten.
+The table also shows the Moodle of each site (its release, and `list used` or `code sent`), `Waits without a failed step` and
+`Failed steps` (`retries` above; a line under the table says what the waits count). For `concurrent` a line says how long the
+runs of the ten sites ran together, from the latest start to the earliest end of their completed runs by the times that the
+service gives (`created_at` and `updated_at` of the run; the service gives no other time of its end), and how late the latest
+site started (`numbers.start_late`); runs that never ran together fail the summary. Notes, which do not fail it: the sites
+that sent the code of Moodle because the service has no official list of the files of their build (see "The Moodle of the
+sites"), and the sites of `concurrent` that started after the time of the ten.
 
 ## The workflow
 
