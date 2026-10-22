@@ -98,6 +98,15 @@ final class abort_reason_test extends \advanced_testcase {
         );
     }
 
+    public function test_a_stop_at_the_end_of_the_window_names_both_of_its_causes(): void {
+        // The next window starts too late to finish within the 24 hours, or two windows in a row were not enough.
+        foreach (['abort_window_ended', 'abort_window_ended_advice'] as $id) {
+            $text = get_string_manager()->get_string($id, 'tool_secbackup', null, 'en');
+            $this->assertStringContainsString('24 hours', $text, $id);
+            $this->assertStringContainsString('two windows', $text, $id);
+        }
+    }
+
     public function test_a_stop_for_a_content_names_the_file(): void {
         $hash = str_repeat('ab', 20);
         $file = ['contenthash' => $hash, 'path' => 'filedir/ab/ab/' . $hash, 'component' => 'mod_resource',
