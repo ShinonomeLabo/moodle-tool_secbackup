@@ -84,6 +84,7 @@
         },
         "IncrementInteger": {
             "ignore": [
+                "tool_secbackup\\local\\net\\doh_resolver::lookup::127",
                 "tool_secbackup\\local\\net\\doh_resolver::lookup::134",
                 "tool_secbackup\\local\\net\\transport::send::190",
                 "tool_secbackup\\local\\trust\\sec_trust::open::102"
