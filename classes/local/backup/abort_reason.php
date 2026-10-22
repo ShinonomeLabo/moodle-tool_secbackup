@@ -45,7 +45,9 @@ final class abort_reason {
     /**
      * What happened.
      *
-     * A stop for a content of the file store (tamper_detected, nfs_slow) names the file when the stop kept it.
+     * A stop for a content of the file store (tamper_detected, nfs_slow) names the file when the stop kept it: where it is, and
+     * the component and the file area of a file of the site that has it. The name and the item that a stop of an earlier
+     * version kept are not shown: they can be personal data.
      *
      * @param string $code The reason.
      * @param string|null $lang The language; null for the one of the user.
@@ -62,15 +64,13 @@ final class abort_reason {
         if (!is_array($file) || !is_string($file['path'] ?? null)) {
             return $text;
         }
-        $a = (object) [
-            'path' => $file['path'],
-            'component' => (string) ($file['component'] ?? ''),
-            'filearea' => (string) ($file['filearea'] ?? ''),
-            'itemid' => (string) ($file['itemid'] ?? ''),
-            'filename' => (string) ($file['filename'] ?? ''),
-        ];
-        $id = isset($file['filename']) ? 'abort_file' : 'abort_file_content';
-        return $text . ' ' . $strings->get_string($id, 'tool_secbackup', $a, $lang);
+        $a = (object) ['path' => $file['path']];
+        if (!isset($file['component'])) {
+            return $text . ' ' . $strings->get_string('abort_file_content', 'tool_secbackup', $a, $lang);
+        }
+        $a->component = (string) $file['component'];
+        $a->filearea = (string) ($file['filearea'] ?? '');
+        return $text . ' ' . $strings->get_string('abort_file', 'tool_secbackup', $a, $lang);
     }
 
     /**

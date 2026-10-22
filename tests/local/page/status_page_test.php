@@ -645,12 +645,14 @@ final class status_page_test extends \advanced_testcase {
         $hash = str_repeat('cd', 20);
         $run = run_record::create('manual', 1760000000);
         $run->abort('tamper_detected', 1760000100, ['file' => ['contenthash' => $hash, 'path' => 'filedir/cd/cd/' . $hash,
-            'component' => 'mod_folder', 'filearea' => 'content', 'itemid' => 3, 'filename' => '<b>a&b.txt</b>']]);
+            'component' => 'mod_folder', 'filearea' => '<b>a&b</b>', 'itemid' => 3, 'filename' => 'essay of a student.txt']]);
         $html = (new status_page())->render();
         $this->assertStringContainsString('filedir/cd/cd/' . $hash, $html);
-        $this->assertStringContainsString('&lt;b&gt;a&amp;b.txt&lt;/b&gt;', $html);
-        $this->assertStringNotContainsString('<b>a&b.txt</b>', $html);
+        $this->assertStringContainsString('&lt;b&gt;a&amp;b&lt;/b&gt;', $html);
+        $this->assertStringNotContainsString('<b>a&b</b>', $html);
         $this->assertStringNotContainsString('&amp;lt;', $html);
+        // The name of the file, which a stop of an earlier version kept, is not shown: it can be personal data.
+        $this->assertStringNotContainsString('essay of a student', $html);
     }
 
     public function test_a_reason_without_a_text_of_its_own_is_named_and_escaped_once(): void {

@@ -167,12 +167,14 @@ final class abort {
 
     /**
      * The file of the file store that a stop for a content (tamper_detected or nfs_slow) names, so that the administrator can
-     * find it: its content hash and where the content is, and the first file of the site that has it (component, file area,
-     * item and file name). A value that holds "://" is left out: the record of a run never holds a URL.
+     * find it: its content hash and where the content is, and the component and the file area of the first file of the site
+     * that has it. The name and the item of that file are left out: they can be personal data (a name that a student chose,
+     * the ID of a submission), and the message to the administrators holds none. A value that holds "://" is left out too:
+     * the record of a run never holds a URL.
      *
      * @param plugin_exception $e The error.
-     * @return array|null ['contenthash', 'path'] and, when a file of the site has the content, 'component', 'filearea',
-     *     'itemid' and 'filename'; null when the error names no content.
+     * @return array|null ['contenthash', 'path'] and, when a file of the site has the content, 'component' and 'filearea';
+     *     null when the error names no content.
      */
     private static function file_of(plugin_exception $e): ?array {
         global $DB;
@@ -189,16 +191,16 @@ final class abort {
             'contenthash = ? AND filesize > 0',
             [$hash],
             'id',
-            'id, component, filearea, itemid, filename',
+            'id, component, filearea',
             0,
             1
         );
         $row = reset($rows);
         if ($row !== false) {
-            foreach (['component', 'filearea', 'itemid', 'filename'] as $field) {
+            foreach (['component', 'filearea'] as $field) {
                 $value = (string) $row->$field;
                 if (!str_contains($value, '://')) {
-                    $file[$field] = $field === 'itemid' ? (int) $value : $value;
+                    $file[$field] = $value;
                 }
             }
         }

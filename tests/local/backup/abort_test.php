@@ -474,7 +474,7 @@ final class abort_test extends \advanced_testcase {
         $this->assertSame('disk_low', abort::classify(new plugin_exception('temp_write_failed'), $files));
     }
 
-    public function test_a_stop_for_a_content_names_where_it_is_and_the_first_file_of_the_site_that_has_it(): void {
+    public function test_a_stop_for_a_content_names_where_it_is_and_the_component_and_area_of_the_first_file_that_has_it(): void {
         global $DB;
         $files = new system_files(make_request_directory());
         $hash = sha1('the essay of a student');
@@ -487,14 +487,15 @@ final class abort_test extends \advanced_testcase {
             'itemid' => 7, 'filepath' => '/', 'filename' => 'essay.txt'];
         $first = $storage->create_file_from_string($record, 'the essay of a student');
         $storage->create_file_from_string(['filename' => 'copy.txt', 'itemid' => 8] + $record, 'the essay of a student');
-        $file = $where + ['component' => 'tool_secbackup', 'filearea' => 'test', 'itemid' => 7, 'filename' => 'essay.txt'];
+        // Its name and its item can be personal data (a name a student chose, the id of a submission): they are left out.
+        $file = $where + ['component' => 'tool_secbackup', 'filearea' => 'test'];
         $this->assertSame(['tamper_detected', ['file' => $file]], abort::reason($tamper, $files));
         // A content that could not be read, with the warning of PHP after its hash.
         $slow = new plugin_exception('nfs_slow', null, 'contenthash ' . $hash . ': fread(): Read of 8192 bytes failed');
         $this->assertSame(['nfs_slow', ['file' => $file]], abort::reason($slow, $files));
         // The record of a run never holds a URL: a value that holds one is left out.
-        $DB->set_field('files', 'filename', 'https://example.com/essay.txt', ['id' => $first->get_id()]);
-        unset($file['filename']);
+        $DB->set_field('files', 'filearea', 'https://example.com/area', ['id' => $first->get_id()]);
+        unset($file['filearea']);
         $this->assertSame(['tamper_detected', ['file' => $file]], abort::reason($tamper, $files));
         // Another reason, or debug information that names no content, names no file.
         $this->assertSame(['tamper_detected', []], abort::reason(new plugin_exception('tamper_detected'), $files));

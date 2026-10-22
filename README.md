@@ -51,8 +51,9 @@ connection diagnostics, on a page and on the command line. Restoring a backup co
   data: the number of users active in the last 365 days and the number of courses, the enabled authentication methods, the
   number of rows of each table, the bytes and the duration of the backup, the release, version and build of Moodle, the
   database family, and whether Moodle's code may have been modified and whether the files are in an external storage.
-- **When something goes wrong**, the status page shows why the backup stopped and what to do, and names the file when a file
-  of the site stopped it. When backups stop three times in a row, the site administrators get a message (the message
+- **When something goes wrong**, the status page shows why the backup stopped and what to do. When a file of the site
+  stopped it, it names where the file is in the data directory and the component and file area of the site's file, not its
+  name, which can be personal data. When backups stop three times in a row, the site administrators get a message (the message
   provider "Backups that were stopped several times in a row"). After a backup, the status page and `cli/backup.php` say how
   many files it does not hold (missing from the file store, not readable, symbolic links), and warn when the secret folder
   of the site, which holds the keys that Moodle encrypts some settings with, could not be read. A file that is not found is

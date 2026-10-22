@@ -924,14 +924,13 @@ final class runner_test extends \advanced_testcase {
         ]);
         $this->assertSame('aborted', $this->finish($runner, $run));
         $this->assertSame('tamper_detected', $run->abort_code());
-        // The stop names the file, so that the administrator can find it among all the files of the site.
+        // The stop names the file, so that the administrator can find it among all the files of the site, without its name or
+        // its item, which can be personal data.
         $this->assertSame([
             'contenthash' => $hash,
             'path' => 'filedir/' . substr($hash, 0, 2) . '/' . substr($hash, 2, 2) . '/' . $hash,
             'component' => 'tool_secbackup',
             'filearea' => 'test',
-            'itemid' => 0,
-            'filename' => 'three.bin',
         ], $run->abort_note()['file']);
         $key = run_fixture::names_key();
         $this->assertNull($this->stored('objects/' . chunk_name::file($key, $hash, 1)));
@@ -949,13 +948,10 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame('nfs_slow', $run->abort_code());
         global $DB;
         $file = $run->abort_note()['file'];
-        $fields = 'id, component, filearea, itemid, filename';
-        $rows = $DB->get_records('files', ['contenthash' => $file['contenthash']], 'id', $fields);
+        $rows = $DB->get_records('files', ['contenthash' => $file['contenthash']], 'id', 'id, component, filearea');
         $row = reset($rows);
-        $this->assertSame(
-            [$row->component, $row->filearea, (int) $row->itemid, $row->filename],
-            [$file['component'], $file['filearea'], $file['itemid'], $file['filename']]
-        );
+        $this->assertSame([$row->component, $row->filearea], [$file['component'], $file['filearea']]);
+        $this->assertSame(['contenthash', 'path', 'component', 'filearea'], array_keys($file));
         $this->assertStringContainsString($file['path'], abort_reason::text('nfs_slow', null, $run->abort_note()));
     }
 
