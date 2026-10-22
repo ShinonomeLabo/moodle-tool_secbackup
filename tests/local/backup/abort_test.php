@@ -453,6 +453,18 @@ final class abort_test extends \advanced_testcase {
         $this->assertNotSame('selinux_denied', abort::classify($exception, $files, '/data/tool', $probefn, $writablefn));
     }
 
+    public function test_a_probe_that_cannot_run_leaves_a_failed_connection_a_failed_network_check(): void {
+        $files = new system_files(system_roots::with_files([
+            '/sys/fs/selinux/enforce' => "1\n",
+            '/proc/self/attr/current' => "system_u:system_r:httpd_t:s0\0",
+        ]));
+        $disabled = static function (int $port): int {
+            throw new \Error('Call to undefined function stream_socket_client()');
+        };
+        $connect = new transport_exception('transport_connect', 'cURL error 7');
+        $this->assertSame(['network_check_failed', []], abort::reason($connect, $files, '/data/tool', $disabled));
+    }
+
     public function test_the_default_checks_ask_the_system(): void {
         // A connection on the loopback address of a test server is refused or made, never denied; the temporary folder of
         // the limits that are set can be written to.

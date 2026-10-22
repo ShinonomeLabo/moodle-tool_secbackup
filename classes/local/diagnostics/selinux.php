@@ -82,14 +82,19 @@ final class selinux {
 
     /**
      * Whether SELinux denies this process a connection to the port of the service: a connection to the loopback address is
-     * denied (EACCES).
+     * denied (EACCES). A probe that cannot run proves nothing: with stream_socket_client() in disable_functions, PHP throws
+     * an Error when it is called, and the failure stays a failed network check.
      *
      * @param callable|null $probe Function (int $port) that tries the connection and gives its error number (0 when it was
      *     made); a connection to 127.0.0.1 when null.
      * @return bool
      */
     public static function connection_denied(?callable $probe = null): bool {
-        return ($probe ?? [self::class, 'connect_loopback'])(self::PORT) === self::EACCES;
+        try {
+            return ($probe ?? [self::class, 'connect_loopback'])(self::PORT) === self::EACCES;
+        } catch (\Error $e) {
+            return false;
+        }
     }
 
     /**

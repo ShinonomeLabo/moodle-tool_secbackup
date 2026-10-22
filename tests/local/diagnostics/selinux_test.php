@@ -106,6 +106,17 @@ final class selinux_test extends \advanced_testcase {
         $this->assertSame([443], $ports);
     }
 
+    public function test_a_probe_that_cannot_run_proves_no_denial(): void {
+        // With stream_socket_client() in disable_functions, PHP throws an Error when it is called.
+        $disabled = static function (int $port): int {
+            throw new \Error('Call to undefined function stream_socket_client()');
+        };
+        $this->assertFalse(selinux::connection_denied($disabled));
+        $connect = new transport_exception('transport_connect', transport_exception::CONNECT_FAILED);
+        $files = self::files("1\n", self::WEB_SERVER);
+        $this->assertNull(selinux::denial($connect, $files, '/data/tool', $disabled));
+    }
+
     public function test_a_connection_to_the_loopback_address_gives_the_error_number_of_the_system(): void {
         $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
         $this->assertIsResource($server, $errstr);
