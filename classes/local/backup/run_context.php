@@ -478,14 +478,23 @@ final class run_context {
     }
 
     /**
+     * Whether the run is in a stage that makes chunks, the only stages that the window of the run limits: in the stages after
+     * them (complete, receipt, done) the run only waits for the service, which has everything.
+     *
+     * @return bool
+     */
+    public function makes_chunks(): bool {
+        return in_array($this->run->stage(), self::WINDOW_STAGES, true);
+    }
+
+    /**
      * Whether the window of the run has ended while the run still makes chunks.
      *
      * @return bool
      */
     public function window_passed(): bool {
         $end = $this->get('window_end');
-        return $this->env['windows'] && $end !== null && in_array($this->run->stage(), self::WINDOW_STAGES, true)
-            && $this->now() >= (int) $end;
+        return $this->env['windows'] && $end !== null && $this->makes_chunks() && $this->now() >= (int) $end;
     }
 
     /**

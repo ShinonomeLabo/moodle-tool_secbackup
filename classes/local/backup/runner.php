@@ -172,8 +172,9 @@ final class runner {
      * first, so a copy that is stale does no harm.
      *
      * Every failure is bounded. A reason stops the run; a busy service makes it wait as long as the service asks; any other
-     * error makes it wait RETRY_AFTER seconds (or, past the end of its window, for its next window: two windows missed, or a
-     * next window that starts too late for the run to finish before it expires, stop it with window_ended). A run that has no
+     * error makes it wait RETRY_AFTER seconds (or, past the end of its window in a stage that makes chunks, for its next
+     * window: two windows missed, or a next window that starts too late for the run to finish before it expires, stop it with
+     * window_ended; a run that has sent everything waits for the service whatever the time). A run that has no
      * verified receipt EXPIRES_AFTER seconds after it started is stopped with expired, the reason with which the service fails
      * it, which is not told back.
      *
@@ -366,9 +367,9 @@ final class runner {
      * Ends a step that failed.
      *
      * A reason stops the run. A busy service makes the run wait for as long as it asked. Any other error makes it wait
-     * RETRY_AFTER seconds, so that a run that keeps failing does not run at every pass of cron; a run past the end of its
-     * window waits for its next window instead, and a run that has missed two windows is stopped with window_ended. Nothing
-     * of the step is committed here: the next step goes on from the last commit.
+     * RETRY_AFTER seconds, so that a run that keeps failing does not run at every pass of cron; a run that still makes chunks
+     * past the end of its window waits for its next window instead, and a run that has missed two windows is stopped with
+     * window_ended. Nothing of the step is committed here: the next step goes on from the last commit.
      *
      * @param run_record $run The run.
      * @param run_context|null $context The step, or null when it could not begin.
@@ -422,17 +423,18 @@ final class runner {
     }
 
     /**
-     * After an unexpected failure past the end of the window of the run: the window is counted as missed, and the run waits
-     * for its next window.
+     * After an unexpected failure past the end of the window of the run, in a stage that makes chunks: the window is counted as
+     * missed, and the run waits for its next window.
      *
      * @param run_context $context The step.
      * @param int $now The current time.
      * @return string|null ended (two windows missed), paused (the run waits for its next window), or null when the run is
-     *     in its window (or has none, or the command line runs it): it waits RETRY_AFTER seconds.
+     *     in its window (or has none, or the command line runs it) or has sent everything (it waits for the service, which no
+     *     window limits): it waits RETRY_AFTER seconds.
      */
     private function window_after_failure(run_context $context, int $now): ?string {
         $end = $context->get('window_end');
-        if (!$this->seams['windows'] || $end === null || $now < (int) $end) {
+        if (!$this->seams['windows'] || $end === null || $now < (int) $end || !$context->makes_chunks()) {
             return null;
         }
         $next = $this->miss_window($context, $now);

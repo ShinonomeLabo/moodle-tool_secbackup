@@ -22,8 +22,9 @@ connection diagnostics, on a page and on the command line. Restoring a backup co
   starts early enough for the backup to finish within the 24 hours that the service allows a backup (with several windows a
   day). Otherwise (with one window a day, the next one starts about 24 hours later) it is stopped at the end of its window,
   and the next window starts a new backup, which does not send again the files of the file directory that the storage has.
-  A backup that is not finished at the end of the second window is stopped too. `cli/backup.php` does not pause (see
-  "Command line" for large sites).
+  A backup that is not finished at the end of the second window is stopped too. The window limits only the making and
+  sending of the chunks: a backup that has sent everything waits for the receipt of the service past the end of its window.
+  `cli/backup.php` does not pause (see "Command line" for large sites).
 - **Before a start**, the plugin checks that the site is registered and has received the settings, that no backup runs,
   that Moodle's automated course backup is not working, that the clock of the server is within 5 minutes of the service's,
   that a backup would have 256 MB of memory or more, and that the server is within the limits of the page "Limits of the

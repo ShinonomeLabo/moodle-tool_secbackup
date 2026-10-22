@@ -634,16 +634,30 @@ final class runner_test extends \advanced_testcase {
         $this->assertNull(run_record::active());
     }
 
+    /**
+     * A runner whose watch, once the run adds the files, moves the clock to a time and fails, as a step that fails after the
+     * end of its window while the run still makes chunks.
+     *
+     * @param run_record $run The run.
+     * @param string $time The time in Tokyo.
+     * @return runner
+     */
+    private function failing_in_the_files_at(run_record $run, string $time): runner {
+        return $this->runner(['sample' => function () use ($run, $time): array {
+            if ($run->stage() === 'files') {
+                $this->fixture->set_time(run_fixture::tokyo($time));
+                throw new \RuntimeException('The share of the files went away.');
+            }
+            return self::CALM;
+        }]);
+    }
+
     public function test_a_run_whose_step_fails_after_its_window_when_the_next_one_starts_too_late_is_stopped(): void {
-        $this->refuse_the_report();
         $run = run_record::create('schedule', $this->fixture->time);
-        $runner = $this->runner();
-        for ($i = 0; $i < 50 && ($run->stage() !== 'complete' || $run->next_attempt() === null); $i++) {
-            $runner->step($run, 600);
-        }
-        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:01'));
-        $this->assertSame('aborted', $runner->step($run, 600));
+        $this->assertSame('aborted', $this->failing_in_the_files_at($run, '2026-10-19 05:01')->step($run, 600));
+        $this->assertSame('files', $run->stage());
         $this->assertSame('window_ended', $run->abort_code());
+        $this->assertSame('window_ended', $this->fixture->service->state['runs'][$run->run_uuid()]['failure_code']);
     }
 
     public function test_a_run_that_misses_two_windows_in_a_row_is_stopped(): void {
@@ -2155,15 +2169,9 @@ final class runner_test extends \advanced_testcase {
 
     public function test_a_run_whose_step_fails_inside_its_next_window_tries_again_at_once(): void {
         self::twice_a_day();
-        $this->refuse_the_report();
         $run = run_record::create('schedule', $this->fixture->time);
-        $runner = $this->runner();
-        for ($i = 0; $i < 50 && ($run->stage() !== 'complete' || $run->next_attempt() === null); $i++) {
-            $runner->step($run, 600);
-        }
         // The window of 02:00 ended long ago: the failure is inside the window of 14:00, which goes on at once.
-        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 14:40'));
-        $this->assertSame('continue', $runner->step($run, 600));
+        $this->assertSame('continue', $this->failing_in_the_files_at($run, '2026-10-19 14:40')->step($run, 600));
         $this->assertSame(1, $run->window_misses());
         $this->assertSame(run_fixture::tokyo('2026-10-19 14:40') + runner::RETRY_AFTER, $run->next_attempt());
         $this->assertSame(run_fixture::tokyo('2026-10-19 17:00'), $run->progress()['run']['window_end']);
@@ -2191,20 +2199,111 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame(0, $this->fixture->count('POST', '/fail'));
     }
 
-    public function test_a_scheduled_run_whose_report_keeps_failing_ends_after_two_missed_windows(): void {
-        $this->refuse_the_report();
+    public function test_a_scheduled_run_whose_step_keeps_failing_while_it_makes_chunks_ends_after_two_missed_windows(): void {
         $this->fixture->set_time(run_fixture::tokyo('2026-10-19 04:55'));
         $run = run_record::create('schedule', $this->fixture->time);
+        $this->assertSame('paused', $this->failing_in_the_files_at($run, '2026-10-19 05:01')->step($run, 600));
+        $this->assertSame(1, $run->window_misses());
+        $this->assertTrue($run->progress()['run']['windowpause']);
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-20 05:01'));
+        $this->assertSame('aborted', $this->runner()->step($run, 600));
+        $this->assertSame('window_ended', $run->abort_code());
+    }
+
+    /**
+     * Checks that a run waits RETRY_AFTER seconds after a failure, as in its window: no window counted, no wait for a window,
+     * nothing told to the service.
+     *
+     * @param run_record $run The run.
+     * @param string $result What the step answered.
+     */
+    private function assert_waits_as_in_its_window(run_record $run, string $result): void {
+        $this->assertSame('continue', $result);
+        $this->assertSame('paused', $run->status());
+        $this->assertSame($this->fixture->time + runner::RETRY_AFTER, $run->next_attempt());
+        $this->assertFalse($run->progress()['run']['windowpause']);
+        $this->assertSame(0, $run->window_misses());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+    }
+
+    public function test_a_scheduled_run_whose_report_keeps_failing_after_its_window_is_tried_again_until_it_expires(): void {
+        $this->refuse_the_report();
+        $run = run_record::create('schedule', $this->fixture->time);
+        $started = $this->fixture->time;
         $runner = $this->runner();
         for ($i = 0; $i < 50 && ($run->stage() !== 'complete' || $run->next_attempt() === null); $i++) {
             $runner->step($run, 600);
         }
+        // Everything is sent: the window of the run no longer limits it.
         $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:01'));
-        $this->assertSame('paused', $runner->step($run, 600));
-        $this->assertSame(1, $run->window_misses());
-        $this->fixture->set_time(run_fixture::tokyo('2026-10-20 05:01'));
+        $this->assert_waits_as_in_its_window($run, $runner->step($run, 600));
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-20 02:30'));
+        $this->assert_waits_as_in_its_window($run, $runner->step($run, 600));
+        $this->fixture->set_time($started + 86400 + 600);
         $this->assertSame('aborted', $runner->step($run, 600));
-        $this->assertSame('window_ended', $run->abort_code());
+        $this->assertSame('expired', $run->abort_code());
+        $this->assertSame(0, $this->fixture->count('POST', '/fail'));
+    }
+
+    public function test_a_receipt_that_cannot_be_asked_for_after_the_window_is_asked_for_again_and_completes_the_run(): void {
+        // Once a day: the run has sent everything before 05:00 and waits for its receipt past it.
+        $this->fixture->service->state['holdverify'] = true;
+        $fail = false;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$fail) {
+            if ($fail && $request->getMethod() === 'GET' && preg_match('~/runs/[0-9a-f-]{36}\z~', $request->getUri()->getPath())) {
+                $fail = false;
+                return new Response(502);
+            }
+            return null;
+        };
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner();
+        while ($run->stage() !== 'receipt') {
+            $runner->step($run, 600);
+        }
+        $fail = true;
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:30'));
+        $this->assert_waits_as_in_its_window($run, $runner->step($run, 600));
+        $this->assertFalse($fail);
+        $this->fixture->service->verify_run($run->run_uuid());
+        $this->fixture->set_time($run->next_attempt());
+        $this->assertSame('done', $runner->step($run, 600));
+        $this->assertSame('completed', $run->status());
+    }
+
+    public function test_a_report_whose_answer_is_lost_after_the_window_is_sent_again_and_completes_the_run(): void {
+        $lost = false;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$lost) {
+            if ($lost && str_ends_with($request->getUri()->getPath(), '/complete')) {
+                $lost = false;
+                $headers = [];
+                foreach ($request->getHeaders() as $name => $values) {
+                    $headers[strtolower($name)] = implode(', ', $values);
+                }
+                // The service takes the report; a proxy answers 502 instead of its answer.
+                $this->fixture->service->handle(
+                    'POST',
+                    $request->getUri()->getHost(),
+                    $request->getUri()->getPath(),
+                    $headers,
+                    (string) $request->getBody()
+                );
+                return new Response(502);
+            }
+            return null;
+        };
+        $run = run_record::create('schedule', $this->fixture->time);
+        $runner = $this->runner(['timer' => $this->fast_timer()]);
+        while ($run->stage() !== 'complete') {
+            $runner->step($run, 1);
+        }
+        $lost = true;
+        $this->fixture->set_time(run_fixture::tokyo('2026-10-19 05:30'));
+        $this->assert_waits_as_in_its_window($run, $runner->step($run, 1));
+        $this->assertFalse($lost);
+        $this->fixture->set_time($run->next_attempt());
+        $this->assertSame('done', $this->finish($runner, $run));
+        $this->assertSame(2, $this->fixture->count('POST', '/complete'));
     }
 
     /**
