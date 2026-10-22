@@ -23,6 +23,9 @@
  * (the workflow downloads them, one folder for each job). The amount sent is the sum of objects.bytes of the inspections:
  * what the service holds of each site at the end. A GB is 10^9 bytes.
  *
+ * The amount of a site whose inspection is missing or failed is not known: its cell says unknown, the line of the total says
+ * for how many sites, and the limit is judged on the amounts that are known.
+ *
  * It fails (exit 1) when there is no result at all, when the amount sent is over the limit, when a result did not pass or is
  * missing, and when the inspection of a site is missing, failed (an error such as lock_read_failed or too_many_objects), or
  * shows an object that is not locked in COMPLIANCE mode (compliance false, or missing, expired or gone keys). The scenario
@@ -97,6 +100,8 @@ sort($sites);
 $rows = [];
 $failures = [];
 $total = 0;
+// Sites whose amount is not known: their inspection is missing or failed.
+$unknown = 0;
 foreach ($sites as $site) {
     $result = is_file("$site/result.json") ? secbk_e2e_read("$site/result.json") : null;
     $inspection = is_file("$site/inspect.json") ? secbk_e2e_read("$site/inspect.json") : null;
@@ -112,7 +117,8 @@ foreach ($sites as $site) {
         $problems[] = 'did not pass' . ($reasons ? ': ' . implode('; ', $reasons) : '');
     }
 
-    $sent = 0;
+    // Null while the amount is not known. data-only does not reach the service: it sends nothing.
+    $sent = $scenario === 'data-only' ? 0 : null;
     $runs = '';
     $lock = '';
     $classes = '';
@@ -126,7 +132,7 @@ foreach ($sites as $site) {
         $problems[] = 'the inspection failed (' . secbk_e2e_cell($inspection['error']) . ')';
     } else {
         $objects = is_array($inspection['objects'] ?? null) ? $inspection['objects'] : [];
-        $sent = is_int($objects['bytes'] ?? null) ? $objects['bytes'] : 0;
+        $sent = is_int($objects['bytes'] ?? null) ? $objects['bytes'] : null;
         $states = [];
         foreach (is_array($inspection['runs'] ?? null) ? $inspection['runs'] : [] as $run) {
             $code = is_string($run['failure_code'] ?? null) ? " ({$run['failure_code']})" : '';
@@ -149,10 +155,15 @@ foreach ($sites as $site) {
         $classes = implode(', ', array_map(static fn($class, $n) => "$class $n", array_keys($byclass), $byclass));
         $runs .= ' / ' . (int) ($objects['count'] ?? 0) . ' objects';
     }
-    $total += $sent;
+    if ($sent === null) {
+        $unknown++;
+    } else {
+        $total += $sent;
+    }
     $retries = is_array($result['retries'] ?? null) ? $result['retries'] : [];
     $minutes = is_numeric($result['durations']['total'] ?? null) ? (int) round($result['durations']['total'] / 60) : '';
-    $rows[] = [$scenario, $name, $problems ? 'FAILED' : 'passed', secbk_e2e_gb($sent), $runs, $lock, $classes,
+    $rows[] = [$scenario, $name, $problems ? 'FAILED' : 'passed', $sent === null ? 'unknown' : secbk_e2e_gb($sent), $runs, $lock,
+        $classes,
         (int) ($retries['waits'] ?? 0) . ' / ' . (int) ($retries['failed_steps'] ?? 0), $minutes, implode('; ', $problems)];
     foreach ($problems as $problem) {
         $failures[] = "$scenario $name: $problem";
@@ -175,7 +186,10 @@ echo "|---|---|---|---:|---|---|---|---:|---:|---|\n";
 foreach ($rows as $row) {
     echo '| ', implode(' | ', array_map('secbk_e2e_cell', $row)), " |\n";
 }
-printf("\nSent in total: %s GB (%d bytes) of the limit of %s GB.\n\n", secbk_e2e_gb($total), $total, $limittext);
+// The limit is judged on the amounts that are known; a site whose amount is not known has failed already.
+printf("\nSent in total: %s GB (%d bytes) of the limit of %s GB%s.\n\n", secbk_e2e_gb($total), $total, $limittext,
+    $unknown > 0 ? sprintf('; not known for %d %s whose inspection is missing or failed', $unknown,
+        $unknown === 1 ? 'site' : 'sites') : '');
 if ($failures) {
     echo "**Failed:**\n\n";
     foreach ($failures as $failure) {

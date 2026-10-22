@@ -19,9 +19,13 @@ e2e_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECBK_E2E_OUT="${SECBK_E2E_OUT:-${RUNNER_TEMP:-/tmp}/secbk-e2e}"
 # Seconds that one call of cli/backup.php may take.
 e2e_backup_timeout="${SECBK_E2E_BACKUP_TIMEOUT:-7200}"
-# Seconds from a stopped run to the next one. Some minutes after a run ends (about 17), the service lists again what it holds
-# of the site; a run that starts before that does not know what the stopped run sent.
-e2e_recount_wait="${SECBK_E2E_RECOUNT_WAIT:-1020}"
+# Seconds from a stopped run to the next one. The service recounts the site 17 minutes (1020 seconds: the life of its upload
+# URLs, 900, and two minutes) after a stopped run, and only then lists what the stopped run sent. A run that starts before
+# the recount makes the service skip it: that run reads the old list and sends again what the stopped one sent. Three
+# minutes more than the delay of the service.
+e2e_recount_wait="${SECBK_E2E_RECOUNT_WAIT:-1200}"
+# A connection to the database of the site that cannot be made fails after 10 seconds, instead of holding a wait.
+export PGCONNECT_TIMEOUT="${PGCONNECT_TIMEOUT:-10}"
 # Name of the chain of iptables that refuses the connections to S3.
 e2e_chain=secbk-e2e-s3
 
@@ -39,6 +43,8 @@ e2e_run_status=''
 e2e_run_code=''
 e2e_run_bytes=0
 e2e_run_estimate=0
+e2e_before=0
+e2e_sent=0
 
 # Prints the name of a step with the time, so that the log of the job shows where a scenario is.
 e2e_step() {
@@ -51,6 +57,20 @@ e2e_fail() {
     local text="${*//$'\n'/ }"
     echo "FAIL: $text"
     printf '%s\n' "$text" >> "$e2e_logs/reasons.txt"
+}
+
+# e2e_sleep <seconds>: sleeps in the background and waits for it. bash runs a trap only when the command in the foreground
+# ends, but it ends the builtin wait at once: so a signal (a cancelled job) reaches the trap of EXIT without delay.
+e2e_sleep() {
+    sleep "$1" &
+    wait "$!"
+}
+
+# e2e_sec <arguments of sec.php>: runs sec.php (which may wait minutes for the service) in the background and waits for it,
+# for the same reason as e2e_sleep. Its exit code is the one of sec.php.
+e2e_sec() {
+    php "$e2e_dir/sec.php" "$@" &
+    wait "$!"
 }
 
 # e2e_duration <name> <start>: records the seconds from <start> (UNIX time) to now.
@@ -167,8 +187,12 @@ e2e_write_result() {
 # than the files (GB of 10^9 bytes), 3 GB for Moodle, its database and the temporary files of the backup, and the free space
 # that the plugin keeps (it does not back up below the larger of 10 % of the disk and 5 GiB).
 e2e_check_disk() {
-    local free size need
-    read -r free size < <(df -B1 --output=avail,size "$SECBK_STORAGE_DIR" | tail -n 1)
+    local free='' size='' need
+    read -r free size < <(df -B1 --output=avail,size "$SECBK_STORAGE_DIR" 2> /dev/null | tail -n 1) || true
+    if [[ ! "$free" =~ ^[0-9]+$ ]] || [[ ! "$size" =~ ^[0-9]+$ ]]; then
+        e2e_fail "the free space of the disk of the site cannot be read"
+        return 1
+    fi
     # shellcheck disable=SC2016
     need="$(php -r 'echo (int) ceil((float) $argv[1] * 1e9) + 3000000000 + max(intdiv((int) $argv[2], 10), 5 * 1073741824);' \
         "$1" "$size")"
@@ -295,8 +319,7 @@ e2e_connect() {
     e2e_step "the address that this runner sends from"
     ip="$(e2e_source_ip)"
     e2e_step "the test site at the service"
-    php "$e2e_dir/sec.php" provision --name="$name" --moodle-url="https://$name.moodle.example.invalid" --source-ip="$ip" \
-        --out="$e2e_private"
+    e2e_sec provision --name="$name" --moodle-url="https://$name.moodle.example.invalid" --source-ip="$ip" --out="$e2e_private"
     e2e_site="$(e2e_site_field site_uuid)"
     e2e_step "the key of the service in config.php"
     e2e_config service "$(e2e_site_field signing_public_key)"
@@ -307,19 +330,51 @@ e2e_connect() {
 
 # Reads the latest run of the plugin on the site into e2e_run_id, e2e_run_stage, e2e_run_status, e2e_run_code,
 # e2e_run_bytes (the bytes it uploaded) and e2e_run_estimate (the bytes it expected to send); empty and 0 when there is none.
+# Returns 1 when the database cannot be read (what psql said is in logs/psql.log).
 e2e_read_run() {
     local row
-    row="$(psql -h 127.0.0.1 -U postgres -d moodle -AtF '|' -c "SELECT id, stage, status, COALESCE(abortcode, ''),
-        bytesuploaded, COALESCE(estimatedbytes, 0) FROM mdl_tool_secbackup_runs ORDER BY id DESC LIMIT 1" 2> /dev/null || true)"
-    IFS='|' read -r e2e_run_id e2e_run_stage e2e_run_status e2e_run_code e2e_run_bytes e2e_run_estimate <<< "$row"
+    e2e_run_id=''
+    e2e_run_stage=''
+    e2e_run_status=''
+    e2e_run_code=''
+    e2e_run_bytes=0
+    e2e_run_estimate=0
+    if ! row="$(psql -h 127.0.0.1 -U postgres -d moodle -AtF '|' -c "SELECT id, stage, status, COALESCE(abortcode, ''),
+        bytesuploaded, COALESCE(estimatedbytes, 0) FROM mdl_tool_secbackup_runs ORDER BY id DESC LIMIT 1" \
+        2>> "$e2e_logs/psql.log")"; then
+        return 1
+    fi
+    IFS='|' read -r e2e_run_id e2e_run_stage e2e_run_status e2e_run_code e2e_run_bytes e2e_run_estimate <<< "$row" || true
     [[ "$e2e_run_bytes" =~ ^[0-9]+$ ]] || e2e_run_bytes=0
     [[ "$e2e_run_estimate" =~ ^[0-9]+$ ]] || e2e_run_estimate=0
 }
 
+# Reads the record of the runs once, before a scenario: its waits read it, and a database that cannot be read (a wrong name,
+# a server that does not answer) would otherwise give them reasons that miss the point.
+e2e_check_db() {
+    e2e_step "the database of the site can be read"
+    if ! e2e_read_run; then
+        e2e_fail "the database of the site cannot be read (logs/psql.log)"
+        return 1
+    fi
+}
+
+# e2e_read_sent <checkpoint>: e2e_sent is what the latest run uploaded, from its record on the site (and e2e_run_* are read);
+# 0, with a reason, when the database cannot be read.
+e2e_read_sent() {
+    e2e_sent=0
+    if e2e_read_run; then
+        e2e_sent="$e2e_run_bytes"
+    else
+        e2e_fail "$1: the database of the site cannot be read (logs/psql.log)"
+    fi
+}
+
 # Prints the state of the latest run.
 e2e_progress() {
-    e2e_read_run
-    if [ -n "$e2e_run_id" ]; then
+    if ! e2e_read_run; then
+        echo "  the database of the site cannot be read (logs/psql.log)"
+    elif [ -n "$e2e_run_id" ]; then
         echo "  run $e2e_run_id: stage $e2e_run_stage, $e2e_run_status${e2e_run_code:+ ($e2e_run_code)}," \
             "$e2e_run_bytes of about $e2e_run_estimate bytes sent"
     fi
@@ -352,7 +407,7 @@ e2e_wait_exit() {
     while e2e_alive "$e2e_pid"; do
         if [ "$(date +%s)" -ge "$deadline" ]; then
             kill "$e2e_pid" 2> /dev/null || true
-            sleep 10
+            e2e_sleep 10
             kill -9 "$e2e_pid" 2> /dev/null || true
             wait "$e2e_pid" 2> /dev/null || true
             e2e_exit=124
@@ -362,7 +417,7 @@ e2e_wait_exit() {
             e2e_progress
             next=$(( $(date +%s) + 60 ))
         fi
-        sleep 2
+        e2e_sleep 2
     done
     if [ -z "$e2e_exit" ]; then
         e2e_exit=0
@@ -383,12 +438,22 @@ e2e_backup() {
 
 # e2e_wait_sending <percent> [<bytes>]: waits until the run of the command of e2e_backup_start is in the stage files (it
 # sends the files of the site) and has sent <percent> % of the bytes it expects, and at least <bytes> bytes. Returns 1 when
-# the command ends first, when the run leaves the stage files first, or after SECBK_E2E_BACKUP_TIMEOUT seconds.
+# the command ends first, when the run leaves the stage files first, after SECBK_E2E_BACKUP_TIMEOUT seconds, or when the
+# database of the site cannot be read five times in a row (with that reason).
 e2e_wait_sending() {
-    local percent="$1" least="${2:-1}" deadline next=0 wanted
+    local percent="$1" least="${2:-1}" deadline next=0 wanted misses=0
     deadline=$(( $(date +%s) + e2e_backup_timeout ))
     while e2e_alive "$e2e_pid"; do
-        e2e_read_run
+        if ! e2e_read_run; then
+            misses=$(( misses + 1 ))
+            if [ "$misses" -ge 5 ]; then
+                e2e_fail "the database of the site cannot be read (logs/psql.log)"
+                return 1
+            fi
+            e2e_sleep 1
+            continue
+        fi
+        misses=0
         if [ "$e2e_run_stage" = files ] && [ "$e2e_run_estimate" -gt 0 ]; then
             wanted=$(( e2e_run_estimate * percent / 100 ))
             if [ "$wanted" -lt "$least" ]; then wanted="$least"; fi
@@ -412,7 +477,7 @@ e2e_wait_sending() {
             e2e_progress
             next=$(( $(date +%s) + 60 ))
         fi
-        sleep 1
+        e2e_sleep 1
     done
     echo "cli/backup.php ended before the run got there"
     return 1
@@ -494,8 +559,8 @@ e2e_s3_unblock() {
 e2e_inspect() {
     local try
     for try in 1 2 3; do
-        if php "$e2e_dir/sec.php" inspect --site="$e2e_site" --out="$1"; then return 0; fi
-        if [ "$try" -lt 3 ]; then sleep 60; fi
+        if e2e_sec inspect --site="$e2e_site" --out="$1"; then return 0; fi
+        if [ "$try" -lt 3 ]; then e2e_sleep 60; fi
     done
     return 1
 }
@@ -515,20 +580,20 @@ e2e_verdict() {
     return "$status"
 }
 
-# e2e_wait_stopped <file> <reason>: waits (ten minutes at most, a request every 30 s) until the service has the last run of
-# the site as failed with <reason> and no completed run, then records the verdict on its last answer.
+# e2e_wait_stopped <file> <reason> <checkpoint>: waits (ten minutes at most, a request every 30 s) until the service has the
+# last run of the site as failed with <reason> and no completed run, then records the verdict on its last answer under the
+# name of the checkpoint.
 e2e_wait_stopped() {
     local deadline
     deadline=$(( $(date +%s) + 600 ))
     while true; do
-        if php "$e2e_dir/sec.php" inspect --site="$e2e_site" --out="$1" \
-            && php "$e2e_dir/verdict.php" "$1" --stopped="$2" > /dev/null; then
+        if e2e_sec inspect --site="$e2e_site" --out="$1" && php "$e2e_dir/verdict.php" "$1" --stopped="$2" > /dev/null; then
             break
         fi
         if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
-        sleep 30
+        e2e_sleep 30
     done
-    e2e_verdict "after the stop" "$1" --stopped="$2" || true
+    e2e_verdict "$3" "$1" --stopped="$2" || true
 }
 
 # e2e_final <options of verdict.php>...: what the service holds at the end, in inspect.json, and the verdict on it.
@@ -564,10 +629,10 @@ e2e_check_resend() {
     fi
 }
 
-# e2e_wait_recount <UNIX time of the stop>: waits until the service has listed again what it holds of the site, which it does
-# some minutes after a run ends: SECBK_E2E_RECOUNT_WAIT seconds after the stop.
+# e2e_wait_recount <UNIX time of the stop>: waits until the service has counted again what it holds of the site, which it
+# does 17 minutes after a stopped run: SECBK_E2E_RECOUNT_WAIT seconds after the stop (see e2e_recount_wait).
 e2e_wait_recount() {
-    e2e_sleep_until $(( $1 + e2e_recount_wait )) "the service has listed what it holds of the site"
+    e2e_sleep_until $(( $1 + e2e_recount_wait )) "the service has counted again what it holds of the site"
     e2e_duration wait "$1"
 }
 
@@ -578,6 +643,170 @@ e2e_sleep_until() {
         left=$(( $1 - $(date +%s) ))
         if [ "$left" -le 0 ]; then return 0; fi
         echo "  $left s until $2"
-        sleep $(( left < 300 ? left : 300 ))
+        e2e_sleep $(( left < 300 ? left : 300 ))
     done
+}
+
+# The scenarios of run.sh. They are here, and not in run.sh, so that the tests can run them with the steps that reach the
+# site, the service, the firewall and other processes replaced.
+
+# The scenario normal: cli/backup.php --now ends with 0, and the site has one run, completed with a receipt.
+e2e_scenario_normal() {
+    local since
+    e2e_step "backup: cli/backup.php --now"
+    since="$(date +%s)"
+    e2e_backup "$e2e_logs/backup-1.log" --now
+    e2e_duration backup "$since"
+    if [ "$e2e_exit" -ne 0 ]; then
+        e2e_fail "cli/backup.php --now ended with $e2e_exit, expected 0"
+    fi
+    e2e_final --runs=1
+}
+
+# e2e_scenario_concurrent <UNIX time>: waits until then (the start of the ten sites), or starts at once when the time has
+# passed and records how late it is, then as normal.
+e2e_scenario_concurrent() {
+    local now
+    now="$(date +%s)"
+    if [ "$now" -lt "$1" ]; then
+        e2e_step "waiting for the start of the ten sites"
+        e2e_sleep_until "$1" "the start of the ten sites"
+        e2e_number start_late 0
+    else
+        echo "the site is ready $(( now - $1 )) s after the start of the ten sites"
+        e2e_number start_late $(( now - $1 ))
+    fi
+    e2e_scenario_normal
+}
+
+# e2e_stopped_run <reason> <what was to stop it>: whether the command that just ended stopped its run with <reason> (exit 1,
+# the run aborted with that reason); records a reason of the scenario when it did not.
+e2e_stopped_run() {
+    if ! e2e_read_run; then
+        e2e_fail "$2: the database of the site cannot be read, so the stop of the run cannot be checked"
+        return 1
+    fi
+    if [ "$e2e_exit" -ne 1 ] || [ "$e2e_run_status" != aborted ] || [ "$e2e_run_code" != "$1" ]; then
+        e2e_fail "$2 did not stop the run: cli/backup.php ended with $e2e_exit and the run is ${e2e_run_status:-unknown}" \
+            "(${e2e_run_code:-no reason}), expected 1 and aborted ($1)"
+        return 1
+    fi
+}
+
+# e2e_checks_after_stop <label> <reason> <UNIX time of the stop>: the service has the run as failed with <reason> and no
+# completed generation; e2e_before is what it holds of the site then. Then the wait for its recount.
+e2e_checks_after_stop() {
+    local prefix="${1:+$1 }"
+    e2e_step "${prefix}the service has the run as failed ($2) and no completed generation"
+    e2e_wait_stopped "$e2e_logs/inspect-stopped.json" "$2" "${prefix}after the stop"
+    e2e_before="$(e2e_inspected_bytes "$e2e_logs/inspect-stopped.json")"
+    e2e_step "${prefix}waiting until the service has counted again what it holds of the site"
+    e2e_wait_recount "$3"
+}
+
+# The scenario load: the load stops the run (server_busy) while it sends the files of the site; after the recount, the next
+# run completes and does not send again what the first one sent.
+e2e_scenario_load() {
+    local since loaded
+    e2e_step "backup: cli/backup.php --now, in the background"
+    since="$(date +%s)"
+    e2e_backup_start "$e2e_logs/backup-1.log" --now
+    e2e_step "waiting until the run sends the files of the site"
+    if ! e2e_wait_sending 0; then
+        e2e_fail "the run did not get to the stage files, where the load is to stop it"
+        e2e_wait_exit "$e2e_backup_timeout"
+        e2e_final --runs=1
+        return
+    fi
+    e2e_step "load above 2 per CPU, until the plugin stops the run"
+    loaded="$(date +%s)"
+    e2e_load_start
+    e2e_wait_exit "$e2e_backup_timeout"
+    e2e_load_stop
+    e2e_duration first_run "$since"
+    e2e_duration load_to_stop "$loaded"
+    if ! e2e_stopped_run server_busy "the load"; then
+        e2e_final --runs=1
+        return
+    fi
+    e2e_checks_after_stop '' server_busy "$(date +%s)"
+    e2e_step "backup again: cli/backup.php --now"
+    since="$(date +%s)"
+    e2e_backup "$e2e_logs/backup-2.log" --now
+    e2e_duration backup "$since"
+    if [ "$e2e_exit" -ne 0 ]; then
+        e2e_fail "cli/backup.php --now after the stop ended with $e2e_exit, expected 0"
+    fi
+    e2e_read_sent "the run after the stop"
+    e2e_final --runs=2 --failed=server_busy
+    e2e_check_resend "$e2e_before" "$e2e_sent" "$(e2e_inspected_bytes "$e2e_folder/inspect.json")"
+}
+
+# The scenario abort, in two parts that each cut a run off in the middle and then see the rest of it complete with nothing
+# half-made left at the service. (b) first: the connections to S3 are refused while the run sends the files of the site,
+# until the plugin stops it (upload_failed); after the recount, (a): the next run (--now) is killed with kill -9 while it
+# sends the files, and cli/backup.php without --now goes on with the same run to its end. That run is the one completed
+# generation of the site, and it did not send again what the run of (b) sent.
+e2e_scenario_abort() {
+    local since blocked run
+    e2e_step "(b) backup: cli/backup.php --now, in the background"
+    since="$(date +%s)"
+    e2e_backup_start "$e2e_logs/backup-1.log" --now
+    e2e_step "(b) waiting until the run has sent 10 % of its bytes in the stage files"
+    if ! e2e_wait_sending 10; then
+        e2e_fail "(b) the run did not get to the point where S3 is blocked"
+        e2e_wait_exit "$e2e_backup_timeout"
+        e2e_final --runs=1
+        return
+    fi
+    e2e_step "(b) the connections to S3 are refused, until the plugin stops the run"
+    blocked="$(date +%s)"
+    e2e_s3_block
+    # The plugin tries a send three times, 15 minutes apart, before it stops the run.
+    e2e_wait_exit 3600
+    e2e_s3_unblock
+    e2e_duration first_run "$since"
+    e2e_duration s3_blocked "$blocked"
+    if ! e2e_stopped_run upload_failed "(b) the refused connections to S3"; then
+        e2e_final --runs=1
+        return
+    fi
+    e2e_checks_after_stop '(b)' upload_failed "$(date +%s)"
+    e2e_step "(a) backup again: cli/backup.php --now, in the background"
+    since="$(date +%s)"
+    e2e_backup_start "$e2e_logs/backup-2.log" --now
+    e2e_step "(a) waiting until the run has sent 10 % of its bytes in the stage files"
+    if ! e2e_wait_sending 10; then
+        e2e_fail "(a) the run did not get to the point where it is killed"
+        e2e_wait_exit "$e2e_backup_timeout"
+        e2e_final --runs=2 --failed=upload_failed
+        return
+    fi
+    run="$e2e_run_id"
+    e2e_step "(a) kill -9 of the php of cli/backup.php"
+    if ! kill -9 "$e2e_pid"; then
+        e2e_fail "(a) cli/backup.php ended before kill -9"
+    fi
+    e2e_wait_exit 60
+    if [ "$e2e_exit" -ne 137 ]; then
+        e2e_fail "(a) cli/backup.php ended with $e2e_exit after kill -9, expected 137"
+    fi
+    e2e_step "(a) the service has no completed generation, and the run is open"
+    e2e_inspect "$e2e_logs/inspect-killed.json" || true
+    e2e_verdict "(a) after kill -9" "$e2e_logs/inspect-killed.json" --stopped=open || true
+    e2e_step "(a) cli/backup.php again, without --now: the same run goes on to its end"
+    e2e_backup "$e2e_logs/backup-3.log"
+    e2e_duration second_run "$since"
+    if [ "$e2e_exit" -ne 0 ]; then
+        e2e_fail "(a) cli/backup.php without --now ended with $e2e_exit, expected 0"
+    fi
+    # The bytes of the run that went on are counted in its one record, before and after the kill.
+    e2e_read_sent "(a) the run that went on"
+    if [ "$e2e_run_id" != "$run" ]; then
+        e2e_fail "(a) cli/backup.php went on with run ${e2e_run_id:-none}, expected run $run"
+    elif [ "$e2e_run_status" != completed ]; then
+        e2e_fail "(a) the run that went on is ${e2e_run_status:-unknown}, expected completed"
+    fi
+    e2e_final --runs=2 --failed=upload_failed
+    e2e_check_resend "$e2e_before" "$e2e_sent" "$(e2e_inspected_bytes "$e2e_folder/inspect.json")"
 }

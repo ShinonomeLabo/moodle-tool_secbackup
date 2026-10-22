@@ -27,8 +27,9 @@
 //  - SECBK_FAKE_SECRET: the value that the header X-E2E-Secret must have; any other value is answered with 404;
 //  - SECBK_FAKE_CODE: the registration code that it seals for the key of the request;
 //  - SECBK_FAKE_LOG: a file where it adds one JSON line for each request (method, path, the headers that matter, the body).
-// The name "missing" is answered with 404 and the name "broken" with 500; a site whose ID ends with 0404, 0413 or 0503 is
-// answered with 404, 413 or 503. Those answers carry the word SECBK-FAKE-MARKER, which sec.php must not print.
+// The name "missing" is answered with 404, "broken" with 500, "invalid" with 422, and "unsealable" with a code sealed for
+// another key; a site whose ID ends with 0404, 0413 or 0503 is answered with 404, 413 or 503, and one that ends with 0200 with
+// 200 and no state. Those answers carry the word SECBK-FAKE-MARKER, which sec.php must not print.
 
 // Only PHP's built-in server runs it: a site installed with git clone has this directory under its web root.
 if (PHP_SAPI !== 'cli-server') {
@@ -86,11 +87,13 @@ if ($method === 'POST' && $path === "$prefix/reset") {
         secbk_fake_answer(422, ['message' => 'SECBK-FAKE-MARKER', 'errors' => ['moodle_url' => ['SECBK-FAKE-MARKER']]]);
     } else {
         $key = base64_decode((string) ($input['seal_public_key'] ?? ''), true);
+        // The name "unsealable" gets a code sealed for another key, which the key of the request cannot open.
+        $key = $name === 'unsealable' ? sodium_crypto_box_publickey(sodium_crypto_box_keypair()) : (string) $key;
         secbk_fake_answer(201, [
             'site_uuid' => '11111111-2222-4333-8444-555555555555',
             'site_public_key' => 'secbk1:' . base64_encode(str_repeat("\x11", 32)),
             'signing_public_key' => base64_encode(str_repeat("\x22", 32)),
-            'sealed_code' => base64_encode(sodium_crypto_box_seal((string) getenv('SECBK_FAKE_CODE'), (string) $key)),
+            'sealed_code' => base64_encode(sodium_crypto_box_seal((string) getenv('SECBK_FAKE_CODE'), $key)),
         ]);
     }
 } else if ($method === 'GET' && preg_match('~^' . $prefix . '/sites/([0-9a-f-]{36})\z~', $path, $m) === 1) {
@@ -99,6 +102,11 @@ if ($method === 'POST' && $path === "$prefix/reset") {
     $error = $errors[substr($m[1], -4)] ?? null;
     if ($error !== null) {
         secbk_fake_answer($error[0], $error[1]);
+        return;
+    }
+    if (str_ends_with($m[1], '0200')) {
+        // Answered with 200, but without the state of the site.
+        secbk_fake_answer(200, ['site_uuid' => $m[1], 'runs' => 'SECBK-FAKE-MARKER']);
         return;
     }
     // A field that sec.php does not know (the URL) must not reach the file that it writes.

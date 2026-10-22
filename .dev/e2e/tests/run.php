@@ -24,7 +24,9 @@
 
 // Tests for the scripts of the staging end-to-end test that need no Moodle. Run: php .dev/e2e/tests/run.php
 // Development only; not part of the plugin package. sec.php talks to fake-service.php, which runs under php -S on 127.0.0.1;
-// verdict.php and summary.php read files that the tests write in a folder of their own in the temporary folder.
+// verdict.php and summary.php read files that the tests write in a folder of their own in the temporary folder. The functions
+// of lib.sh run in bash, with the ones that reach Moodle, the service, the firewall or other processes replaced by stubs
+// that write down the calls; run.sh is run only with arguments that it refuses, or without the variable that lets it run.
 
 if (PHP_SAPI !== 'cli') {
     exit(1);
@@ -37,10 +39,29 @@ $work = sys_get_temp_dir() . '/secbk-e2e-test-' . getmypid();
 mkdir($work, 0700, true);
 
 /**
- * Runs a PHP script of .dev/e2e and returns [exit code, output and errors together].
+ * Runs a command and returns [exit code, output and errors together].
  *
- * The variables of the staging test are taken out of the environment of this process, so that the values of a shell never
- * reach a test; $env sets the ones that the test needs.
+ * The variables of the staging test, the folders of the site and GITHUB_ACTIONS (which lets run.sh build a site) are taken
+ * out of the environment of this process, so that neither a shell nor the runner of CI reaches a test; $env sets the ones
+ * that the test needs.
+ *
+ * @param string[] $command The command and its arguments.
+ * @param array $env Variables of the environment to set.
+ * @return array
+ */
+function secbk_e2e_command(array $command, array $env = []): array {
+    $environment = array_filter(getenv(), static fn(string $name): bool => !str_starts_with($name, 'SECBK_')
+        && $name !== 'GITHUB_ACTIONS' && $name !== 'RUNNER_TEMP', ARRAY_FILTER_USE_KEY);
+    // Development tooling may run commands; the plugin itself never does.
+    $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, null,
+        array_merge($environment, $env));
+    $output = (string) stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    return [proc_close($process), $output];
+}
+
+/**
+ * Runs a PHP script of .dev/e2e and returns [exit code, output and errors together].
  *
  * @param string $script sec.php, verdict.php or summary.php.
  * @param string[] $args The arguments.
@@ -49,14 +70,33 @@ mkdir($work, 0700, true);
  */
 function secbk_e2e_run(string $script, array $args, array $env = []): array {
     global $e2e;
-    $environment = array_filter(getenv(), static fn(string $name): bool => !str_starts_with($name, 'SECBK_E2E_'),
-        ARRAY_FILTER_USE_KEY);
-    // Development tooling may run commands; the plugin itself never does.
-    $process = proc_open(array_merge([PHP_BINARY, "$e2e/$script"], $args),
-        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, null, array_merge($environment, $env));
-    $output = (string) stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    return [proc_close($process), $output];
+    return secbk_e2e_command(array_merge([PHP_BINARY, "$e2e/$script"], $args), $env);
+}
+
+/**
+ * Runs bash code after lib.sh is sourced (with set -euo pipefail, as run.sh has it), with the folder of the site and the
+ * folder of the results in the work folder, and returns [exit code, output].
+ *
+ * @param string $code The code.
+ * @param array $env Variables of the environment to set.
+ * @return array
+ */
+function secbk_e2e_lib(string $code, array $env = []): array {
+    global $e2e, $work;
+    return secbk_e2e_command(['bash', '-c', 'set -euo pipefail; . "$0/lib.sh"; ' . $code, $e2e],
+        array_merge(['SECBK_STORAGE_DIR' => "$work/storage", 'SECBK_E2E_OUT' => "$work/out"], $env));
+}
+
+/**
+ * The result.json of a scenario that a test of lib.sh ran, or null.
+ *
+ * @param string $name The name of the site.
+ * @return array|null
+ */
+function secbk_e2e_result(string $name): ?array {
+    global $work;
+    $data = json_decode((string) @file_get_contents("$work/out/$name/result.json"), true);
+    return is_array($data) ? $data : null;
 }
 
 /**
@@ -279,6 +319,18 @@ secbk_e2e_expect('a service that does not answer gives 1 without the URL', $exit
     && !str_contains($output, "127.0.0.1:$closed"), "exit $exit: $output");
 [$exit, $output] = secbk_e2e_run('sec.php', ['provision', '--name=r1-normal'], $env);
 secbk_e2e_expect('provision without its options is refused', $exit === 2, "exit $exit: $output");
+// A sealed code that the key of the request cannot open, and an answer of the inspection that is not the state of a site.
+[$exit, $output] = secbk_e2e_run('sec.php', ['provision', '--name=unsealable',
+    '--moodle-url=https://unsealable.moodle.example.invalid', '--source-ip=203.0.113.7', "--out=$work/unsealable/private"], $env);
+secbk_e2e_expect('a code that cannot be opened gives 1 and keeps nothing', $exit === 1
+    && str_contains($output, 'HTTP 201, but the answer is not a site with a sealed registration code')
+    && !file_exists("$work/unsealable/private/code") && !file_exists("$work/unsealable/private/site.json"), "exit $exit: $output");
+$file = "$work/inspect-0200.json";
+[$exit, $output] = secbk_e2e_run('sec.php', ['inspect', '--site=11111111-2222-4333-8444-555555550200', "--out=$file"], $env);
+secbk_e2e_expect('an answer that is not the state of a site is written as unexpected_answer', $exit === 1
+    && str_contains($output, 'HTTP 200, but the answer is not the state of a site')
+    && json_decode((string) @file_get_contents($file), true) === ['error' => 'unexpected_answer', 'http_status' => 200]
+    && !str_contains($output, 'SECBK-FAKE-MARKER'), "exit $exit: $output " . @file_get_contents($file));
 
 // 3. summary.php adds up objects.bytes of every site: exactly 30 GB (10^9 bytes) passes, one byte more fails.
 $folder = "$work/results-limit";
@@ -342,6 +394,25 @@ secbk_e2e_expect('an inspection without result.json fails', $exit === 1 && str_c
     "exit $exit: $output");
 [$exit, $output] = secbk_e2e_run('summary.php', [$folder]);
 secbk_e2e_expect('summary.php without --limit-gb is refused', $exit === 2, "exit $exit: $output");
+// The amount of a site whose inspection failed or is missing is not known: the table says so, and the total says how many.
+$folder = "$work/results-unknown";
+secbk_e2e_site($folder, 'r1-normal', [], ['objects' => ['bytes' => 2000000000]]);
+secbk_e2e_site($folder, 'r1-load', ['scenario' => 'load'], '{"error":"lock_read_failed","http_status":503}');
+secbk_e2e_site($folder, 'r1-data', ['scenario' => 'data-only', 'sent_bytes' => 0], null);
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('an amount that is not known is shown as unknown, and counted in the total line', $exit === 1
+    && substr_count($output, '| unknown |') === 1 && str_contains($output, '| data-only | r1-data | passed | 0.000 |')
+    && str_contains($output, 'Sent in total: 2.000 GB') && str_contains($output, 'not known for 1 site'), "exit $exit: $output");
+secbk_e2e_site($folder, 'r1-abort', ['scenario' => 'abort'], null);
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('two sites without an amount', $exit === 1 && substr_count($output, '| unknown |') === 2
+    && str_contains($output, 'not known for 2 sites'), "exit $exit: $output");
+$folder = "$work/results-unknown-over";
+secbk_e2e_site($folder, 'r1-normal', [], ['objects' => ['bytes' => 31000000000]]);
+secbk_e2e_site($folder, 'r1-load', ['scenario' => 'load'], null);
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('the limit is judged on the amounts that are known', $exit === 1 && str_contains($output, 'over the limit'),
+    "exit $exit: $output");
 
 // verdict.php: the conditions of the scenarios on the answer of the inspection.
 $good = secbk_e2e_inspection();
@@ -391,6 +462,276 @@ foreach ($verdicts as $label => [$inspection, $args, $wanted, $words]) {
 secbk_e2e_expect('verdict.php without a mode is refused', $exit === 2, "exit $exit: $output");
 [$exit, $output] = secbk_e2e_run('verdict.php', ["$work/no-such-file.json", '--done', '--runs=1']);
 secbk_e2e_expect('verdict.php fails on a missing file', $exit === 1 && str_contains($output, 'reason: '), "exit $exit: $output");
+
+// lib.sh: e2e_config puts the address of the site and the key of the service in config.php, in the place of the settings of
+// the fake service that storage_install writes, and changes nothing else; a second call replaces its own block.
+$fakeblock = "// tool_secbackup development settings: the fake backup service.\ndefine('TOOL_SECBACKUP_DEVELOPER', [\n"
+    . "    'trustedkeys' => ['PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw='],\n    'allowhttp' => true,\n"
+    . "    'allowprivatehosts' => true,\n    'skipnetworkchecks' => true,\n]);\n";
+$config = "<?php  // Moodle configuration file\n\nunset(\$CFG);\nglobal \$CFG;\n\$CFG = new stdClass();\n\n"
+    . "\$CFG->dbtype    = 'pgsql';\n\$CFG->wwwroot   = 'http://localhost:8000';\n\$CFG->dataroot  = '/tmp/moodledata';\n\n"
+    . "// No mail leaves this machine; the dummy users get an address that is valid.\n\$CFG->noemailever = true;\n"
+    . $fakeblock . "\nrequire_once(__DIR__ . '/lib/setup.php');\n";
+$key = base64_encode(str_repeat("\x22", 32));
+$key2 = base64_encode(str_repeat("\x33", 32));
+$expected = str_replace(["\$CFG->wwwroot   = 'http://localhost:8000';", $fakeblock], [
+    "\$CFG->wwwroot = 'https://r1-normal.moodle.example.invalid';",
+    "// tool_secbackup remote service settings (written by .dev/e2e/lib.sh).\ndefine('TOOL_SECBACKUP_DEVELOPER', [\n"
+        . "    'trustedkeys' => ['$key2'],\n]);\n// End of tool_secbackup remote service settings.\n",
+], $config);
+$configfile = "$work/storage/moodle/config.php";
+@mkdir(dirname($configfile), 0777, true);
+file_put_contents($configfile, $config);
+[$exit, $output] = secbk_e2e_lib('e2e_config wwwroot https://r1-normal.moodle.example.invalid; e2e_config service "$E2E_KEY";'
+    . ' e2e_config service "$E2E_KEY2"', ['E2E_KEY' => $key, 'E2E_KEY2' => $key2]);
+$text = (string) file_get_contents($configfile);
+secbk_e2e_expect('e2e_config replaces the address and the settings of the fake service, and nothing else', $exit === 0
+    && $text === $expected, "exit $exit: $output\n$text");
+secbk_e2e_expect('e2e_config leaves one definition of the settings', substr_count($text, "define('TOOL_SECBACKUP_DEVELOPER'") === 1,
+    $text);
+$refusals = [
+    'a key that is not base64' => 'e2e_config service not-a-key',
+    'a key of 31 bytes' => 'e2e_config service "$E2E_SHORT"',
+    'an address over http' => 'e2e_config wwwroot http://r1-normal.moodle.example.invalid',
+    'a setting that it does not know' => 'e2e_config dataroot /tmp',
+];
+foreach ($refusals as $label => $code) {
+    [$exit, $output] = secbk_e2e_lib($code, ['E2E_SHORT' => base64_encode(str_repeat("\x22", 31))]);
+    secbk_e2e_expect("e2e_config refuses $label and leaves config.php as it was", $exit !== 0
+        && file_get_contents($configfile) === $expected, "exit $exit: $output");
+}
+file_put_contents($configfile, str_replace($fakeblock, '', $config));
+[$exit, $output] = secbk_e2e_lib('e2e_config service "$E2E_KEY"', ['E2E_KEY' => $key]);
+secbk_e2e_expect('e2e_config fails on a config.php without the settings', $exit !== 0
+    && file_get_contents($configfile) === str_replace($fakeblock, '', $config), "exit $exit: $output");
+
+// lib.sh: the check of the disk reads numbers, or stops with a reason.
+$disks = [
+    'unreadable' => ["printf 'Avail Size\\nx y\\n'", 1, 'the free space of the disk of the site cannot be read'],
+    'empty' => ['true', 1, 'the free space of the disk of the site cannot be read'],
+    'too small' => ["printf 'Avail Size\\n1000 100000000000\\n'", 1, 'the disk has 1000 bytes free, 14000000000 are needed'],
+    'enough' => ["printf 'Avail Size\\n100000000000 200000000000\\n'", 0, null],
+];
+foreach ($disks as $label => [$df, $wanted, $words]) {
+    $name = 'r1-disk-' . str_replace(' ', '-', $label);
+    [$exit, $output] = secbk_e2e_lib("e2e_begin normal $name; df() { $df; }; e2e_check_disk 1; e2e_finish");
+    $reasons = secbk_e2e_result($name)['reasons'] ?? ['no result.json'];
+    secbk_e2e_expect("the check of the disk: $label", $exit === $wanted
+        && ($words === null ? $reasons === [] : str_contains(implode("\n", $reasons), $words)), "exit $exit: $output");
+}
+
+// lib.sh: the check of a resend counts the bytes counted twice, sent + before - after, and allows a tenth of before.
+$resends = [
+    'no resend' => [1000, 1900, 3000, null],
+    'a tenth counted twice' => [1000, 1100, 2000, null],
+    'more than a tenth counted twice' => [1000, 1101, 2000, 'the next run sent again about 101 of the 1000 bytes'],
+    'nothing at the service after the stop' => [0, 10, 10, 'the service held nothing of the site after the stop'],
+];
+foreach ($resends as $label => [$before, $sent, $after, $words]) {
+    $name = 'r1-resend-' . md5($label);
+    [$exit, $output] = secbk_e2e_lib("e2e_begin load $name; e2e_check_resend $before $sent $after; e2e_finish");
+    $result = secbk_e2e_result($name) ?? [];
+    secbk_e2e_expect("the check of a resend: $label", ($result['numbers'] ?? null) === ['s3_bytes_after_stop' => $before,
+        'next_run_sent_bytes' => $sent, 's3_bytes_at_end' => $after] && ($words === null ? $exit === 0 && $result['passed'] === true
+        : $exit === 1 && str_contains(implode("\n", $result['reasons'] ?? []), $words)), "exit $exit: $output");
+}
+
+// lib.sh: the result reads the numbers (names with digits too), the durations, the lines of the output of cli/backup.php, and
+// the amount and the requests of the runs from inspect.json; a script that stops names its step.
+$inspection = json_encode(secbk_e2e_inspection(['runs' => [$failedrun, $completed], 'objects' => ['bytes' => 4242]]));
+[$exit, $output] = secbk_e2e_lib('e2e_begin load r1-result; e2e_number s3_bytes_after_stop 1000; e2e_number start_late 0;'
+    . ' e2e_duration build $(( $(date +%s) - 5 ));'
+    . ' printf "Waiting until x\nA step of the backup failed (y). It is tried again in 5 minutes.\nWaiting until z\n"'
+    . ' > "$e2e_logs/backup-1.log"; printf "Stage: files\nWaiting until w\n" > "$e2e_logs/backup-2.log";'
+    . ' printf "%s" "$E2E_INSPECT" > "$e2e_folder/inspect.json"; e2e_finish', ['E2E_INSPECT' => $inspection]);
+$result = secbk_e2e_result('r1-result') ?? [];
+secbk_e2e_expect('the result of a scenario that passed', $exit === 0 && ($result['scenario'] ?? '') === 'load'
+    && ($result['name'] ?? '') === 'r1-result' && ($result['passed'] ?? null) === true && ($result['reasons'] ?? null) === []
+    && ($result['sent_bytes'] ?? null) === 4242 && ($result['retries'] ?? null) === ['waits' => 3, 'failed_steps' => 1]
+    && ($result['numbers'] ?? null) === ['s3_bytes_after_stop' => 1000, 'start_late' => 0]
+    && ($result['requested_bytes'] ?? null) === [4000, 3000] && ($result['durations']['build'] ?? 0) >= 5
+    && isset($result['durations']['total']), "exit $exit: $output " . json_encode($result));
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-stopped; e2e_step "a step that fails"; false; e2e_finish');
+$result = secbk_e2e_result('r1-stopped') ?? [];
+secbk_e2e_expect('the result of a script that stopped', $exit === 1 && ($result['passed'] ?? null) === false
+    && ($result['reasons'] ?? null) === ['the script stopped (exit 1) at the step: a step that fails']
+    && ($result['sent_bytes'] ?? null) === 0, "exit $exit: $output " . json_encode($result));
+
+// lib.sh: a signal (a cancelled job) during a long wait runs the trap at once, which writes the result.
+$started = microtime(true);
+// Development tooling may run commands; the plugin itself never does.
+$process = proc_open(['bash', '-c', 'set -euo pipefail; . "$0/lib.sh"; e2e_begin normal r1-term; e2e_step "a long wait";'
+    . ' e2e_sleep 60; e2e_finish', $e2e], [0 => ['file', '/dev/null', 'r'], 1 => ['file', "$work/term.out", 'a'],
+    2 => ['file', "$work/term.out", 'a']], $pipes, null, array_merge(getenv(), ['SECBK_STORAGE_DIR' => "$work/storage",
+    'SECBK_E2E_OUT' => "$work/out"]));
+for ($i = 0; $i < 100 && !str_contains((string) @file_get_contents("$work/term.out"), 'a long wait'); $i++) {
+    usleep(100000);
+}
+usleep(300000);
+proc_terminate($process, 15);
+proc_close($process);
+$result = secbk_e2e_result('r1-term') ?? [];
+secbk_e2e_expect('a signal during a long wait writes the result at once', microtime(true) - $started < 15
+    && ($result['reasons'] ?? null) === ['the script stopped (exit 143) at the step: a long wait'],
+    sprintf('%.1f s: ', microtime(true) - $started) . @file_get_contents("$work/term.out") . json_encode($result));
+
+// lib.sh: the database of the site that cannot be read stops the scenario with that reason, also in a wait.
+[$exit, $output] = secbk_e2e_lib('echo "timeout $PGCONNECT_TIMEOUT"');
+secbk_e2e_expect('psql gives up a connection after 10 seconds', str_contains($output, 'timeout 10'), "exit $exit: $output");
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-db; psql() { echo "no such database" >&2; return 2; }; e2e_check_db;'
+    . ' e2e_finish');
+secbk_e2e_expect('a database that cannot be read stops the scenario', $exit === 1
+    && str_contains(implode("\n", secbk_e2e_result('r1-db')['reasons'] ?? []), 'the database of the site cannot be read'),
+    "exit $exit: $output");
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-dbwait; psql() { return 2; }; sleep 30 & e2e_pid=$!;'
+    . ' if e2e_wait_sending 10; then echo reached; fi; kill "$e2e_pid"; e2e_finish');
+secbk_e2e_expect('a database that cannot be read ends a wait with that reason', $exit === 1 && !str_contains($output, 'reached')
+    && str_contains(implode("\n", secbk_e2e_result('r1-dbwait')['reasons'] ?? []), 'the database of the site cannot be read'),
+    "exit $exit: $output");
+
+// lib.sh: the wait for the recount of the service is 1200 seconds unless SECBK_E2E_RECOUNT_WAIT says otherwise.
+[$exit, $output] = secbk_e2e_lib('echo "recount $e2e_recount_wait"');
+secbk_e2e_expect('the wait for the recount is 1200 s', trim($output) === 'recount 1200', $output);
+[$exit, $output] = secbk_e2e_lib('echo "recount $e2e_recount_wait"', ['SECBK_E2E_RECOUNT_WAIT' => '5']);
+secbk_e2e_expect('the wait for the recount can be set', trim($output) === 'recount 5', $output);
+
+// lib.sh: the order of the steps of the scenarios, with the steps that reach the site, the service, the firewall and other
+// processes replaced by stubs that write down their calls. Each "end" is what one call of cli/backup.php ends with: its exit
+// code, the status of the run and its reason.
+$stubs = <<<'BASH'
+e2e_test_calls="$SECBK_E2E_OUT/calls-$E2E_NAME.txt"
+e2e_test_run=0
+e2e_test_call() { printf '%s\n' "$*" >> "$e2e_test_calls"; }
+e2e_backup_start() {
+    e2e_test_call "start $(basename "$1") ${*:2}"
+    e2e_log="$1"
+    : > "$e2e_log"
+    e2e_pid=4242
+    if [ "${2:-}" = --now ]; then e2e_test_run=$(( e2e_test_run + 1 )); fi
+    e2e_run_id="$e2e_test_run"
+}
+e2e_wait_exit() {
+    e2e_test_call "wait_exit $1"
+    read -r e2e_exit e2e_run_status e2e_run_code <<< "${e2e_test_ends[0]}"
+    e2e_test_ends=("${e2e_test_ends[@]:1}")
+    if [ "$e2e_run_code" = - ]; then e2e_run_code=''; fi
+}
+e2e_wait_sending() { e2e_test_call "wait_sending $*"; }
+e2e_read_run() { e2e_run_bytes=500; }
+e2e_progress() { :; }
+e2e_alive() { return 1; }
+kill() { e2e_test_call "kill $*"; }
+e2e_s3_block() { e2e_test_call s3_block; e2e_s3_blocked=yes; }
+e2e_s3_unblock() { if [ "$e2e_s3_blocked" = yes ]; then e2e_test_call s3_unblock; e2e_s3_blocked=no; fi; }
+e2e_load_start() { e2e_test_call load_start; e2e_load_pids=(1); }
+e2e_load_stop() { if [ "${#e2e_load_pids[@]}" -gt 0 ]; then e2e_test_call load_stop; e2e_load_pids=(); fi; }
+e2e_wait_stopped() { e2e_test_call "wait_stopped $2 | $3"; }
+e2e_wait_recount() { e2e_test_call wait_recount; }
+e2e_inspect() { e2e_test_call "inspect $(basename "$1")"; }
+e2e_verdict() { e2e_test_call "verdict $1 | ${*:3}"; }
+e2e_final() { e2e_test_call "final $*"; }
+e2e_inspected_bytes() { echo 1000; }
+e2e_check_resend() { e2e_test_call "resend $*"; }
+BASH;
+
+/**
+ * Runs a scenario of lib.sh with the stubs, and returns [exit code, output, the calls, the result].
+ *
+ * @param string $name The name of the site.
+ * @param string $scenario The call of the scenario, such as "e2e_scenario_abort".
+ * @param string[] $ends What the calls of cli/backup.php end with, in their order.
+ * @return array
+ */
+function secbk_e2e_scenario(string $name, string $scenario, array $ends): array {
+    global $stubs, $work;
+    $list = implode(' ', array_map(static fn(string $end): string => escapeshellarg($end), $ends));
+    [$exit, $output] = secbk_e2e_lib("$stubs\ne2e_test_ends=($list)\ne2e_begin test $name\n$scenario\ne2e_finish\n",
+        ['E2E_NAME' => $name]);
+    $calls = array_map('trim', @file("$work/out/calls-$name.txt", FILE_IGNORE_NEW_LINES) ?: []);
+    return [$exit, $output, $calls, secbk_e2e_result($name) ?? []];
+}
+
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-abort', 'e2e_scenario_abort',
+    ['1 aborted upload_failed', '137 active -', '0 completed -']);
+$wanted = ['start backup-1.log --now', 'wait_sending 10', 's3_block', 'wait_exit 3600', 's3_unblock',
+    'wait_stopped upload_failed | (b) after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_sending 10',
+    'kill -9 4242', 'wait_exit 60', 'inspect inspect-killed.json', 'verdict (a) after kill -9 | --stopped=open',
+    'start backup-3.log', 'wait_exit 7200', 'final --runs=2 --failed=upload_failed', 'resend 1000 500 1000'];
+secbk_e2e_expect('abort: (b) S3 refused, the stop, the recount, then (a) kill -9 and the same run to its end', $exit === 0
+    && $calls === $wanted && ($result['reasons'] ?? null) === [], "exit $exit: $output\n" . implode("\n", $calls));
+$aborts = [
+    'the run that S3 did not stop' => [['0 completed -'], '(b) the refused connections to S3 did not stop the run'],
+    'a kill that did not end the command' => [['1 aborted upload_failed', '0 completed -', '0 completed -'],
+        '(a) cli/backup.php ended with 0 after kill -9, expected 137'],
+    'the run after the kill that did not complete' => [['1 aborted upload_failed', '137 active -', '1 aborted upload_failed'],
+        '(a) the run that went on is aborted, expected completed'],
+    'the command after the kill that failed' => [['1 aborted upload_failed', '137 active -', '3 active -'],
+        '(a) cli/backup.php without --now ended with 3, expected 0'],
+];
+foreach ($aborts as $label => [$ends, $words]) {
+    [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-abort-' . md5($label), 'e2e_scenario_abort', $ends);
+    secbk_e2e_expect("abort: $label names its step", $exit === 1
+        && str_contains(implode("\n", $result['reasons'] ?? []), $words), "exit $exit: $output");
+}
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load', 'e2e_scenario_load',
+    ['1 aborted server_busy', '0 completed -']);
+$wanted = ['start backup-1.log --now', 'wait_sending 0', 'load_start', 'wait_exit 7200', 'load_stop',
+    'wait_stopped server_busy | after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_exit 7200',
+    'final --runs=2 --failed=server_busy', 'resend 1000 500 1000'];
+secbk_e2e_expect('load: the load, the stop, the recount and the next run', $exit === 0 && $calls === $wanted
+    && ($result['reasons'] ?? null) === [], "exit $exit: $output\n" . implode("\n", $calls));
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load-busy', 'e2e_scenario_load', ['0 completed -']);
+secbk_e2e_expect('load: a run that the load did not stop', $exit === 1
+    && str_contains(implode("\n", $result['reasons'] ?? []), 'the load did not stop the run'), "exit $exit: $output");
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-normal', 'e2e_scenario_normal', ['0 completed -']);
+secbk_e2e_expect('normal: one run and the check at the end', $exit === 0
+    && $calls === ['start backup-1.log --now', 'wait_exit 7200', 'final --runs=1'],
+    "exit $exit: $output\n" . implode("\n", $calls));
+[$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-c01', 'e2e_scenario_concurrent $(( $(date +%s) - 30 ))',
+    ['0 completed -']);
+$late = $result['numbers']['start_late'] ?? -1;
+secbk_e2e_expect('concurrent: a start in the past begins at once and says how late it is', $exit === 0
+    && ($calls[0] ?? '') === 'start backup-1.log --now' && $late >= 30 && $late < 40, "exit $exit: $output");
+
+// run.sh refuses wrong arguments before anything else (exit 2), and runs only on a disposable runner: arguments that pass
+// every check reach that guard, which stops the script here, since the tests run without GITHUB_ACTIONS.
+$now = time();
+$refused = [
+    'no scenario' => [],
+    'an unknown scenario' => ['bogus', '--name=r1-x', '--files-gb=1'],
+    'a name in upper case' => ['normal', '--name=R1-normal', '--files-gb=1'],
+    'a name that starts with a hyphen' => ['normal', '--name=-r1', '--files-gb=1'],
+    'a name that ends with a hyphen' => ['normal', '--name=r1-', '--files-gb=1'],
+    'a name of 41 characters' => ['normal', '--name=' . str_repeat('a', 41), '--files-gb=1'],
+    'no name' => ['normal', '--files-gb=1'],
+    'no size' => ['normal', '--name=r1-normal'],
+    'a size of 0' => ['normal', '--name=r1-normal', '--files-gb=0.0'],
+    'a size that is not a number' => ['normal', '--name=r1-normal', '--files-gb=1e3'],
+    'concurrent without a start' => ['concurrent', '--name=r1-c01', '--files-gb=0.8'],
+    'a start for another scenario' => ['normal', '--name=r1-normal', '--files-gb=1', "--start-at=$now"],
+    'a start more than 3 hours away' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', '--start-at=' . ($now + 10900)],
+    'a start that is not a time' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', '--start-at=soon'],
+    'an unknown option' => ['normal', '--name=r1-normal', '--files-gb=1', '--fast'],
+];
+foreach ($refused as $label => $args) {
+    [$exit, $output] = secbk_e2e_command(array_merge(['bash', "$e2e/run.sh"], $args));
+    secbk_e2e_expect("run.sh refuses $label", $exit === 2 && !str_contains($output, 'disposable runner'), "exit $exit: $output");
+}
+$accepted = [
+    'normal' => ['normal', '--name=r1-normal', '--files-gb=10'],
+    'a name of 40 characters' => ['normal', '--name=' . str_repeat('a', 40), '--files-gb=0.5'],
+    'concurrent that starts now' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', "--start-at=$now"],
+    'concurrent with a start in the past' => ['concurrent', '--name=r1-c01', '--files-gb=0.8', '--start-at=' . ($now - 600)],
+    'concurrent that starts in nearly 3 hours' => ['concurrent', '--name=r1-c01', '--files-gb=0.8',
+        '--start-at=' . ($now + 10000)],
+    'data-only with skips' => ['data-only', '--name=r1-data', '--files-gb=0.2', '--skip=mod_videoassessment',
+        '--skip=block_autoattend,mod_autoattendmod'],
+];
+foreach ($accepted as $label => $args) {
+    [$exit, $output] = secbk_e2e_command(array_merge(['bash', "$e2e/run.sh"], $args));
+    secbk_e2e_expect("run.sh takes the arguments of $label", $exit === 2 && str_contains($output, 'disposable runner'),
+        "exit $exit: $output");
+}
 
 proc_terminate($fake);
 proc_close($fake);
