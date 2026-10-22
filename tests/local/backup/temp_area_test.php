@@ -120,6 +120,60 @@ final class temp_area_test extends \advanced_testcase {
         $this->assertFileDoesNotExist($left[4]);
     }
 
+    public function test_an_item_that_a_step_removes_while_the_folder_is_refreshed_is_not_made_again(): void {
+        $base = make_request_directory();
+        $removed = false;
+        $area = null;
+        // The uploader removes a chunk that it sent and a part is renamed, after the listing and before their turn.
+        $area = new temp_area(self::limits($base . '/tool'), null, function (string $path) use (&$removed, &$area): void {
+            if (!$removed) {
+                $removed = true;
+                unlink($area->for_run(44) . '/chunk');
+                rename($area->for_run(44) . '/present.gz', $area->for_run(44) . '/present.done');
+            }
+            temp_area::touch_existing($path);
+        });
+        [$folder] = self::aged_run($area, 44);
+        $this->without_warnings(static fn() => $area->refresh(44));
+        clearstatcache();
+        $this->assertTrue($removed);
+        $this->assertFileDoesNotExist($folder . '/chunk');
+        $this->assertFileDoesNotExist($folder . '/present.gz');
+        $this->assertGreaterThan(time() - 60, filemtime($folder . '/journal/files.jsonl'));
+        $this->assertGreaterThan(time() - 60, filemtime($folder));
+    }
+
+    public function test_a_folder_that_a_step_removes_while_it_is_refreshed_is_not_made_again(): void {
+        $base = make_request_directory();
+        $cleared = false;
+        $area = null;
+        // The step that ends the run removes its folder while a status request refreshes it.
+        $area = new temp_area(self::limits($base . '/tool'), null, function (string $path) use (&$cleared, &$area): void {
+            if (!$cleared) {
+                $cleared = true;
+                $area->clear(45);
+            }
+            temp_area::touch_existing($path);
+        });
+        [$folder] = self::aged_run($area, 45);
+        $this->without_warnings(static fn() => $area->refresh(45));
+        clearstatcache();
+        $this->assertTrue($cleared);
+        $this->assertFalse(file_exists($folder));
+        $this->assertSame([], array_values(array_diff(scandir($base . '/tool'), ['.', '..'])));
+    }
+
+    public function test_touching_an_item_that_is_gone_makes_nothing(): void {
+        $base = make_request_directory();
+        $this->without_warnings(static fn() => temp_area::touch_existing($base . '/gone'));
+        $this->assertFalse(file_exists($base . '/gone'));
+        file_put_contents($base . '/old', 'x');
+        touch($base . '/old', time() - DAYSECS);
+        temp_area::touch_existing($base . '/old');
+        clearstatcache();
+        $this->assertGreaterThan(time() - 60, filemtime($base . '/old'));
+    }
+
     public function test_refreshing_a_run_without_a_folder_makes_none(): void {
         $base = make_request_directory();
         $area = new temp_area(self::limits($base . '/tool'));

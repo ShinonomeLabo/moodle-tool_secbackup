@@ -41,15 +41,20 @@ final class temp_area {
     /** @var callable Function that gives [free bytes, total bytes] of the disk that holds a folder. */
     private $diskspace;
 
+    /** @var callable Function that gives an item of the folder of a run the current time, for refresh(). */
+    private $touch;
+
     /**
      * Constructor.
      *
      * @param limits $limits The limits.
      * @param callable|null $diskspace Function (string $folder): array{0: ?int, 1: ?int}; the default measures the disk.
+     * @param callable|null $touch Function (string $path) that refresh() calls for each item; touch_existing() by default.
      */
-    public function __construct(limits $limits, ?callable $diskspace = null) {
+    public function __construct(limits $limits, ?callable $diskspace = null, ?callable $touch = null) {
         $this->limits = $limits;
         $this->diskspace = $diskspace ?? [self::class, 'disk_space'];
+        $this->touch = $touch ?? [self::class, 'touch_existing'];
     }
 
     /**
@@ -160,7 +165,8 @@ final class temp_area {
      * once and then only read (the journals, the present list, a chunk that waits for its next try), and a run that waits for
      * its next window does not change anything for most of a day, so every step and every status request refreshes them.
      * A symbolic link is left as it is: what it points to is never touched. Nothing happens when the folder is missing (the run
-     * is on another server).
+     * is on another server). A status request refreshes without the lock of the steps, so an item that a step removes after the
+     * listing is skipped, not made again (touch_existing()).
      *
      * @param int $runid ID of the run.
      */
@@ -172,11 +178,26 @@ final class temp_area {
                 return;
             }
             foreach ($this->files_below($real, \RecursiveIteratorIterator::SELF_FIRST) as $item) {
-                $item->isLink() || touch($item->getPathname());
+                ($this->touch)($item->getPathname());
             }
-            touch($real);
+            ($this->touch)($real);
         } finally {
             restore_error_handler();
+        }
+    }
+
+    /**
+     * Gives a file or a folder the current time as the time of its last change, when it is still there and is not a symbolic
+     * link. touch() alone would make an empty file in place of a chunk that the uploader removed, a part that was renamed or
+     * the folder of a run that ended. The check and the touch are two calls: a removal between them, a far shorter window than
+     * the walk of the folder, would still leave an empty file.
+     *
+     * @param string $path The path.
+     */
+    public static function touch_existing(string $path): void {
+        clearstatcache(true, $path);
+        if (!is_link($path) && file_exists($path)) {
+            touch($path);
         }
     }
 
