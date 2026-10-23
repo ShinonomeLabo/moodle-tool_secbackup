@@ -257,6 +257,11 @@ secbk_e2e_expect('provision posts the four values as JSON with the secret and Ac
     && ($sent['name'] ?? '') === 'r1-normal' && ($sent['moodle_url'] ?? '') === 'https://r1-normal.moodle.example.invalid'
     && ($sent['source_ip'] ?? '') === '203.0.113.7' && strlen((string) base64_decode($sealkey, true)) === 32,
     json_encode($request));
+// The service sits behind a firewall that refuses an /api/ request without a User-Agent (the staging run of 2026-10-23
+// was refused with 403 at its first request): every request of sec.php names itself.
+$agents = array_unique(array_map(static fn(array $r): string => (string) ($r['useragent'] ?? ''), $requests));
+secbk_e2e_expect('every request of sec.php carries the User-Agent of the test',
+    $requests !== [] && $agents === ['tool_secbackup-e2e/1'], json_encode(array_values($agents)));
 foreach (['the code' => $code, 'the code without its dashes' => str_replace('-', '', $code), 'the secret' => $secret,
         'the URL' => $base, 'the address' => "127.0.0.1:$port", 'the path' => '/api/lms-backup', 'the seal key' => $sealkey,
         'the public key of the site' => base64_encode(str_repeat("\x11", 32)),

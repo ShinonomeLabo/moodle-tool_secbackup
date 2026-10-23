@@ -103,7 +103,8 @@ function secbk_e2e_secret(): string {
  * @return array [HTTP status, body, curl error number]; the status is 0 when nothing was answered.
  */
 function secbk_e2e_request(string $method, string $path, ?array $json, int $timeout): array {
-    $headers = ['Accept: application/json', 'X-E2E-Secret: ' . secbk_e2e_secret()];
+    // The service sits behind a firewall that refuses an /api/ request without a User-Agent; curl sends none by default.
+    $headers = ['Accept: application/json', 'User-Agent: tool_secbackup-e2e/1', 'X-E2E-Secret: ' . secbk_e2e_secret()];
     $options = [
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_RETURNTRANSFER => true,

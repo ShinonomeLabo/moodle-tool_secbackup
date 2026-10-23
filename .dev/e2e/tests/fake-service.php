@@ -45,6 +45,7 @@ file_put_contents((string) getenv('SECBK_FAKE_LOG'), json_encode([
     'method' => $method,
     'path' => $path,
     'accept' => (string) ($_SERVER['HTTP_ACCEPT'] ?? ''),
+    'useragent' => (string) ($_SERVER['HTTP_USER_AGENT'] ?? ''),
     'contenttype' => (string) ($_SERVER['CONTENT_TYPE'] ?? ''),
     'secretok' => hash_equals((string) getenv('SECBK_FAKE_SECRET'), $secret),
     'body' => $body,
