@@ -18,6 +18,11 @@ e2e_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source-path=SCRIPTDIR source=../storage/lib.sh
 . "$e2e_dir/../storage/lib.sh"
 SECBK_E2E_OUT="${SECBK_E2E_OUT:-${RUNNER_TEMP:-/tmp}/secbk-e2e}"
+# The secret of the test endpoints of the service goes to sec.php only (e2e_sec). It leaves the environment here, so that no
+# other child of the script inherits it: cli/backup.php, enroll.php and the other scripts of Moodle (which load the code of
+# the plugins of the site), psql. The URL stays: the registration writes it into the settings of Moodle anyway.
+e2e_secret="${SECBK_E2E_SECRET:-}"
+unset SECBK_E2E_SECRET
 # Seconds that one call of cli/backup.php may take.
 e2e_backup_timeout="${SECBK_E2E_BACKUP_TIMEOUT:-7200}"
 # Seconds from a stopped run to the next one. The service recounts the site 17 minutes (1020 seconds: the life of its upload
@@ -86,10 +91,10 @@ e2e_sleep() {
 }
 
 # e2e_sec <arguments of sec.php>: runs sec.php (which may wait minutes for the service) in the background and waits for it,
-# for the same reason as e2e_sleep; the trap stops it too. Its exit code is the one of sec.php.
+# for the same reason as e2e_sleep; the trap stops it too. It alone is given the secret. Its exit code is the one of sec.php.
 e2e_sec() {
     local status=0
-    php "$e2e_dir/sec.php" "$@" &
+    SECBK_E2E_SECRET="$e2e_secret" php "$e2e_dir/sec.php" "$@" &
     e2e_bg=$!
     wait "$e2e_bg" || status=$?
     e2e_bg=''

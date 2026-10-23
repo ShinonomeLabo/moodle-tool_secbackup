@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One scenario of the staging end-to-end test: a Moodle 4.5 site on this runner backs up to the staging backup service, and
 # the test endpoints of the service say what it holds. Development only, for a disposable runner (lib.sh), with
-# SECBK_E2E_BASE_URL and SECBK_E2E_SECRET in the environment (sec.php).
+# SECBK_E2E_BASE_URL and SECBK_E2E_SECRET in the environment (sec.php; lib.sh takes the secret out of the environment of
+# every other command).
 # Usage: .dev/e2e/run.sh <normal|load|abort|concurrent|data-only> --name=<name> --files-gb=<GB>
 #            [--start-at=<UNIX time>] [--skip=<component>[,<component>...]]... [--part=site|scenario]
 #

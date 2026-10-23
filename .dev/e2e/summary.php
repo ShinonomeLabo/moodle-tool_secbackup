@@ -264,16 +264,16 @@ $lines = [];
 if ($together) {
     $start = max(array_column($together, 0));
     $end = min(array_column($together, 1));
-    $sites = count($together) === $concurrent ? sprintf('the %d %s', $concurrent, $concurrent === 1 ? 'site' : 'sites')
+    $label = count($together) === $concurrent ? sprintf('the %d %s', $concurrent, $concurrent === 1 ? 'site' : 'sites')
         : sprintf('%d of the %d sites', count($together), $concurrent);
     if ($end > $start) {
-        $lines[] = sprintf('Concurrent: the runs of %s ran together for %d s (%s to %s UTC); %s.', $sites, $end - $start,
+        $lines[] = sprintf('Concurrent: the runs of %s ran together for %d s (%s to %s UTC); %s.', $label, $end - $start,
             gmdate('H:i:s', $start), gmdate('H:i:s', $end), $lates
                 ? sprintf('the latest site started %d s after the start of the ten sites', max($lates))
                 : 'the latest start of a site is not known');
     } else {
         $failures[] = sprintf('the runs of %s of concurrent never ran together: the latest started at %s, after the earliest'
-            . ' ended at %s (UTC)', $sites, gmdate('H:i:s', $start), gmdate('H:i:s', $end));
+            . ' ended at %s (UTC)', $label, gmdate('H:i:s', $start), gmdate('H:i:s', $end));
     }
 }
 ksort($codesent);

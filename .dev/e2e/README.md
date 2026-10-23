@@ -172,7 +172,11 @@ delay; a site that is ready after that time starts at once, and its result says 
 Two steps. Each scenario runs in two steps of its job: the site (`--part=site`), which has no secret of the environment,
 since the code of Moodle, Composer and the extra plugins run in it, and the scenario (`--part=scenario`), which alone is
 given the URL and the secret of the service. A site step that fails writes `result.json` with the step where it stopped,
-the scenario step does not run, and the result is still uploaded.
+the scenario step does not run, and the result is still uploaded. In the scenario step, `run.sh` takes the secret out of
+its environment and gives it to `sec.php` alone, so that `cli/backup.php`, `enroll.php` and the other commands, which load
+the code of Moodle and of the plugins, do not inherit it (the URL stays: the registration writes it into the settings of
+Moodle). The split guards the secret only while the site is built: both steps run as the same user on the same runner, so
+code that ran in the site step can still act on the scenario step (through the files it wrote or a process it left).
 
 Limits. The two steps of a scenario have limits that add up to 25 minutes below that of its job: a run that hangs is
 stopped by a step, whose log GitHub keeps, and the next steps still upload the result. Each step is `run.sh` itself

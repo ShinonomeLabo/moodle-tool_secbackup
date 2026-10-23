@@ -480,6 +480,16 @@ secbk_e2e_site($folder, 'r1-c04', ['scenario' => 'concurrent', 'numbers' => ['st
 secbk_e2e_expect('concurrent: runs that never ran together fail', $exit === 1
     && str_contains($output, 'the runs of the 4 sites of concurrent never ran together: the latest started at 01:16:00, after'
     . ' the earliest ended at 01:15:00 (UTC)'), "exit $exit: $output");
+// Times with different offsets (the service may give them in the time zone of Japan) are compared as instants.
+$folder = "$work/results-together-offsets";
+secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:20:00',
+    ['started_at' => '2026-10-23T10:00:00+09:00']));
+secbk_e2e_site($folder, 'r1-c02', ['scenario' => 'concurrent'], $concurrentrun('01:05:00', '01:00:00',
+    ['completed_at' => '2026-10-23T10:15:00+09:00']));
+[$exit, $output] = secbk_e2e_run('summary.php', [$folder, '--limit-gb=30']);
+secbk_e2e_expect('concurrent: times in +09:00 and +00:00 are compared as instants', $exit === 0
+    && str_contains($output, 'Concurrent: the runs of the 2 sites ran together for 600 s (01:05:00 to 01:15:00 UTC)'),
+    "exit $exit: $output");
 // A run that failed ends at failed_at.
 $folder = "$work/results-together-failed";
 secbk_e2e_site($folder, 'r1-c01', ['scenario' => 'concurrent'], $concurrentrun('01:00:00', '01:20:00'));
@@ -939,6 +949,28 @@ secbk_e2e_expect('the wait for a chunk of the files counts from the start of the
     str_contains($output, 'reached bytes=1700 from=600'), "exit $exit: $output");
 $left = secbk_e2e_left("~^sleep $commandlength\$~");
 secbk_e2e_expect('the commands of the waits are stopped by the trap', $left === [], implode("\n", $left));
+
+// lib.sh: the secret of the test endpoints reaches sec.php only. A php on the PATH stands in for sec.php, cli/backup.php and
+// enroll.php, and writes down whether it got the secret; every other call goes to the real php.
+@mkdir("$work/bin-secret", 0777, true);
+@mkdir("$work/storage/moodle", 0777, true);
+file_put_contents("$work/bin-secret/php", "#!/bin/sh\ncase \"\$*\" in\n"
+    . "    *sec.php*) echo \"sec.php \${SECBK_E2E_SECRET:-none}\" >> \"\$E2E_SEEN\"; exit 0 ;;\n"
+    . "    *cli/backup.php*) echo \"cli/backup.php \${SECBK_E2E_SECRET:-none}\" >> \"\$E2E_SEEN\"; exit 0 ;;\n"
+    // enroll.php reads its standard input, as the real one does: the writer of the pipe must not lose its reader.
+    . "    *enroll.php*) cat > /dev/null; echo \"enroll.php \${SECBK_E2E_SECRET:-none}\" >> \"\$E2E_SEEN\"; exit 0 ;;\n"
+    . "esac\nexec " . escapeshellarg(PHP_BINARY) . " \"\$@\"\n");
+chmod("$work/bin-secret/php", 0755);
+$seen = "$work/out/secret-seen.txt";
+[$exit, $output] = secbk_e2e_lib('e2e_begin normal r1-secret scenario; e2e_log="$e2e_logs/backup-1.log";'
+    . ' e2e_sec inspect --site=11111111-2222-4333-8444-555555555555 --out="$e2e_logs/inspect.json";'
+    . ' e2e_launch_backup --now; wait "$e2e_pid"; e2e_enroll; e2e_finish',
+    ['PATH' => "$work/bin-secret:" . getenv('PATH'), 'E2E_SEEN' => $seen, 'SECBK_E2E_SECRET' => 'secret-for-the-test-only',
+        'SECBK_E2E_BASE_URL' => 'https://api.example.test/base']);
+$lines = @file($seen, FILE_IGNORE_NEW_LINES) ?: [];
+secbk_e2e_expect('the secret goes to sec.php, and not to cli/backup.php or enroll.php', $exit === 0
+    && $lines === ['sec.php secret-for-the-test-only', 'cli/backup.php none', 'enroll.php none'],
+    "exit $exit: $output\n" . implode("\n", $lines));
 
 // lib.sh: the wait for the recount of the service is 1200 seconds unless SECBK_E2E_RECOUNT_WAIT says otherwise.
 [$exit, $output] = secbk_e2e_lib('echo "recount $e2e_recount_wait"');
