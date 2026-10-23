@@ -935,12 +935,31 @@ e2e_checks_after_stop() {
     e2e_wait_recount "$3"
 }
 
+# e2e_small_temp_budget: the budget of the temporary files of the plugin on the site, 128 MB, before the first run of the
+# scenarios load and abort, read back; another value is a reason, and 1. With the default budget (the smaller of 10 % of the
+# free space and 2 GiB), the plugin keeps the chunks of a site smaller than that in the temporary folder and sends them only
+# at the stage complete, so those scenarios would never see a run that sends in the stage files. With 128 MB it sends every
+# 3 or 4 chunks of 32 MiB, whatever the size of the site and the free space of the runner: at about 6.6 MB/s, a few requests
+# a minute, well below the 30 requests a minute per site that the service allows.
+e2e_small_temp_budget() {
+    local value
+    e2e_step "the budget of the temporary files of the plugin: 128 MB, so that the run sends in the stage files"
+    storage_php admin/cli/cfg.php --component=tool_secbackup --name=tempbudgetmb --set=128
+    value="$(storage_php admin/cli/cfg.php --component=tool_secbackup --name=tempbudgetmb)" || value=''
+    if [ "$value" != 128 ]; then
+        e2e_fail "the budget of the temporary files of the plugin is ${value:-unknown} MB, not 128"
+        return 1
+    fi
+}
+
 # The scenario load: the load stops the run (server_busy) while it sends the files of the site; after the recount, the next
-# run completes and does not send again what the first one sent. The load starts once the run has sent a chunk (32 MiB) in
-# the stage files, so that the check of a resend covers chunks of files and not only those of the database; what the run
-# sent in that stage until the stop is a number of the result, and nothing is a reason.
+# run completes and does not send again what the first one sent. The budget of the temporary files is 128 MB first
+# (e2e_small_temp_budget), so that the run sends in the stage files at all. The load starts once the run has sent a chunk
+# (32 MiB) in the stage files, so that the check of a resend covers chunks of files and not only those of the database; what
+# the run sent in that stage until the stop is a number of the result, and nothing is a reason.
 e2e_scenario_load() {
     local since loaded files
+    e2e_small_temp_budget
     e2e_step "backup: cli/backup.php --now, in the background"
     since="$(date +%s)"
     e2e_backup_start "$e2e_logs/backup-1.log" --now
@@ -986,9 +1005,11 @@ e2e_scenario_load() {
 # half-made left at the service. (b) first: the connections to S3 are refused while the run sends the files of the site,
 # until the plugin stops it (upload_failed); after the recount, (a): the next run (--now) is killed with kill -9 while it
 # sends the files, and cli/backup.php without --now goes on with the same run to its end. That run is the one completed
-# generation of the site, and it did not send again what the run of (b) sent.
+# generation of the site, and it did not send again what the run of (b) sent. The budget of the temporary files is 128 MB
+# first (e2e_small_temp_budget), so that both runs send in the stage files, where the block and the kill come.
 e2e_scenario_abort() {
     local since blocked run
+    e2e_small_temp_budget
     e2e_step "(b) backup: cli/backup.php --now, in the background"
     since="$(date +%s)"
     e2e_backup_start "$e2e_logs/backup-1.log" --now

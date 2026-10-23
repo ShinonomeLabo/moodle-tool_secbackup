@@ -988,7 +988,8 @@ secbk_e2e_expect('the wait for the recount can be set', trim($output) === 'recou
 // latest run, which psql prints, so that the real e2e_backup_start, e2e_read_run, e2e_stopped_run and e2e_read_sent read
 // the runs as they would. Each "end" is what one call of cli/backup.php ends with: its exit code, and the status and the
 // reason that its run has then. E2E_NEW_RUN_ON_CONTINUE makes the command without --now start a run of its own;
-// E2E_DB_GONE makes the database unreadable after the last end.
+// E2E_DB_GONE makes the database unreadable after the last end. storage_php answers the settings of Moodle (cfg.php) from a
+// file; E2E_BUDGET_READ makes it read another value back.
 $stubs = <<<'BASH'
 e2e_test_calls="$SECBK_E2E_OUT/calls-$E2E_NAME.txt"
 e2e_test_db="$SECBK_E2E_OUT/db-$E2E_NAME.txt"
@@ -1025,6 +1026,14 @@ e2e_wait_exit() {
     if [ "${#e2e_test_ends[@]}" -eq 0 ] && [ "${E2E_DB_GONE:-}" = yes ]; then : > "$e2e_test_db.gone"; fi
 }
 e2e_alive() { return 1; }
+storage_php() {
+    local all="$*"
+    e2e_test_call "storage_php $all"
+    case "$all" in
+        *cfg.php*--set=*) echo "${all##*--set=}" > "$e2e_test_db.budget" ;;
+        *cfg.php*) if [ -n "${E2E_BUDGET_READ:-}" ]; then echo "$E2E_BUDGET_READ"; else cat "$e2e_test_db.budget"; fi ;;
+    esac
+}
 kill() { e2e_test_call "kill $*"; }
 e2e_s3_block() { e2e_test_call s3_block; e2e_s3_blocked=yes; }
 e2e_s3_unblock() { if [ "$e2e_s3_blocked" = yes ]; then e2e_test_call s3_unblock; e2e_s3_blocked=no; fi; }
@@ -1059,7 +1068,11 @@ function secbk_e2e_scenario(string $name, string $scenario, array $ends, array $
 
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-abort', 'e2e_scenario_abort',
     ['1 aborted upload_failed', '137 active -', '0 completed -']);
-$wanted = ['start backup-1.log --now', 'wait_sending 10', 's3_block', 'wait_exit 3600', 's3_unblock',
+// The budget of the temporary files is set to 128 MB and read back before the first cli/backup.php.
+$wanted = ['storage_php admin/cli/cfg.php --component=tool_secbackup --name=tempbudgetmb --set=128',
+    'storage_php admin/cli/cfg.php --component=tool_secbackup --name=tempbudgetmb',
+    'start backup-1.log --now', 'wait_sending 10', 's3_block',
+    'wait_exit 3600', 's3_unblock',
     'wait_stopped upload_failed | (b) after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_sending 10',
     'kill -9 4242', 'wait_exit 60', 'inspect inspect-killed.json', 'verdict (a) after kill -9 | --stopped=open',
     'start backup-3.log', 'wait_exit 7200', 'final --runs=2 --failed=upload_failed', 'resend 1000 1001 1000'];
@@ -1090,7 +1103,10 @@ secbk_e2e_expect('abort: a database that cannot be read after (a) gives only tha
     && !str_contains($reasons, 'went on with run') && !str_contains($reasons, 'expected completed'), "exit $exit: $reasons");
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load', 'e2e_scenario_load',
     ['1 aborted server_busy', '0 completed -']);
-$wanted = ['start backup-1.log --now', 'wait_sending 0 1 33554432', 'load_start', 'wait_exit 7200', 'load_stop',
+$wanted = ['storage_php admin/cli/cfg.php --component=tool_secbackup --name=tempbudgetmb --set=128',
+    'storage_php admin/cli/cfg.php --component=tool_secbackup --name=tempbudgetmb',
+    'start backup-1.log --now', 'wait_sending 0 1 33554432',
+    'load_start', 'wait_exit 7200', 'load_stop',
     'wait_stopped server_busy | after the stop', 'wait_recount', 'start backup-2.log --now', 'wait_exit 7200',
     'final --runs=2 --failed=server_busy', 'resend 1000 0 1000'];
 secbk_e2e_expect('load: the load after a chunk of the files, the stop, the recount and the next run', $exit === 0
@@ -1101,6 +1117,13 @@ secbk_e2e_expect('load: the load after a chunk of the files, the stop, the recou
 secbk_e2e_expect('load: a run that the load stopped before it sent anything in the stage files fails', $exit === 1
     && ($result['numbers']['files_sent_before_stop'] ?? null) === 0 && str_contains(implode("\n", $result['reasons'] ?? []),
     'the load stopped the run before it sent anything in the stage files'), "exit $exit: $output " . json_encode($result));
+foreach (['e2e_scenario_load' => 'load', 'e2e_scenario_abort' => 'abort'] as $function => $label) {
+    [$exit, $output, $calls, $result] = secbk_e2e_scenario("r1-budget-$label", $function, ['0 completed -'],
+        ['E2E_BUDGET_READ' => '0']);
+    secbk_e2e_expect("$label: a budget that does not read back as 128 MB stops the scenario before cli/backup.php", $exit === 1
+        && str_contains(implode("\n", $result['reasons'] ?? []), 'the budget of the temporary files of the plugin is 0 MB, not 128')
+        && !in_array('start backup-1.log --now', $calls, true), "exit $exit: $output\n" . implode("\n", $calls));
+}
 [$exit, $output, $calls, $result] = secbk_e2e_scenario('r1-load-busy', 'e2e_scenario_load', ['0 completed -']);
 secbk_e2e_expect('load: a run that the load did not stop', $exit === 1
     && str_contains(implode("\n", $result['reasons'] ?? []), 'the load did not stop the run'), "exit $exit: $output");
@@ -1113,6 +1136,8 @@ secbk_e2e_expect('normal: one run and the check at the end', $exit === 0
 $late = $result['numbers']['start_late'] ?? -1;
 secbk_e2e_expect('concurrent: a start in the past begins at once and says how late it is', $exit === 0
     && ($calls[0] ?? '') === 'start backup-1.log --now' && $late >= 30 && $late < 40, "exit $exit: $output");
+secbk_e2e_expect('concurrent: the budget of the temporary files stays the default', !preg_grep('/cfg\.php/', $calls),
+    implode("\n", $calls));
 
 // run.sh refuses wrong arguments before anything else (exit 2), and runs only on a disposable runner: arguments that pass
 // every check reach that guard, which stops the script here, since the tests run without GITHUB_ACTIONS.
