@@ -19,6 +19,7 @@ Development only; `.dev/` is not part of the plugin package.
 | `verdict.php` | Checks an answer of `inspect` against what a scenario expects (plain PHP) |
 | `summary.php` | The Markdown summary of all the results of a run of the workflow, and its pass or fail (plain PHP) |
 | `install-plugins.sh`, `plugins.json`, `check-data.php` | The extra plugins at fixed commits, and the check of the test data |
+| `start-at.sh` | The start of the ten sites of `concurrent`: the later of the `start_at` of `plan` and 15 minutes (`SECBK_E2E_CONCURRENT_LEAD`, 900 s) after the first step of the job; prints a UNIX time |
 | `make-room.sh` | Removes large tools of a GitHub runner that the test does not use and picks the disk for the site (`--show`: the room left) |
 | `mask.sh` | Masks the URL of the service and its host name in the log of a job (`::add-mask::`); stops the job when the URL is missing |
 | `../../.github/workflows/staging-e2e.yml` | The workflow that runs the scenarios on GitHub's runners (below) |
@@ -156,7 +157,7 @@ public repository. It starts only by hand, on the branch that holds the version 
 
 | Job | Environment | What it does | Limits: the job, the steps of the site and of the scenario, one `cli/backup.php` (minutes) |
 |---|---|---|---|
-| `plan` | none | Refuses a size that is not a number of GB (up to nine decimals) or is below 0.2, and a selection whose files add up to more than 30 GB (`normal + load + abort + 10 x concurrent`); sets the start of the ten sites, 40 minutes later | 5 |
+| `plan` | none | Refuses a size that is not a number of GB (up to nine decimals) or is below 0.2, and a selection whose files add up to more than 30 GB (`normal + load + abort + 10 x concurrent`); sets the earliest start of the ten sites, 40 minutes later | 5 |
 | `reset` | `staging-e2e` | `sec.php reset`: removes the test sites that earlier runs made | 15 |
 | `normal` | `staging-e2e` | `run.sh normal --part=site`, then `--part=scenario` | 180, 25 + 130, 100 |
 | `load` | `staging-e2e` | `run.sh load --part=site`, then `--part=scenario` | 180, 20 + 135, 50 |
@@ -167,7 +168,9 @@ public repository. It starts only by hand, on the branch that holds the version 
 
 Approvals. Each job with the environment waits for a reviewer: first `reset`, then the jobs of the scenarios, which all wait
 for `reset` and are approved together. The ten sites of `concurrent` start 40 minutes after `plan`, so approve both without
-delay; a site that is ready after that time starts at once, and its result says how late (`numbers.start_late`).
+delay. If the approval comes later, the sites still start together: each job takes the later of that time and 15 minutes
+after its own first step (`start-at.sh`), and the ten jobs begin within seconds of each other. A site that is still not ready
+then starts at once, and its result says how late (`numbers.start_late`).
 
 Two steps. Each scenario runs in two steps of its job: the site (`--part=site`), which has no secret of the environment,
 since the code of Moodle, Composer and the extra plugins run in it, and the scenario (`--part=scenario`), which alone is

@@ -26,8 +26,8 @@
 #               generation and the run is still open. cli/backup.php without --now goes on with the same run to its end
 #               (exit 0, the run completed). The site has two runs (failed, upload_failed; completed with a receipt), and the
 #               run of (a) did not send again what the run of (b) sent.
-#   concurrent  waits until --start-at (the same time for the ten jobs of the workflow, at most 3 hours from now; a time
-#               that has passed starts at once), then as normal.
+#   concurrent  waits until --start-at (the same time for the ten jobs of the workflow, from start-at.sh; at most 3 hours
+#               from now; a time that has passed starts at once), then as normal.
 # At the end of each scenario that reaches the service, every object of the site is locked in COMPLIANCE mode and is in the
 # storage class INTELLIGENT_TIERING (verdict.php). The result is in $SECBK_E2E_OUT/<name>/result.json and inspect.json
 # (lib.sh); the script ends with 0 when the scenario passed, and with 2 on wrong arguments.

@@ -1205,6 +1205,46 @@ foreach (['an empty URL' => ['SECBK_E2E_BASE_URL' => ''], 'no URL' => []] as $la
         $exit === 1 && str_contains($output, 'SECBK_E2E_BASE_URL') && !str_contains($output, '::'), "exit $exit: $output");
 }
 
+// start-at.sh: the start of the ten sites of concurrent is the time that plan set, or 900 s after the first step of the job
+// when that time has passed (an approval of the environment that came late), whichever is later.
+$startat = static fn(array $args, array $env = []): array => secbk_e2e_command(['bash', "$e2e/start-at.sh", ...$args], $env);
+$now = 1800000000;
+[$exit, $output] = $startat([(string) ($now + 2400), (string) $now]);
+secbk_e2e_expect('start-at.sh keeps the time of plan when it is more than 900 s ahead',
+    $exit === 0 && $output === ($now + 2400) . "\n", "exit $exit: $output");
+[$exit, $output] = $startat([(string) ($now - 1440), (string) $now]);
+secbk_e2e_expect('start-at.sh gives 900 s from now when the time of plan has passed',
+    $exit === 0 && $output === ($now + 900) . "\n", "exit $exit: $output");
+[$exit, $output] = $startat([(string) ($now + 100), (string) $now]);
+secbk_e2e_expect('start-at.sh gives 900 s from now when the time of plan is nearer than that',
+    $exit === 0 && $output === ($now + 900) . "\n", "exit $exit: $output");
+[$exit, $output] = $startat([(string) ($now + 900), (string) $now]);
+secbk_e2e_expect('start-at.sh gives the same time when plan and the lead agree',
+    $exit === 0 && $output === ($now + 900) . "\n", "exit $exit: $output");
+[$exit, $output] = $startat([(string) ($now - 1440), (string) $now], ['SECBK_E2E_CONCURRENT_LEAD' => '60']);
+secbk_e2e_expect('start-at.sh takes the lead from SECBK_E2E_CONCURRENT_LEAD',
+    $exit === 0 && $output === ($now + 60) . "\n", "exit $exit: $output");
+[$exit, $output] = $startat([(string) (time() - 5000)]);
+$given = (int) trim($output);
+secbk_e2e_expect('start-at.sh takes the time of the clock without a second argument',
+    $exit === 0 && $given >= time() + 890 && $given <= time() + 910, "exit $exit: $output");
+$wrong = [
+    'no argument' => [],
+    'a plan time that is not a number' => ['soon'],
+    'a plan time of nine digits' => ['123456789'],
+    'a plan time of eleven digits' => ['12345678901'],
+    'a negative plan time' => ['-1800000000'],
+    'a now that is not a number' => ['1800000000', 'now'],
+    'three arguments' => ['1800000000', '1800000000', '1'],
+];
+foreach ($wrong as $label => $args) {
+    [$exit, $output] = $startat($args);
+    secbk_e2e_expect("start-at.sh refuses $label", $exit === 2 && trim($output) !== '' && !preg_match('/^\d{10}$/', trim($output)),
+        "exit $exit: $output");
+}
+[$exit, $output] = $startat(['1800000000', '1800000000'], ['SECBK_E2E_CONCURRENT_LEAD' => 'long']);
+secbk_e2e_expect('start-at.sh refuses a lead that is not a number of seconds', $exit === 2, "exit $exit: $output");
+
 proc_terminate($fake);
 proc_close($fake);
 // Development tooling may run commands; the plugin itself never does.

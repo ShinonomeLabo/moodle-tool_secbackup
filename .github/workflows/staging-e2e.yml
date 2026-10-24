@@ -125,7 +125,8 @@ jobs:
             exit 1
           fi
           # The ten sites of concurrent start together 40 minutes from now: time for the two approvals of the environment,
-          # the job reset and the sites themselves (run.sh starts at once when the time has passed, and says how late).
+          # the job reset and the sites themselves. The jobs of concurrent use the later of this time and 15 minutes after
+          # they begin (.dev/e2e/start-at.sh), so an approval that comes late does not break the start together.
           echo "start_at=$(( $(date +%s) + 2400 ))" >> "$GITHUB_OUTPUT"
 
   # Removes the test sites of the service that earlier runs made, so that the places of the test organization are free.
@@ -520,6 +521,16 @@ jobs:
           SECBK_E2E_BASE_URL: ${{ secrets.SECBK_E2E_BASE_URL }}
         run: bash .dev/e2e/mask.sh
 
+      # The ten jobs of the matrix start together once the environment is approved, so this is the same second for all of
+      # them. If the approval came after the start_at of plan, the sites would start in the order they are built; they
+      # start together 15 minutes after this step instead (the later of the two times).
+      - name: Set the start of the ten sites
+        id: start
+        timeout-minutes: 1
+        env:
+          PLAN_START_AT: ${{ needs.plan.outputs.start_at }}
+        run: echo "at=$(bash .dev/e2e/start-at.sh "$PLAN_START_AT")" >> "$GITHUB_OUTPUT"
+
       - name: Make room on the disk
         timeout-minutes: 10
         run: bash .dev/e2e/make-room.sh
@@ -542,7 +553,7 @@ jobs:
         env:
           SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
           FILES_GB: ${{ inputs.concurrent_gb }}
-          START_AT: ${{ needs.plan.outputs.start_at }}
+          START_AT: ${{ steps.start.outputs.at }}
         run: |
           exec bash .dev/e2e/run.sh concurrent --part=site --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB" \
             --start-at="$START_AT"
@@ -555,7 +566,7 @@ jobs:
           SECBK_E2E_OUT: ${{ runner.temp }}/secbk-e2e
           SECBK_E2E_BACKUP_TIMEOUT: '3600'
           FILES_GB: ${{ inputs.concurrent_gb }}
-          START_AT: ${{ needs.plan.outputs.start_at }}
+          START_AT: ${{ steps.start.outputs.at }}
         run: |
           exec bash .dev/e2e/run.sh concurrent --part=scenario --name="$SECBK_E2E_NAME" --files-gb="$FILES_GB" \
             --start-at="$START_AT"
