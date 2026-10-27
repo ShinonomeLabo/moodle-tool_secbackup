@@ -496,12 +496,16 @@ final class manifest_reader_test extends \advanced_testcase {
         unset($builder);
         gc_collect_cycles();
 
+        // PHP 8.2 can reset the peak, so that it covers the reader being made, which reads the whole list once. PHP 8.1 cannot:
+        // its peak is that of every test that ran before, so there the use of memory is sampled while the entries are read.
+        $canreset = function_exists('memory_reset_peak_usage');
         $before = memory_get_usage();
-        if (function_exists('memory_reset_peak_usage')) {
+        if ($canreset) {
             memory_reset_peak_usage();
         }
         $peak = 0;
         $reader = $this->reader($args);
+        $peak = max($peak, memory_get_usage() - $before);
         $count = 0;
         foreach ($reader->entries() as $entry) {
             if ($count++ % 1000 === 0) {
@@ -509,7 +513,10 @@ final class manifest_reader_test extends \advanced_testcase {
             }
             $last = $entry;
         }
-        $peak = max($peak, memory_get_usage() - $before, memory_get_peak_usage() - $before);
+        $peak = max($peak, memory_get_usage() - $before);
+        if ($canreset) {
+            $peak = max($peak, memory_get_peak_usage() - $before);
+        }
         $this->assertSame(100000, $count);
         $this->assertSame(99999, $last['size']);
         // The compressed list (about 7 MiB) is held once while it is written to the working file; the plain list is 20 MiB or
