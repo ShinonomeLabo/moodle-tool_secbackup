@@ -23,6 +23,8 @@ use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\crypto\signing_keypair;
 use tool_secbackup\local\crypto\site_keys;
 use tool_secbackup\local\plugin_exception;
+use tool_secbackup\tests\changing_stream;
+use tool_secbackup\tests\faulty_stream;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\restore\manifest_reader::class)]
 /**
@@ -674,6 +676,102 @@ final class manifest_reader_test extends \advanced_testcase {
             $length += $difference > 0 ? $step : -$step;
         }
         $this->fail('No filler gives the size');
+    }
+
+    protected function tearDown(): void {
+        changing_stream::unregister();
+        faulty_stream::unregister();
+        parent::tearDown();
+    }
+
+    /**
+     * A list of many entries, so that its chunk is larger than the buffer that PHP holds for a stream.
+     *
+     * @return array As built().
+     */
+    private function large_list(): array {
+        $entries = [];
+        for ($n = 0; $n < 300; $n++) {
+            $entries[] = ['t' => 'file', 'contenthash' => sha1((string) $n), 'size' => $n, 'chunk' => str_repeat('a', 64),
+                'offset' => 86, 'length' => $n + 30, 'piece' => 0, 'pieces' => 1];
+        }
+        return $this->built(self::header(), $entries);
+    }
+
+    public function test_a_chunk_that_changes_while_it_is_read_is_refused(): void {
+        // The third opening is the second digest, after the chunk was opened with the keys.
+        $args = $this->large_list();
+        changing_stream::register(3, 0);
+        $args[0] = changing_stream::url($args[0]);
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
+    }
+
+    public function test_a_chunk_that_changes_under_the_second_reading_of_its_item_is_refused(): void {
+        // The second reading of the item starts with a seek that reaches the wrapper, because the first reading went on past
+        // the buffer of the stream; from then on the bytes are not the file's.
+        $args = $this->large_list();
+        changing_stream::register(0, 2);
+        $args[0] = changing_stream::url($args[0]);
+        $this->assertSame('restore_chunk_corrupt', $this->code_of(fn() => $this->reader($args)));
+        $this->assertSame([], $this->working_files());
+    }
+
+    public function test_a_list_without_lines_has_no_header(): void {
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($this->chunk_of(''))));
+    }
+
+    public function test_a_line_without_its_line_feed_at_the_end_fails(): void {
+        $this->assert_unreadable(rtrim(self::text(self::header(), self::entries()), "\n"));
+        $this->assert_unreadable(self::text(self::header(), self::entries()) . '{"t":"db"');
+    }
+
+    public function test_a_working_file_that_cannot_be_made_fails_and_leaves_nothing(): void {
+        faulty_stream::register();
+        $folder = make_request_directory();
+        $args = $this->built(self::header(), self::entries());
+        faulty_stream::fail('open:xb', '.gz');
+        $this->assertSame('restore_write_failed', $this->code_of(fn() => $this->reader_in($args, faulty_stream::url($folder))));
+        $this->assertTrue(faulty_stream::used());
+        $this->assertSame([], glob($folder . '/*'));
+    }
+
+    public function test_a_working_file_that_cannot_be_written_fails_and_leaves_nothing(): void {
+        faulty_stream::register();
+        $folder = make_request_directory();
+        $args = $this->built(self::header(), self::entries());
+        faulty_stream::fail('write', '.gz');
+        $this->assertSame('restore_write_failed', $this->code_of(fn() => $this->reader_in($args, faulty_stream::url($folder))));
+        $this->assertTrue(faulty_stream::used());
+        $this->assertSame([], glob($folder . '/*'));
+    }
+
+    public function test_a_working_file_that_is_taken_away_cannot_be_read_again(): void {
+        $reader = $this->reader($this->built(self::header(), self::entries()));
+        foreach ($this->working_files() as $file) {
+            unlink($file);
+        }
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => iterator_to_array($reader->entries())));
+    }
+
+    /**
+     * Makes a reader whose working file is in the given folder.
+     *
+     * @param array $args As built().
+     * @param string $folder The folder.
+     * @return manifest_reader
+     */
+    private function reader_in(array $args, string $folder): manifest_reader {
+        return new manifest_reader(
+            $args[0],
+            self::keys(),
+            self::SITE,
+            self::RUN,
+            $args[1],
+            $args[2],
+            $args[3],
+            $args[4],
+            $folder
+        );
     }
 
     public function test_close_removes_the_working_file(): void {

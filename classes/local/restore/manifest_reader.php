@@ -47,9 +47,6 @@ final class manifest_reader {
     /** @var int Bytes of the working file that are decompressed at a time. */
     private const PIECE = 65536;
 
-    /** @var int The longest line of the list that is accepted, in bytes. */
-    private const MAX_LINE = 134217728;
-
     /** @var string[] The parts that every header has, which are lists or objects. */
     private const HEADER_PARTS = ['moodle', 'db', 'plugins', 'config', 'core_diff', 'missing_files'];
 
@@ -111,6 +108,7 @@ final class manifest_reader {
      * @param string $sha256base64 SHA-256 of the chunk file, in standard base64, as it was signed.
      * @param string $signaturebase64url Signature of the list, in base64url without padding, as the service stored it.
      * @param string $signingpublickeybase64 Ed25519 public key of the site's plugin, in standard base64.
+     * @param string|null $workfolder Folder of the working file; the temporary folder of Moodle by default. Tests give another.
      * @throws plugin_exception With restore_chunk_missing when the file is not there, with restore_chunk_corrupt when the
      *     keys do not open it, with restore_manifest_invalid for any other check that fails (including the content of the
      *     list), and with restore_write_failed when the working file cannot be written.
@@ -123,7 +121,8 @@ final class manifest_reader {
         int $size,
         string $sha256base64,
         string $signaturebase64url,
-        string $signingpublickeybase64
+        string $signingpublickeybase64,
+        ?string $workfolder = null
     ) {
         $this->siteid = $siteid;
         $this->runid = $runid;
@@ -158,7 +157,7 @@ final class manifest_reader {
         if ($again === false || !hash_equals(base64_encode($again), $sha256base64)) {
             throw self::invalid('changed');
         }
-        $this->keep($payload);
+        $this->keep($payload, $workfolder);
         unset($payload);
         try {
             foreach ($this->entries() as $entry) {
@@ -261,19 +260,24 @@ final class manifest_reader {
     }
 
     /**
-     * Writes the compressed list to a working file.
+     * Writes the compressed list to a working file that only the owner can read.
      *
      * @param string $payload The compressed list.
+     * @param string|null $folder Folder of the file, or null for the temporary folder of Moodle.
      * @throws plugin_exception With restore_write_failed.
      */
-    private function keep(string $payload): void {
-        $folder = make_temp_directory(self::FOLDER);
-        $path = error_silencer::run(static fn() => tempnam($folder, 'manifest'), $warning);
-        if ($path === false) {
+    private function keep(string $payload, ?string $folder): void {
+        $folder ??= make_temp_directory(self::FOLDER);
+        $path = $folder . '/manifest-' . bin2hex(random_bytes(8)) . '.gz';
+        // The mode x refuses a file that is already there, so that nothing else is overwritten or followed.
+        $handle = error_silencer::run(static fn() => fopen($path, 'xb'), $warning);
+        if ($handle === false) {
             throw new plugin_exception('restore_write_failed');
         }
         $this->workpath = $path;
-        $written = error_silencer::run(static fn() => file_put_contents($path, $payload), $warning);
+        error_silencer::run(static fn() => chmod($path, 0600), $warning);
+        $written = error_silencer::run(static fn() => fwrite($handle, $payload), $warning);
+        fclose($handle);
         if ($written !== strlen($payload)) {
             $this->close();
             throw new plugin_exception('restore_write_failed');
@@ -315,9 +319,6 @@ final class manifest_reader {
                     $from = $end + 1;
                 }
                 $buffer = (string) substr($buffer, $from);
-                if (strlen($buffer) > self::MAX_LINE) {
-                    throw self::invalid('long_line');
-                }
             }
             if (inflate_get_status($context) !== ZLIB_STREAM_END || inflate_get_read_len($context) !== $fed) {
                 throw self::invalid('gzip_end');
