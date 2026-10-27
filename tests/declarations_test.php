@@ -45,6 +45,67 @@ final class declarations_test extends \advanced_testcase {
         $this->assertSame(2024100700, $plugin->requires);
         $this->assertSame([405, 503], $plugin->supported);
         $this->assertMatchesRegularExpression('/^\d{10}$/', (string) $plugin->version);
+        $this->assertSame(2026102800, $plugin->version);
+        $this->assertSame('0.5.0', $plugin->release);
+    }
+
+    public function test_the_restore_stops_table_is_declared(): void {
+        $file = new \xmldb_file(self::dir() . '/db/install.xml');
+        $this->assertTrue($file->loadXMLStructure());
+        $table = $file->getStructure()->getTable('tool_secbackup_restore_stops');
+        $this->assertInstanceOf(\xmldb_table::class, $table);
+        $fields = [];
+        foreach ($table->getFields() as $field) {
+            $fields[$field->getName()] = [$field->getType(), (string) $field->getLength(), $field->getNotNull(),
+                $field->getSequence()];
+        }
+        $this->assertSame([
+            'id' => [XMLDB_TYPE_INTEGER, '10', true, true],
+            'kind' => [XMLDB_TYPE_CHAR, '16', true, false],
+            'name' => [XMLDB_TYPE_CHAR, '255', true, false],
+            'previous' => [XMLDB_TYPE_TEXT, '', false, false],
+            'timecreated' => [XMLDB_TYPE_INTEGER, '10', true, false],
+        ], $fields);
+        $indexes = [];
+        foreach ($table->getIndexes() as $index) {
+            $indexes[$index->getName()] = [$index->getUnique(), $index->getFields()];
+        }
+        $this->assertSame(['kind' => [false, ['kind']]], $indexes);
+    }
+
+    /**
+     * The ids of the strings the restore adds.
+     *
+     * @return string[]
+     */
+    private static function restore_ids(): array {
+        return ['restore_admin_fullname', 'restore_chunk_corrupt', 'restore_chunk_missing', 'restore_content_mismatch',
+            'restore_core_official_unsupported', 'restore_import_count_mismatch', 'restore_import_failed',
+            'restore_import_schema_mismatch', 'restore_input_invalid', 'restore_keys_invalid', 'restore_manifest_invalid',
+            'restore_path_unsafe', 'restore_write_failed'];
+    }
+
+    public function test_the_restore_strings_exist_in_both_languages(): void {
+        foreach (['en', 'ja'] as $lang) {
+            $strings = self::strings($lang);
+            foreach (self::restore_ids() as $id) {
+                $this->assertArrayHasKey($id, $strings, "$lang $id");
+                $this->assertNotSame('', trim($strings[$id]), "$lang $id");
+            }
+        }
+        $this->assertCount(13, array_filter(array_keys(self::strings('en')), fn($id) => strpos($id, 'restore_') === 0));
+    }
+
+    public function test_the_restore_strings_speak_of_restoring_a_backup_and_never_name_the_platform_brand(): void {
+        foreach (['en', 'ja'] as $lang) {
+            $strings = self::strings($lang);
+            foreach (self::restore_ids() as $id) {
+                $this->assertStringNotContainsString('SEC', $strings[$id], "$lang $id");
+            }
+        }
+        $japanese = "\u{4E00}\u{6642}\u{30B5}\u{30A4}\u{30C8}\u{306E}\u{7BA1}\u{7406}\u{8005}";
+        $this->assertSame($japanese, self::strings('ja')['restore_admin_fullname']);
+        $this->assertSame('Temporary site administrator', self::strings('en')['restore_admin_fullname']);
     }
 
     public function test_message_providers(): void {

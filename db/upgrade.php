@@ -72,5 +72,31 @@ function xmldb_tool_secbackup_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026101900, 'tool', 'secbackup');
     }
 
+    if ($oldversion < 2026102800) {
+        // Define table tool_secbackup_restore_stops to be created.
+        $table = new xmldb_table('tool_secbackup_restore_stops');
+
+        // Adding fields to table tool_secbackup_restore_stops.
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+        $table->add_field('kind', XMLDB_TYPE_CHAR, '16', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('name', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('previous', XMLDB_TYPE_TEXT, null, null, null, null, null);
+        $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+
+        // Adding keys to table tool_secbackup_restore_stops.
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+
+        // Adding indexes to table tool_secbackup_restore_stops.
+        $table->add_index('kind', XMLDB_INDEX_NOTUNIQUE, ['kind']);
+
+        // Conditionally launch create table for tool_secbackup_restore_stops.
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        // Secbackup savepoint reached.
+        upgrade_plugin_savepoint(true, 2026102800, 'tool', 'secbackup');
+    }
+
     return true;
 }

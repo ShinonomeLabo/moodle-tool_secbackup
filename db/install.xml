@@ -33,5 +33,20 @@
         <INDEX NAME="timecreated" UNIQUE="false" FIELDS="timecreated"/>
       </INDEXES>
     </TABLE>
+    <TABLE NAME="tool_secbackup_restore_stops" COMMENT="What a restore stopped on a temporary site, with the value it had before">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="kind" TYPE="char" LENGTH="16" NOTNULL="true" SEQUENCE="false" COMMENT="task, processor, setting, adhoc or registration"/>
+        <FIELD NAME="name" TYPE="char" LENGTH="255" NOTNULL="true" SEQUENCE="false" COMMENT="Name of the thing that was stopped"/>
+        <FIELD NAME="previous" TYPE="text" NOTNULL="false" SEQUENCE="false" COMMENT="Its value before the restore, if it had one"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="kind" UNIQUE="false" FIELDS="kind"/>
+      </INDEXES>
+    </TABLE>
   </TABLES>
 </XMLDB>

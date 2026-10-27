@@ -40,7 +40,7 @@ final class upgrade_test extends \advanced_testcase {
         $this->assertTrue(\xmldb_tool_secbackup_upgrade(2026101202));
 
         $this->assertTrue($dbman->table_exists($table));
-        $this->assertEquals(2026101900, get_config('tool_secbackup', 'version'));
+        $this->assertEquals(2026102800, get_config('tool_secbackup', 'version'));
         $this->assertSame(0, $DB->count_records('tool_secbackup_runs'));
         $this->assertTrue($dbman->index_exists($table, new \xmldb_index('status', XMLDB_INDEX_NOTUNIQUE, ['status'])));
         $this->assertTrue($dbman->index_exists($table, new \xmldb_index('timecreated', XMLDB_INDEX_NOTUNIQUE, ['timecreated'])));
@@ -63,6 +63,32 @@ final class upgrade_test extends \advanced_testcase {
         global $CFG;
         require_once($CFG->libdir . '/upgradelib.php');
         require_once($CFG->dirroot . '/admin/tool/secbackup/db/upgrade.php');
+        $this->assertTrue(\xmldb_tool_secbackup_upgrade(2026102800));
+    }
+
+    public function test_upgrading_from_the_second_release_creates_the_restore_stops_table(): void {
+        global $CFG, $DB;
+        require_once($CFG->libdir . '/upgradelib.php');
+        require_once($CFG->dirroot . '/admin/tool/secbackup/db/upgrade.php');
+        $this->resetAfterTest();
+        $dbman = $DB->get_manager();
+        $table = new \xmldb_table('tool_secbackup_restore_stops');
+        $dbman->drop_table($table);
+        $this->assertFalse($dbman->table_exists($table));
+        set_config('version', 2026102000, 'tool_secbackup');
+
         $this->assertTrue(\xmldb_tool_secbackup_upgrade(2026102000));
+
+        $this->assertTrue($dbman->table_exists($table));
+        $this->assertEquals(2026102800, get_config('tool_secbackup', 'version'));
+        $this->assertTrue($dbman->index_exists($table, new \xmldb_index('kind', XMLDB_INDEX_NOTUNIQUE, ['kind'])));
+        $DB->insert_record('tool_secbackup_restore_stops', ['kind' => 'setting', 'name' => 'noemailever', 'previous' => null,
+            'timecreated' => 1]);
+        $this->assertSame(1, $DB->count_records('tool_secbackup_restore_stops'));
+
+        // Running the step again on a site that has the table changes nothing.
+        set_config('version', 2026102000, 'tool_secbackup');
+        $this->assertTrue(\xmldb_tool_secbackup_upgrade(2026102000));
+        $this->assertSame(1, $DB->count_records('tool_secbackup_restore_stops'));
     }
 }
