@@ -62,16 +62,14 @@ final class artifact_stage {
     /**
      * The stage "manifest": the list of the generation is built and queued.
      *
+     * Nothing waits when it starts: the stage of the code sends all that waits before it ends, so there is room for the list.
+     *
      * @param run_context $context The step.
      * @param array $seams The seams of the runner: corediff.
-     * @return string next, or more when there is no room for it.
+     * @return string next.
      */
     public static function manifest(run_context $context, array $seams): string {
         $entriesfile = $context->folder . '/' . manifest_builder::FILE;
-        $size = is_file($entriesfile) ? (int) filesize($entriesfile) : 0;
-        if (!$context->make_room(run_context::chunk_bound($size))) {
-            return 'more';
-        }
         $context->set('bytes', self::bytes($entriesfile));
         $header = self::header($context, $seams);
         $context->set('notbackedup', self::not_backed_up($header, dataroot_source::secret_names()));
