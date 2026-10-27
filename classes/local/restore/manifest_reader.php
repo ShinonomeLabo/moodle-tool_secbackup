@@ -31,9 +31,10 @@ use tool_secbackup\local\plugin_exception;
  * its one item, the compressed list, decrypted into a working file of the temporary folder. The list is read from that file a
  * line at a time, so a list of millions of entries does not sit in memory.
  *
- * The header is checked by header(). entries() checks every entry and the last line, which counts the entries; it gives an
- * entry as soon as the entry is in its form, so a caller must read it to the end before it trusts any of them: a list whose
- * last line is missing or counts wrongly makes entries() throw restore_manifest_invalid at the end.
+ * The constructor then reads the whole list once and checks it: the header, every entry (its fields, their forms and their
+ * ranges) and the last line, which counts the entries. A list that fails any of that is refused there, before a caller can
+ * take an entry from it, and count() tells how many entries it has. entries() checks the lines again as it gives them, in
+ * case the working file was changed after the check.
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -52,24 +53,34 @@ final class manifest_reader {
     /** @var string[] The parts that every header has, which are lists or objects. */
     private const HEADER_PARTS = ['moodle', 'db', 'plugins', 'config', 'core_diff', 'missing_files'];
 
+    /** @var string Pattern of a SHA-256 (and of a chunk name) in lower-case hexadecimal; \z, because $ also matches before a line feed. */
+    private const HEX64 = '/\A[0-9a-f]{64}\z/';
+
+    /** @var string Pattern of a content hash of Moodle (SHA-1). */
+    private const HEX40 = '/\A[0-9a-f]{40}\z/';
+
+    /** @var string Pattern of a table name without the prefix, as chunk_name allows it. */
+    private const TABLE = '/\A[a-z0-9_]+\z/';
+
     /**
-     * @var array[] The fields of each kind of entry: the names of those that are text and those that are whole numbers.
+     * @var array[] The fields of each kind of entry: the text fields with the pattern each must match (null for any text), and
+     *     the whole-number fields.
      */
     private const FIELDS = [
         'db' => [
-            ['table', 'plainsha256', 'chunk'],
+            ['table' => self::TABLE, 'plainsha256' => self::HEX64, 'chunk' => self::HEX64],
             ['from', 'to', 'rows', 'plainlength', 'offset', 'length'],
         ],
         'file' => [
-            ['contenthash', 'chunk'],
+            ['contenthash' => self::HEX40, 'chunk' => self::HEX64],
             ['size', 'offset', 'length', 'piece', 'pieces'],
         ],
         'dataroot' => [
-            ['root', 'path', 'sha256', 'chunk'],
+            ['root' => null, 'path' => null, 'sha256' => self::HEX64, 'chunk' => self::HEX64],
             ['size', 'offset', 'length', 'piece', 'pieces'],
         ],
         'code' => [
-            ['root', 'path', 'sha256', 'chunk'],
+            ['root' => null, 'path' => null, 'sha256' => self::HEX64, 'chunk' => self::HEX64],
             ['size', 'offset', 'length', 'piece', 'pieces'],
         ],
     ];
@@ -86,6 +97,9 @@ final class manifest_reader {
     /** @var array|null The header, once it has been read and checked. */
     private ?array $header = null;
 
+    /** @var int The number of entries, counted when the list was checked. */
+    private int $count = 0;
+
     /**
      * Constructor.
      *
@@ -98,8 +112,8 @@ final class manifest_reader {
      * @param string $signaturebase64url Signature of the list, in base64url without padding, as the service stored it.
      * @param string $signingpublickeybase64 Ed25519 public key of the site's plugin, in standard base64.
      * @throws plugin_exception With restore_chunk_missing when the file is not there, with restore_chunk_corrupt when the
-     *     keys do not open it, with restore_manifest_invalid for any other check that fails, and with restore_write_failed
-     *     when the working file cannot be written.
+     *     keys do not open it, with restore_manifest_invalid for any other check that fails (including the content of the
+     *     list), and with restore_write_failed when the working file cannot be written.
      */
     public function __construct(
         string $path,
@@ -138,7 +152,31 @@ final class manifest_reader {
             unset($e);
             throw new plugin_exception('restore_chunk_corrupt');
         }
+        // The seal does not say who made the chunk, and the file could have been changed between the digest and the open: the
+        // bytes that were opened are the signed ones only if they still have the signed digest.
+        $again = hash_file('sha256', $path, true);
+        if ($again === false || !hash_equals(base64_encode($again), $sha256base64)) {
+            throw self::invalid('changed');
+        }
         $this->keep($payload);
+        unset($payload);
+        try {
+            foreach ($this->entries() as $entry) {
+                unset($entry);
+            }
+        } catch (\Throwable $e) {
+            $this->close();
+            throw $e;
+        }
+    }
+
+    /**
+     * The number of entries of the list, which are counted when the reader is made.
+     *
+     * @return int
+     */
+    public function count(): int {
+        return $this->count;
     }
 
     /**
@@ -148,6 +186,9 @@ final class manifest_reader {
      * @throws plugin_exception With restore_manifest_invalid when the list is not readable or the header is not in its form.
      */
     public function header(): array {
+        if ($this->workpath === null) {
+            throw self::invalid('closed');
+        }
         if ($this->header !== null) {
             return $this->header;
         }
@@ -165,8 +206,8 @@ final class manifest_reader {
      * The entries of the list, one at a time.
      *
      * @return \Generator Arrays: the entries as they were written, each of kind db, file, dataroot or code.
-     * @throws plugin_exception With restore_manifest_invalid when the list is not readable, an entry is not in its form, or
-     *     the last line is missing, is followed by something, or does not count the entries.
+     * @throws plugin_exception With restore_manifest_invalid when the reader is closed, the list is not readable, an entry is not
+     *     in its form, or the last line is missing, is followed by something, or does not count the entries.
      */
     public function entries(): \Generator {
         $this->header();
@@ -198,6 +239,7 @@ final class manifest_reader {
         if (!$ended) {
             throw self::invalid('no_end');
         }
+        $this->count = $count;
     }
 
     /**
@@ -256,7 +298,7 @@ final class manifest_reader {
             $context = inflate_init(ZLIB_ENCODING_GZIP);
             $fed = 0;
             $buffer = '';
-            while (inflate_get_status($context) !== ZLIB_STREAM_END && !feof($handle)) {
+            while (inflate_get_status($context) !== ZLIB_STREAM_END) {
                 $piece = fread($handle, self::PIECE);
                 if ($piece === false || $piece === '') {
                     break;
@@ -267,15 +309,17 @@ final class manifest_reader {
                     throw self::invalid('gzip');
                 }
                 $buffer .= $text;
-                while (($end = strpos($buffer, "\n")) !== false) {
-                    yield substr($buffer, 0, $end);
-                    $buffer = substr($buffer, $end + 1);
+                $from = 0;
+                while (($end = strpos($buffer, "\n", $from)) !== false) {
+                    yield substr($buffer, $from, $end - $from);
+                    $from = $end + 1;
                 }
+                $buffer = (string) substr($buffer, $from);
                 if (strlen($buffer) > self::MAX_LINE) {
                     throw self::invalid('long_line');
                 }
             }
-            if (inflate_get_status($context) !== ZLIB_STREAM_END || inflate_get_read_len($context) !== $fed || !feof($handle)) {
+            if (inflate_get_status($context) !== ZLIB_STREAM_END || inflate_get_read_len($context) !== $fed) {
                 throw self::invalid('gzip_end');
             }
             if (fread($handle, 1) !== '') {
@@ -337,21 +381,25 @@ final class manifest_reader {
             return false;
         }
         [$texts, $numbers] = self::FIELDS[$kind];
-        foreach ($texts as $field) {
-            if (!is_string($entry[$field] ?? null)) {
+        foreach ($texts as $field => $pattern) {
+            $value = $entry[$field] ?? null;
+            if (!is_string($value) || ($pattern !== null && preg_match($pattern, $value) !== 1)) {
                 return false;
             }
         }
         foreach ($numbers as $field) {
-            if (!is_int($entry[$field] ?? null)) {
+            if (!is_int($entry[$field] ?? null) || $entry[$field] < 0) {
                 return false;
             }
         }
-        if ($kind === 'db') {
-            return $entry['rows'] >= 0 && $entry['plainlength'] >= 0 && $entry['offset'] >= 0 && $entry['length'] >= 0;
+        // An item starts after the header of its chunk; chunk_reader refuses an earlier offset with a coding error.
+        if ($entry['offset'] < chunk_writer::HEADER) {
+            return false;
         }
-        return $entry['size'] >= 0 && $entry['offset'] >= 0 && $entry['length'] >= 0
-            && $entry['pieces'] >= 1 && $entry['piece'] >= 0 && $entry['piece'] < $entry['pieces'];
+        if ($kind === 'db') {
+            return $entry['from'] <= $entry['to'];
+        }
+        return $entry['pieces'] >= 1 && $entry['piece'] < $entry['pieces'];
     }
 
     /**

@@ -141,7 +141,16 @@ final class manifest_reader_test extends \advanced_testcase {
      */
     private function chunk_of(string $text, int $cut = 0): array {
         $gzip = gzencode($text, 6);
-        $gzip = $cut > 0 ? substr($gzip, 0, -$cut) : $gzip;
+        return $this->chunk_of_gzip($cut > 0 ? substr($gzip, 0, -$cut) : $gzip);
+    }
+
+    /**
+     * Makes a list of the given compressed bytes in a chunk of type 4.
+     *
+     * @param string $gzip The compressed list.
+     * @return array As built().
+     */
+    private function chunk_of_gzip(string $gzip): array {
         $path = make_request_directory() . '/manifest.chunk';
         $writer = new chunk_writer(
             $path,
@@ -215,8 +224,8 @@ final class manifest_reader_test extends \advanced_testcase {
      * @param string $text The lines of the list.
      */
     private function assert_unreadable(string $text): void {
-        $reader = $this->reader($this->chunk_of($text));
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($reader)));
+        $args = $this->chunk_of($text);
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     /**
@@ -232,18 +241,6 @@ final class manifest_reader_test extends \advanced_testcase {
             return $e->errorcode;
         }
         $this->fail('No exception');
-    }
-
-    /**
-     * Reads everything the reader gives, as an invalid list would be read.
-     *
-     * @param manifest_reader $reader The reader.
-     */
-    private static function read_all(manifest_reader $reader): void {
-        $reader->header();
-        foreach ($reader->entries() as $entry) {
-            unset($entry);
-        }
     }
 
     public function test_the_header_and_the_entries_are_read_as_they_were_written(): void {
@@ -319,14 +316,12 @@ final class manifest_reader_test extends \advanced_testcase {
     public function test_a_header_of_another_run_fails(): void {
         // The chunk is the one of this run and the signature is right, but the header says another run.
         $args = $this->chunk_of(self::text(self::header(['run_id' => self::OTHER_RUN]), self::entries()));
-        $reader = $this->reader($args);
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $reader->header()));
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => iterator_to_array($reader->entries())));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     public function test_a_header_of_another_site_fails(): void {
         $args = $this->chunk_of(self::text(self::header(['site_id' => '0b1c2d3e-4f50-4617-8899-aabbccddeef0']), self::entries()));
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)->header()));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     public function test_a_header_that_lacks_a_part_fails(): void {
@@ -334,21 +329,21 @@ final class manifest_reader_test extends \advanced_testcase {
             $header = self::header();
             unset($header[$key]);
             $args = $this->chunk_of(self::text($header, self::entries()));
-            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)->header()), $key);
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)), $key);
         }
     }
 
     public function test_a_header_of_another_version_fails(): void {
         foreach ([2, 0, '1', true, null] as $version) {
             $args = $this->chunk_of(self::text(self::header(['v' => $version]), self::entries()));
-            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)->header()));
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
         }
     }
 
     public function test_a_first_line_that_is_not_an_object_fails(): void {
         foreach (["[1,2]\n", "\"text\"\n", "not json\n", "\n", ''] as $first) {
             $args = $this->chunk_of($first . json_encode(['end' => true, 'entries' => 0]) . "\n");
-            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)->header()));
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
         }
     }
 
@@ -360,7 +355,7 @@ final class manifest_reader_test extends \advanced_testcase {
                 $args = $this->chunk_of(self::text(self::header(), $broken));
                 $this->assertSame(
                     'restore_manifest_invalid',
-                    $this->code_of(fn() => self::read_all($this->reader($args))),
+                    $this->code_of(fn() => $this->reader($args)),
                     $entry['t'] . ' ' . $field
                 );
             }
@@ -371,22 +366,22 @@ final class manifest_reader_test extends \advanced_testcase {
         $broken = self::entries();
         $broken[0]['rows'] = '40';
         $args = $this->chunk_of(self::text(self::header(), $broken));
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
         $broken = self::entries();
         $broken[1]['contenthash'] = 5;
         $args = $this->chunk_of(self::text(self::header(), $broken));
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
         $broken = self::entries();
         $broken[3]['pieces'] = null;
         $args = $this->chunk_of(self::text(self::header(), $broken));
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     public function test_an_entry_of_an_unknown_kind_fails(): void {
         foreach (['index', 'DB', '', null, 5] as $kind) {
             $entry = ['t' => $kind, 'size' => 1];
             $args = $this->chunk_of(self::text(self::header(), [$entry]));
-            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))));
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
         }
     }
 
@@ -399,15 +394,14 @@ final class manifest_reader_test extends \advanced_testcase {
 
     public function test_a_list_without_its_last_line_fails(): void {
         $args = $this->chunk_of(self::text(self::header(), self::entries(), null, false));
-        $reader = $this->reader($args);
-        // The header is there, so it reads; the entries cannot be trusted without the line that counts them.
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => iterator_to_array($reader->entries())));
+        // The entries cannot be trusted without the line that counts them: the reader is not made.
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     public function test_a_list_whose_last_line_counts_wrongly_fails(): void {
         foreach ([3, 5, 0] as $count) {
             $args = $this->chunk_of(self::text(self::header(), self::entries(), $count));
-            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))), "$count");
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)), "$count");
         }
         $text = self::text(self::header(), self::entries());
         $text = str_replace('"entries":4', '"entries":"4"', $text);
@@ -429,7 +423,7 @@ final class manifest_reader_test extends \advanced_testcase {
         }
         foreach ([1, 8, 200] as $cut) {
             $args = $this->chunk_of(self::text(self::header(), $entries), $cut);
-            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))), "$cut");
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)), "$cut");
         }
     }
 
@@ -445,7 +439,7 @@ final class manifest_reader_test extends \advanced_testcase {
         $writer->add_item('this is not compressed', 22);
         $info = $writer->finish();
         $args = $this->described($info->path, $info->size, $info->sha256base64);
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     public function test_bytes_after_the_gzip_fail(): void {
@@ -461,7 +455,7 @@ final class manifest_reader_test extends \advanced_testcase {
         $writer->add_item($gzip, strlen($gzip));
         $info = $writer->finish();
         $args = $this->described($info->path, $info->size, $info->sha256base64);
-        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => self::read_all($this->reader($args))));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($args)));
     }
 
     public function test_a_chunk_of_another_type_fails(): void {
@@ -503,6 +497,9 @@ final class manifest_reader_test extends \advanced_testcase {
         gc_collect_cycles();
 
         $before = memory_get_usage();
+        if (function_exists('memory_reset_peak_usage')) {
+            memory_reset_peak_usage();
+        }
         $peak = 0;
         $reader = $this->reader($args);
         $count = 0;
@@ -515,7 +512,161 @@ final class manifest_reader_test extends \advanced_testcase {
         $peak = max($peak, memory_get_usage() - $before, memory_get_peak_usage() - $before);
         $this->assertSame(100000, $count);
         $this->assertSame(99999, $last['size']);
-        $this->assertLessThan(64 * 1048576, $peak);
+        // The compressed list (about 7 MiB) is held once while it is written to the working file; the plain list is 20 MiB or
+        // more, which a reader that expands it whole could not stay under.
+        $this->assertLessThan(24 * 1048576, $peak);
+    }
+
+    /**
+     * Applies a change to the entry of a kind and says whether a reader can be made of the list.
+     *
+     * @param int $number Position in entries() of the kind: 0 db, 1 file, 2 dataroot, 3 code.
+     * @param array $changes The fields that are replaced.
+     * @return string The error code, or an empty string when the reader was made.
+     */
+    private function code_with_entry(int $number, array $changes): string {
+        $entries = self::entries();
+        $entries[$number] = $changes + $entries[$number];
+        $args = $this->chunk_of(self::text(self::header(), $entries));
+        try {
+            $this->reader($args);
+        } catch (plugin_exception $e) {
+            return $e->errorcode;
+        }
+        return '';
+    }
+
+    public function test_entries_with_a_value_out_of_range_fail_and_the_edges_pass(): void {
+        $bigint = 9999999999999999999;
+        // Each: [kind, field, values that fail, values that pass].
+        $cases = [
+            [0, 'from', [-1, $bigint, 41], [0, 40]],
+            [0, 'to', [-1, 0, $bigint], [1, 40]],
+            [0, 'rows', [-1, $bigint], [0, 1]],
+            [0, 'plainlength', [-1], [0, 1]],
+            [0, 'offset', [-1, 0, 85], [86, 87]],
+            [0, 'length', [-1], [0, 1]],
+            [1, 'size', [-1, $bigint], [0, 1]],
+            [1, 'offset', [-1, 85], [86]],
+            [1, 'length', [-1], [0]],
+            [1, 'piece', [-1, 1, 2], [0]],
+            [1, 'pieces', [-1, 0], [1]],
+            [2, 'size', [-1], [0]],
+            [2, 'piece', [-1, 1], [0]],
+            [2, 'pieces', [0, -1], [1]],
+            [3, 'offset', [85, -1], [86]],
+            [3, 'length', [-1], [0]],
+            [3, 'size', [-1], [0]],
+            [3, 'piece', [-1], [0]],
+        ];
+        foreach ($cases as [$number, $field, $failing, $passing]) {
+            foreach ($failing as $value) {
+                $this->assertSame('restore_manifest_invalid', $this->code_with_entry($number, [$field => $value]), "$field=$value");
+            }
+            foreach ($passing as $value) {
+                // From and to move together so that from <= to holds around the edge.
+                $changes = [$field => $value];
+                $this->assertSame('', $this->code_with_entry($number, $changes), "$field=$value");
+            }
+        }
+        // A piece is below the number of pieces: the last piece is the one before it.
+        $this->assertSame('', $this->code_with_entry(1, ['piece' => 2, 'pieces' => 3]));
+        $this->assertSame('restore_manifest_invalid', $this->code_with_entry(1, ['piece' => 3, 'pieces' => 3]));
+        // The first id is not above the last.
+        $this->assertSame('', $this->code_with_entry(0, ['from' => 7, 'to' => 7]));
+        $this->assertSame('restore_manifest_invalid', $this->code_with_entry(0, ['from' => 8, 'to' => 7]));
+    }
+
+    public function test_entries_with_a_field_of_the_wrong_form_fail(): void {
+        $hex64 = str_repeat('e', 64);
+        $cases = [
+            [0, 'chunk', ['../etc/passwd', str_repeat('A', 64), substr($hex64, 1), $hex64 . '0', $hex64 . "\n", '']],
+            [0, 'plainsha256', ['', substr($hex64, 1), str_repeat('G', 64), strtoupper(str_repeat('e', 64))]],
+            [0, 'table', ['', 'Course', 'mdl course', "course\n", 'course;drop', '../x']],
+            [1, 'contenthash', ['', str_repeat('a', 39), str_repeat('a', 41), str_repeat('A', 40), str_repeat('a', 40) . "\n"]],
+            [1, 'chunk', ['a/b', str_repeat('a', 63)]],
+            [2, 'sha256', ['', substr($hex64, 1), $hex64 . "\n", str_repeat('E', 64)]],
+            [2, 'chunk', ['..', str_repeat('g', 64)]],
+            [3, 'sha256', ['', str_repeat('z', 64)]],
+            [3, 'chunk', ['../../x', "\0" . substr($hex64, 1)]],
+        ];
+        foreach ($cases as [$number, $field, $values]) {
+            foreach ($values as $value) {
+                $this->assertSame('restore_manifest_invalid', $this->code_with_entry($number, [$field => $value]), "$field=$value");
+            }
+        }
+        $this->assertSame('', $this->code_with_entry(0, ['table' => 'tool_secbackup_runs_2']));
+    }
+
+    public function test_an_integer_too_large_for_php_and_an_extra_field_are_told_apart(): void {
+        // A number that does not fit in an integer is a float to PHP, which is not a count.
+        $text = str_replace('"rows":40', '"rows":99999999999999999999', self::text(self::header(), self::entries()));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($this->chunk_of($text))));
+        // A field that the restore does not know is left alone: a newer plugin may write more.
+        $this->assertSame('', $this->code_with_entry(1, ['future' => 'x']));
+    }
+
+    public function test_a_line_that_is_not_valid_utf8_fails(): void {
+        $text = self::text(self::header(), self::entries());
+        $text = str_replace('lang/ja/local.php', "lang/\xff\xfe.php", $text);
+        $this->assert_unreadable($text);
+    }
+
+    public function test_the_list_is_checked_when_the_reader_is_made_and_the_entries_are_counted(): void {
+        $reader = $this->reader($this->built(self::header(), self::entries()));
+        $this->assertSame(4, $reader->count());
+        $this->assertSame(0, $this->reader($this->built(self::header(), []))->count());
+        // An entry that is wrong far down the list stops the reader before any entry is given.
+        $entries = [];
+        for ($n = 0; $n < 300; $n++) {
+            $entries[] = self::entries()[1];
+        }
+        $entries[299]['piece'] = 5;
+        $this->assertSame('restore_manifest_invalid', $this->code_of(
+            fn() => $this->reader($this->chunk_of(self::text(self::header(), $entries)))
+        ));
+    }
+
+    public function test_a_list_whose_compressed_size_is_a_multiple_of_the_piece_is_read(): void {
+        // The end of the stream is met by a read of exactly one piece, so feof() is still false at that point.
+        foreach ([65536, 131072] as $target) {
+            $gzip = $this->gzip_of_size($target);
+            $this->assertSame($target, strlen($gzip));
+            $args = $this->chunk_of_gzip($gzip);
+            $reader = $this->reader($args);
+            $this->assertSame(self::entries(), iterator_to_array($reader->entries(), false));
+            $this->assertSame(4, $reader->count());
+            // One byte after the end of the stream is not part of the list.
+            $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $this->reader($this->chunk_of_gzip($gzip . 'x'))));
+        }
+    }
+
+    /**
+     * A compressed list of the entries of the tests whose size is exactly the given one.
+     *
+     * The header holds a filler that compresses to about half its length; the length that gives the size is found by
+     * stepping towards it.
+     *
+     * @param int $target Size in bytes.
+     * @return string
+     */
+    private function gzip_of_size(int $target): string {
+        $filler = '';
+        for ($block = 0; strlen($filler) < $target * 4; $block++) {
+            $filler .= hash('sha256', 'filler' . $block);
+        }
+        $length = $target * 2;
+        for ($try = 0; $try < 400; $try++) {
+            $header = self::header(['filler' => substr($filler, 0, $length)]);
+            $gzip = gzencode(self::text($header, self::entries()), 9);
+            $difference = $target - strlen($gzip);
+            if ($difference === 0) {
+                return $gzip;
+            }
+            $step = max(1, (int) (abs($difference) * 1.9));
+            $length += $difference > 0 ? $step : -$step;
+        }
+        $this->fail('No filler gives the size');
     }
 
     public function test_close_removes_the_working_file(): void {
@@ -528,6 +679,7 @@ final class manifest_reader_test extends \advanced_testcase {
         // Closing again does nothing, and a reader that is closed does not read.
         $reader->close();
         $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => $reader->header()));
+        $this->assertSame('restore_manifest_invalid', $this->code_of(fn() => iterator_to_array($reader->entries())));
     }
 
     public function test_the_working_file_goes_when_the_reader_is_dropped(): void {
