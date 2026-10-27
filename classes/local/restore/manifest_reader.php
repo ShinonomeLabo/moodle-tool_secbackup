@@ -53,7 +53,7 @@ final class manifest_reader {
     /** @var string[] The parts that every header has, which are lists or objects. */
     private const HEADER_PARTS = ['moodle', 'db', 'plugins', 'config', 'core_diff', 'missing_files'];
 
-    /** @var string Pattern of a SHA-256 (and of a chunk name) in lower-case hexadecimal; \z because $ matches before a line feed. */
+    /** @var string Pattern of a SHA-256 (and of a chunk name) in lower-case hex; \z because $ matches before a line feed. */
     private const HEX64 = '/\A[0-9a-f]{64}\z/';
 
     /** @var string Pattern of a content hash of Moodle (SHA-1). */
