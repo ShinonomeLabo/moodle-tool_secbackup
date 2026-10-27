@@ -639,7 +639,7 @@ final class extractor_test extends \advanced_testcase {
             'a root of the code that is not a component' => ['code', 'root', 'attendance'],
             'core in capitals' => ['code', 'root', 'Core'],
             'a component of a type that the code does not have' => ['code', 'root', 'qtype_unknown'],
-            'a path out of the folder of the plugin' => ['code', 'path', '../../outside'],
+            'a path out of the folder of the plugin' => ['code', 'path', '../../../outside'],
         ];
     }
 
@@ -663,6 +663,8 @@ final class extractor_test extends \advanced_testcase {
         $folders = array_values(array_diff(scandir(dirname($this->fixture->targetroot)), ['.', '..']));
         $this->assertSame(['chunks', 'dataroot', 'root', 'source', 'staging'], $folders);
         $this->assertFileDoesNotExist(dirname($this->fixture->targetroot) . '/outside');
+        $this->assertFileDoesNotExist($this->fixture->targetroot . '/outside');
+        $this->assertFileDoesNotExist($this->fixture->targetdataroot . '/outside');
         $this->assert_no_part_file();
     }
 
@@ -727,6 +729,36 @@ final class extractor_test extends \advanced_testcase {
         $this->assertSame([], self::listing($this->fixture->stagingdir));
     }
 
+    /**
+     * Blocks that say they are in pieces.
+     *
+     * @return array
+     */
+    public static function block_in_pieces_provider(): array {
+        return [
+            'the number of a piece' => [['piece' => 0]],
+            'a number of pieces' => [['pieces' => 1]],
+            'both' => [['piece' => 0, 'pieces' => 2]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('block_in_pieces_provider')]
+    /**
+     * A block is one item: an entry of a block that has the fields of pieces is refused, not joined with the next one.
+     *
+     * @dataProvider block_in_pieces_provider
+     * @param array $fields The fields added to the entry of the first block.
+     */
+    public function test_a_block_that_says_it_is_in_pieces_is_refused(array $fields): void {
+        $this->fixture->edit = static function (array $entries) use ($fields): array {
+            $index = self::first($entries, 'db');
+            $entries[$index] = $fields + $entries[$index];
+            return $entries;
+        };
+        $this->assertSame('restore_manifest_invalid', $this->failure_of($this->fixture->build()));
+        $this->assertSame([], self::listing($this->fixture->stagingdir));
+    }
+
     public function test_a_block_of_a_table_that_the_header_does_not_list_is_refused(): void {
         $this->fixture->header['db']['tables'] = ['course', 'tag'];
         $this->assertSame('restore_manifest_invalid', $this->failure_of($this->fixture->build()));
@@ -748,6 +780,96 @@ final class extractor_test extends \advanced_testcase {
         $before = self::working_files();
         $this->assertSame('restore_chunk_missing', $this->failure_of($input));
         $this->assertSame($before, self::working_files());
+    }
+
+    public function test_a_write_that_fails_in_the_middle_of_a_big_file_stops_at_once_and_leaves_nothing(): void {
+        $input = $this->fixture->build();
+        $big = $this->filedir(implode('', $this->fixture->pieces));
+        $extractor = $this->extractor($input);
+        // After the first piece, the extractor is given a handle that cannot be written, so that the next write fails.
+        $readonly = make_request_directory() . '/read-only';
+        file_put_contents($readonly, 'x');
+        $handle = fopen($readonly, 'rb');
+        $open = new \ReflectionProperty(extractor::class, 'open');
+        $swapped = null;
+        $this->onprogress = function () use ($extractor, $open, $handle, $big, &$swapped): void {
+            if ($swapped === null && is_file($big . '.part')) {
+                $state = $open->getValue($extractor);
+                $state['handle'] = $handle;
+                $open->setValue($extractor, $state);
+                $swapped = count($this->calls);
+            }
+        };
+        $e = $this->exception_of(static fn() => $extractor->run());
+        fclose($handle);
+        $this->assertSame('restore_write_failed', $e->errorcode);
+        $this->assertNotNull($swapped, 'The handle was replaced after the first piece.');
+        $this->assertCount($swapped, $this->calls, 'Nothing is done after the piece that could not be written.');
+        $this->assertFileDoesNotExist($big);
+        $this->assert_no_part_file();
+    }
+
+    public function test_a_piece_that_would_make_the_file_longer_than_its_size_is_not_written(): void {
+        $input = $this->fixture->build();
+        $middle = $this->fixture->entries[self::pieces($this->fixture->entries)[1]];
+        $size = strlen(implode('', $this->fixture->pieces));
+        $this->fixture->chunk($middle['chunk'], chunk_writer::TYPE_FILES, [str_repeat('x', $size + 100)]);
+        $big = $this->filedir(implode('', $this->fixture->pieces));
+        $sizes = [];
+        $this->onprogress = static function () use ($big, &$sizes): void {
+            clearstatcache(true);
+            if (is_file($big . '.part')) {
+                $sizes[] = filesize($big . '.part');
+            }
+        };
+        $this->assertSame('restore_content_mismatch', $this->failure_of($input));
+        $this->assertSame([strlen($this->fixture->pieces[0])], $sizes, 'No byte of the long piece reached the part file.');
+        $this->assertFileDoesNotExist($big);
+        $this->assert_no_part_file();
+    }
+
+    public function test_the_items_of_one_chunk_are_read_with_the_reader_that_opened_it(): void {
+        // The small files of the file store are in one chunk, opened once for all of them: a chunk that leaves the folder
+        // after its first item is still read to its end.
+        $input = $this->fixture->build();
+        $pack = $this->fixture->chunksdir . '/' . $this->fixture->entries[self::first($this->fixture->entries, 'file')]['chunk'];
+        $first = $this->filedir($this->fixture->smallfiles[0]);
+        $this->onprogress = static function () use ($pack, $first): void {
+            if (is_file($first) && is_file($pack)) {
+                unlink($pack);
+            }
+        };
+        $this->extractor($input)->run();
+        $this->assertFileDoesNotExist($pack);
+        foreach ($this->fixture->smallfiles as $content) {
+            $this->assertSame($content, file_get_contents($this->filedir($content)));
+        }
+    }
+
+    public function test_an_extractor_runs_once(): void {
+        $extractor = $this->extractor($this->fixture->build());
+        $extractor->run();
+        $this->expectException(\coding_exception::class);
+        $extractor->run();
+    }
+
+    public function test_a_file_of_the_moodle_code_left_open_is_refused_before_the_code_of_a_plugin_is_placed(): void {
+        // A list of code alone, whose Moodle code ends with lib/components.json without its last piece: the code of the plugin
+        // that comes first in the second pass would ask that file for its folder.
+        $this->fixture->edit = static function (array $entries): array {
+            $code = array_values(array_filter($entries, static fn(array $entry): bool => $entry['t'] === 'code'));
+            foreach ($code as $index => $entry) {
+                if ($entry['root'] === 'core' && $entry['path'] === 'lib/components.json') {
+                    unset($code[$index]);
+                    $code[] = ['pieces' => 2] + $entry;
+                }
+            }
+            return array_values($code);
+        };
+        $this->assertSame('restore_content_mismatch', $this->failure_of($this->fixture->build()));
+        $this->assertFileDoesNotExist($this->fixture->targetroot . '/lib/components.json');
+        $this->assertFileDoesNotExist($this->fixture->targetroot . '/mod');
+        $this->assert_no_part_file();
     }
 
     public function test_a_folder_that_cannot_be_written_fails(): void {

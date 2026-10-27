@@ -133,6 +133,9 @@ final class extractor {
     /** @var int Entries in the list. */
     private int $total = 0;
 
+    /** @var bool Whether run() has been called. */
+    private bool $ran = false;
+
     /**
      * Constructor.
      *
@@ -158,15 +161,20 @@ final class extractor {
     }
 
     /**
-     * Extracts the generation.
+     * Extracts the generation. An extractor runs once: a restore that starts again makes a new one.
      *
      * @return array The summary: moodle (of the header), db_family, tables, rows, files, plugins (the components whose code
      *     was written, in byte order) and missing_files (the files that the site had lost, which are not written).
      * @throws plugin_exception With restore_manifest_invalid, restore_core_official_unsupported, restore_chunk_missing,
      *     restore_chunk_corrupt, restore_content_mismatch, restore_path_unsafe or restore_write_failed. A file that was being
      *     written is aborted; the files written before it stay.
+     * @throws \coding_exception When it is called again.
      */
     public function run(): array {
+        if ($this->ran) {
+            throw new \coding_exception('An extractor runs once.');
+        }
+        $this->ran = true;
         $manifest = $this->input['manifest'];
         $this->manifest = new manifest_reader(
             $manifest['path'],
@@ -184,6 +192,11 @@ final class extractor {
             $this->total = $this->manifest->count();
             ($this->progress)($this->done, $this->total);
             $this->pass(true);
+            if ($this->open !== null) {
+                // A file of the Moodle code whose last piece the list does not have. Refused before the code is read for the
+                // folders of the plugins, which that file could be.
+                throw new plugin_exception('restore_content_mismatch');
+            }
             $this->plugins = new plugin_dirs($this->input['target_root']);
             $this->pass(false);
             $this->put('db/manifest.json', json_encode([
@@ -346,9 +359,10 @@ final class extractor {
                     unset($e);
                     throw new plugin_exception('restore_chunk_corrupt');
                 }
-                if (($entry['t'] === 'db' && !self::holds_plain_text($payload, $entry)) || !$this->write($payload)) {
+                if ($entry['t'] === 'db' && !self::holds_plain_text($payload, $entry)) {
                     throw new plugin_exception('restore_content_mismatch');
                 }
+                self::refuse($this->write($payload));
                 unset($payload);
                 $this->end($entry);
             }
@@ -365,7 +379,7 @@ final class extractor {
      *     code of a component to skip); else the writer, the path, the hash algorithm and digest of the whole file (null for a
      *     block, which is checked as it is read) and its size.
      * @throws plugin_exception With restore_path_unsafe when the entry names no place, and with restore_manifest_invalid for a
-     *     block of a table that the header does not list.
+     *     block of a table that the header does not list or a block in pieces.
      */
     private function place(array $entry, bool $core): array|false|null {
         $kind = $entry['t'];
@@ -375,6 +389,10 @@ final class extractor {
         if ($kind === 'db') {
             if (!array_key_exists($entry['table'], $this->tables)) {
                 throw new plugin_exception('restore_manifest_invalid', null, 'table');
+            }
+            // A block is one item: pieces would join blocks into one and count their rows twice.
+            if (array_key_exists('piece', $entry) || array_key_exists('pieces', $entry)) {
+                throw new plugin_exception('restore_manifest_invalid', null, 'block_pieces');
             }
             $path = 'db/' . (count($this->blocks) + 1) . '.jsonl.gz';
             return ['writer' => 'staging', 'path' => $path, 'algo' => null, 'digest' => null, 'size' => null];
@@ -409,8 +427,8 @@ final class extractor {
     /**
      * Opens the file of an entry, or checks that the entry is the next piece of the file that is open.
      *
-     * A file whose last piece the list does not have is still open when its pass ends: the next call, of the next pass or of
-     * put(), which always follow, refuses it.
+     * A file whose last piece the list does not have is still open when its pass ends: run() refuses it after the pass of the
+     * Moodle code, and the first put(), which always follows the other pass, refuses it after that one.
      *
      * @param array $place Where the entry is written (place()).
      * @param array $entry The entry.
@@ -432,40 +450,55 @@ final class extractor {
         }
         // Kept before the file is opened: when open() fails after it made the part file, abandon() aborts it.
         $this->open = $place + [
-            'whole' => $whole, 'next' => 0, 'pieces' => $entry['pieces'] ?? 1, 'written' => 0, 'short' => false,
+            'whole' => $whole, 'next' => 0, 'pieces' => $entry['pieces'] ?? 1, 'written' => 0,
             'hash' => $place['algo'] === null ? null : hash_init($place['algo']), 'handle' => null,
         ];
         $this->open['handle'] = $this->writers[$place['writer']]->open($place['path']);
     }
 
     /**
-     * Writes bytes to the open file and adds them to its hash. It does not throw, so the bytes are in no trace.
+     * Writes bytes to the open file and adds them to its hash. It does not throw, so the bytes are in no trace: refuse() throws
+     * what it gives.
      *
      * @param string $bytes The bytes.
-     * @return bool False when they would make the file longer than its size; nothing is written then. A write that fails is
-     *     noted, and end() reports it.
+     * @return string|null Null when they are written; restore_content_mismatch when they would make the file longer than its
+     *     size (nothing is written then); restore_write_failed when the write fails.
      */
-    private function write(string $bytes): bool {
+    private function write(string $bytes): ?string {
         $length = strlen($bytes);
         if ($this->open['size'] !== null && $this->open['written'] + $length > $this->open['size']) {
-            return false;
+            return 'restore_content_mismatch';
         }
         $handle = $this->open['handle'];
         $written = error_silencer::run(static fn() => fwrite($handle, $bytes), $warning);
-        $this->open['short'] = $this->open['short'] || $written !== $length;
+        if ($written !== $length) {
+            return 'restore_write_failed';
+        }
         $this->open['written'] += $length;
         if ($this->open['hash'] !== null) {
             hash_update($this->open['hash'], $bytes);
         }
-        return true;
+        return null;
+    }
+
+    /**
+     * Throws a failure that write() gave.
+     *
+     * @param string|null $failure The error code, or null for none.
+     * @throws plugin_exception With the error code.
+     */
+    private static function refuse(?string $failure): void {
+        if ($failure !== null) {
+            throw new plugin_exception($failure);
+        }
     }
 
     /**
      * Ends a piece: after the last one, checks the file and gives it its name, and counts it.
      *
      * @param array $entry The entry of the piece.
-     * @throws plugin_exception With restore_write_failed when a write failed, with restore_content_mismatch when the file has
-     *     another size or hash than the list says, and as tree_writer commit() does.
+     * @throws plugin_exception With restore_content_mismatch when the file has another size or hash than the list says, and as
+     *     tree_writer commit() does.
      */
     private function end(array $entry): void {
         $this->open['next']++;
@@ -473,11 +506,11 @@ final class extractor {
             return;
         }
         $open = $this->open;
-        $mismatch = $open['hash'] !== null
-            && ($open['written'] !== $open['size'] || !hash_equals($open['digest'], hash_final($open['hash'])));
-        if ($open['short'] || $mismatch) {
-            // A write that failed comes first: it is why the content is not whole.
-            throw new plugin_exception($open['short'] ? 'restore_write_failed' : 'restore_content_mismatch');
+        if (
+            $open['hash'] !== null
+            && ($open['written'] !== $open['size'] || !hash_equals($open['digest'], hash_final($open['hash'])))
+        ) {
+            throw new plugin_exception('restore_content_mismatch');
         }
         $this->writers[$open['writer']]->commit($open['path']);
         $this->open = null;
@@ -502,7 +535,7 @@ final class extractor {
     private function put(string $path, string $text): void {
         $place = ['writer' => 'staging', 'path' => $path, 'algo' => null, 'digest' => null, 'size' => null];
         $this->begin($place, ['t' => 'staging', 'path' => $path]);
-        $this->write($text);
+        self::refuse($this->write($text));
         $this->end(['t' => 'staging']);
     }
 
