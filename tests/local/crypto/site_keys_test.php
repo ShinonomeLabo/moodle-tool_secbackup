@@ -206,7 +206,13 @@ final class site_keys_test extends \basic_testcase {
         };
         return [
             'a changed byte in the sealed data key' => [$flip(40)],
-            'a changed type' => [$flip(5)],
+            // From 1 to 0, which the header refuses.
+            'a type that does not exist' => [$flip(5)],
+            // From 1 to 2: the header takes it, and the authenticated data of the frames, which holds the type, refuses it.
+            'another type that exists' => [function (string $bytes): string {
+                $bytes[5] = chr(chunk_writer::TYPE_FILES);
+                return $bytes;
+            }],
             'a changed byte in the first item' => [$flip(120)],
             'the header cut short' => [fn(string $bytes) => substr($bytes, 0, 50)],
             'the first item cut short' => [fn(string $bytes) => substr($bytes, 0, 120)],

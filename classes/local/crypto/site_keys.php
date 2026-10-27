@@ -33,7 +33,7 @@ use tool_secbackup\local\plugin_exception;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class site_keys {
-    /** @var int The most keys a site has: the backup service keeps that many versions. */
+    /** @var int The most keys that the backup service gives a restore, the newest first. */
     public const MAX_KEYS = 10;
 
     /** @var \WeakMap|null The key pairs of each object: [secret key, public key] each, in the order of trying. */
@@ -91,6 +91,8 @@ final class site_keys {
      * The header of a chunk holds its data key sealed to one key of the site, so it tells which key opens the chunk. The site,
      * the name and the type are in the authenticated data of every frame, so the first item, which every chunk has at offset 86,
      * is read too: a chunk of another site or put in the place of another chunk does not open, even with the right key.
+     * That tells one chunk from another, not where its bytes come from: the seal does not authenticate its sender, so anybody
+     * who knows the public key of the site can make a chunk that opens. The digests in the signed manifest show that.
      *
      * @param string $path Path of the chunk.
      * @param string $siteid Site ID at the backup service.
