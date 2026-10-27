@@ -33,6 +33,14 @@ check 0 "$dir/restore.php" --help
 check 1 "$dir/restore.php" --no-such-option
 # The extraction with nothing on its input: it gives its public key, finds no keys and ends with the error line (1).
 check 1 "$dir/restore.php" --extract </dev/null
+# Whatever PHP shows goes to the error stream: every line on the standard output of the extraction is JSON.
+stdout="$("$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php -d display_errors=stdout -d error_reporting=-1 \
+    "$dir/restore.php" --extract </dev/null 2>/dev/null | grep -v '^Including local options')" || true
+jsoncheck='while (($l = fgets(STDIN)) !== false) { json_decode($l, true, 512, JSON_THROW_ON_ERROR); }'
+if [ -z "$stdout" ] || ! printf '%s\n' "$stdout" | php -r "$jsoncheck"; then
+    echo "restore.php --extract wrote a line that is not JSON to the standard output" >&2
+    failed=1
+fi
 check 1 "$dir/backup.php" --no-such-option
 # Without --now the backup goes on with a running one until it ends, so the plain run is made only on a site that has none:
 # then it runs nothing (2). A site with a running backup (or a check that fails) fails this script without that run.

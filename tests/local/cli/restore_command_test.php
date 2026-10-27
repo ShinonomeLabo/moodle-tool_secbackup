@@ -228,6 +228,52 @@ final class restore_command_test extends \advanced_testcase {
         $this->assertGreaterThanOrEqual(get_real_size('1G'), get_real_size($inside));
     }
 
+    public function test_what_is_echoed_during_the_extraction_goes_to_the_error_stream_and_not_to_the_lines(): void {
+        $display = ini_get('display_errors');
+        $level = ob_get_level();
+        $seen = null;
+        [$code, $lines, $err, $raw] = $this->run_command(
+            [$this->keys_line(), $this->go_line(self::some_input())],
+            $this->fake(function (\Closure $progress) use (&$seen): array {
+                $seen = ini_get('display_errors');
+                $progress(0, 3);
+                echo 'stray text of a library';
+                debugging('stray debugging of Moodle', DEBUG_DEVELOPER);
+                $progress(3, 3);
+                print "more\n";
+                return ['rows' => 1];
+            })
+        );
+        $this->assertDebuggingCalled();
+        $this->assertSame(0, $code);
+        $this->assertSame('stderr', $seen, 'The errors and warnings of PHP are shown on the error stream.');
+        $this->assertSame($display, ini_get('display_errors'));
+        $this->assertSame($level, ob_get_level());
+        foreach (explode("\n", rtrim($raw, "\n")) as $line) {
+            $this->assertIsArray(json_decode($line, true), $line);
+        }
+        $this->assertCount(5, $lines);
+        $this->assertStringContainsString('stray text of a library', $err);
+        $this->assertStringContainsString('more', $err);
+        $this->assertStringNotContainsString('stray', $raw);
+    }
+
+    public function test_what_is_echoed_before_a_failure_goes_to_the_error_stream_and_the_buffer_is_closed(): void {
+        $level = ob_get_level();
+        [$code, $lines, $err, $raw] = $this->run_command(
+            [$this->keys_line(), $this->go_line(self::some_input())],
+            $this->fake(function (): array {
+                echo 'stray before the failure';
+                throw new plugin_exception('restore_write_failed');
+            })
+        );
+        $this->assertSame(1, $code);
+        $this->assertSame($level, ob_get_level());
+        $this->assertSame(['type' => 'error', 'code' => 'restore_write_failed'], end($lines));
+        $this->assertStringContainsString('stray before the failure', $err);
+        $this->assertStringNotContainsString('stray', $raw);
+    }
+
     /**
      * The calls of the extractor and the progress lines that they make due.
      *

@@ -116,6 +116,17 @@ final class restore_command {
      * @return int EXIT_DONE, or EXIT_FAILED after one line of the error (a failure of the plugin) or none.
      */
     public function extract(): int {
+        // The lines of the agreement are the only thing on the standard output: the restore host fails the extraction at a line
+        // that is not JSON. They are written to the stream itself, not echoed. What anything else echoes (debugging() of
+        // Moodle, a library) goes to the error stream, and the errors and warnings of PHP are shown there too.
+        $display = ini_set('display_errors', 'stderr');
+        $level = ob_get_level();
+        ob_start(function (string $text): string {
+            if ($text !== '') {
+                $this->say(rtrim($text, "\n"));
+            }
+            return '';
+        }, 1);
         try {
             // The compressed list of a million entries is about 72 MB and its peak is two or three times that.
             raise_memory_limit(MEMORY_HUGE);
@@ -135,6 +146,11 @@ final class restore_command {
             // an error line for a failure that the plugin did not expect.
             $this->say(get_string('cli_restore_failed', 'tool_secbackup', get_class($e)));
             return self::EXIT_FAILED;
+        } finally {
+            while (ob_get_level() > $level) {
+                ob_end_flush();
+            }
+            ini_set('display_errors', (string) $display);
         }
     }
 
