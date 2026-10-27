@@ -32,7 +32,7 @@ use tool_secbackup\local\plugin_exception;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class protocol {
-    /** @var int The most bytes of a line that a restore host sends, without the line break. */
+    /** @var int The most bytes of a line, with its line break: the restore host counts them in the same way. */
     public const MAX_LINE = 65536;
 
     /** @var string[][] The members of each message of the restore host, besides its type, and the type of each. */
@@ -63,10 +63,13 @@ final class protocol {
      *
      * @param array $message The message.
      * @throws \JsonException When the message cannot be written as JSON.
-     * @throws \RuntimeException When the line cannot be written.
+     * @throws \RuntimeException When the line is longer than MAX_LINE bytes with its line break, or cannot be written.
      */
     public function send(array $message): void {
         $line = json_encode($message, self::JSON) . "\n";
+        if (strlen($line) > self::MAX_LINE) {
+            throw new \RuntimeException('A line is longer than the restore host reads.');
+        }
         $written = error_silencer::run(fn() => fwrite($this->out, $line), $warning);
         if ($written !== strlen($line) || !error_silencer::run(fn() => fflush($this->out), $warning)) {
             throw new \RuntimeException('A line could not be written.');
@@ -77,7 +80,7 @@ final class protocol {
      * Reads the next line and checks that it is the message that is expected.
      *
      * @param string $type The type of the message: site_keys or go.
-     * @param int $maxbytes The most bytes of the line, without its line break.
+     * @param int $maxbytes The most bytes of the line, with its line break.
      * @return array The message: its type and its members, of the shape that the type has.
      * @throws plugin_exception With restore_input_invalid when there is no line, the line is longer than $maxbytes, is not a
      *     JSON object, is a message of another type, lacks a member, has a member that is not known or not of its shape.
@@ -87,14 +90,14 @@ final class protocol {
         if (!isset(self::MESSAGES[$type])) {
             throw new \coding_exception('The restore host does not send a message of the type ' . $type . '.');
         }
-        // One byte more than the longest line is read: the line break of a line of $maxbytes, or the byte that is too much.
-        $line = error_silencer::run(fn() => fgets($this->in, $maxbytes + 2), $warning);
+        // At most $maxbytes bytes are read: a line that fills them without its line break is too long.
+        $line = error_silencer::run(fn() => fgets($this->in, $maxbytes + 1), $warning);
         if ($line === false) {
             throw self::invalid();
         }
         if (str_ends_with($line, "\n")) {
             $line = substr($line, 0, -1);
-        } else if (strlen($line) > $maxbytes) {
+        } else if (strlen($line) >= $maxbytes) {
             throw self::invalid();
         }
         try {

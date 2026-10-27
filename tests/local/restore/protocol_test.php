@@ -94,6 +94,20 @@ final class protocol_test extends \advanced_testcase {
         $protocol->send(['type' => 'x']);
     }
 
+    public function test_a_line_of_65536_bytes_with_its_line_break_is_sent_and_a_longer_one_is_not(): void {
+        $base = strlen(json_encode(['type' => 'x', 'pad' => ''])) + 1;
+        [$protocol, $out] = self::talk('');
+        $protocol->send(['type' => 'x', 'pad' => str_repeat('a', 65536 - $base)]);
+        $this->assertSame(65536, strlen(self::written($out)));
+        [$protocol, $out] = self::talk('');
+        try {
+            $protocol->send(['type' => 'x', 'pad' => str_repeat('a', 65537 - $base)]);
+            $this->fail('No exception');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('', self::written($out), 'Nothing of the line is written.');
+        }
+    }
+
     public function test_a_message_that_is_not_json_is_a_failure(): void {
         [$protocol] = self::talk('');
         $this->expectException(\JsonException::class);
@@ -123,8 +137,8 @@ final class protocol_test extends \advanced_testcase {
     public function test_a_line_at_the_limit_leaves_the_next_line_to_be_read(): void {
         $line = '{"type":"go","input":"/x"}';
         [$protocol] = self::talk($line . "\n" . $line . "\n");
-        $this->assertSame('/x', $protocol->receive('go', strlen($line))['input']);
-        $this->assertSame('/x', $protocol->receive('go', strlen($line))['input']);
+        $this->assertSame('/x', $protocol->receive('go', strlen($line) + 1)['input']);
+        $this->assertSame('/x', $protocol->receive('go', strlen($line) + 1)['input']);
     }
 
     /**
@@ -136,17 +150,17 @@ final class protocol_test extends \advanced_testcase {
         $line = '{"type":"go","input":"/x"}';
         $size = strlen($line);
         return [
-            'at the limit, with a line break' => [$line . "\n", $size, true],
-            'at the limit, at the end of the input' => [$line, $size, true],
-            'one byte over, with a line break' => [$line . "\n", $size - 1, false],
-            'one byte over, at the end of the input' => [$line, $size - 1, false],
-            'far over' => [str_repeat(' ', 5000) . $line . "\n", $size, false],
+            'at the limit, with a line break' => [$line . "\n", $size + 1, true],
+            'at the limit, at the end of the input' => [$line, $size + 1, true],
+            'one byte over, with a line break' => [$line . "\n", $size, false],
+            'one byte over, at the end of the input' => [$line, $size, false],
+            'far over' => [str_repeat(' ', 5000) . $line . "\n", $size + 1, false],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('limit_provider')]
     /**
-     * A line may be as long as the limit, without its line break, and not longer.
+     * A line may be as long as the limit, with its line break, and not longer.
      *
      * @dataProvider limit_provider
      * @param string $text What the restore host sends.
@@ -165,7 +179,7 @@ final class protocol_test extends \advanced_testcase {
     public function test_the_limit_is_64_kib_unless_another_is_given(): void {
         $sealed = array_fill(0, 600, str_repeat('A', 100));
         $line = json_encode(['type' => 'site_keys', 'sealed' => $sealed]);
-        $this->assertLessThan(65536, strlen($line));
+        $this->assertLessThan(65535, strlen($line));
         [$protocol] = self::talk($line . "\n");
         $this->assertSame($sealed, $protocol->receive('site_keys')['sealed']);
         $line = json_encode(['type' => 'site_keys', 'sealed' => array_fill(0, 700, str_repeat('A', 100))]);

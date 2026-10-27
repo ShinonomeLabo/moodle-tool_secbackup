@@ -33,7 +33,8 @@ check 0 "$dir/restore.php" --help
 check 1 "$dir/restore.php" --no-such-option
 # The extraction with nothing on its input: it gives its public key, finds no keys and ends with the error line (1).
 check 1 "$dir/restore.php" --extract </dev/null
-# Whatever PHP shows goes to the error stream: every line on the standard output of the extraction is JSON.
+# Whatever PHP shows goes to the error stream: every line on the standard output of the extraction is JSON. The line that
+# moodle-docker-compose itself prints before the command is not the command's, and is left out.
 stdout="$("$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php -d display_errors=stdout -d error_reporting=-1 \
     "$dir/restore.php" --extract </dev/null 2>/dev/null | grep -v '^Including local options')" || true
 jsoncheck='while (($l = fgets(STDIN)) !== false) { json_decode($l, true, 512, JSON_THROW_ON_ERROR); }'

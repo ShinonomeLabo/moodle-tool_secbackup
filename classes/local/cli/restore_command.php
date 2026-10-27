@@ -67,6 +67,9 @@ final class restore_command {
     /** @var \Closure Makes the extractor: takes the input, the keys and the progress function. */
     private \Closure $extractors;
 
+    /** @var self|null The command that is extracting, for the text that is not one of its lines. */
+    private static ?self $active = null;
+
     /** @var int|null Entries done at the last progress line; null before the first. */
     private ?int $lastdone = null;
 
@@ -111,20 +114,36 @@ final class restore_command {
     }
 
     /**
+     * Gives text that something else wrote while the extraction runs to the error stream.
+     *
+     * @param string $text The text.
+     */
+    public static function stray(string $text): void {
+        if (self::$active !== null && $text !== '') {
+            self::$active->say(rtrim($text, "\n"));
+        }
+    }
+
+    /**
      * Extracts the generation that the restore host names, over the lines of the agreement.
      *
      * @return int EXIT_DONE, or EXIT_FAILED after one line of the error (a failure of the plugin) or none.
      */
     public function extract(): int {
         // The lines of the agreement are the only thing on the standard output: the restore host fails the extraction at a line
-        // that is not JSON. They are written to the stream itself, not echoed. What anything else echoes (debugging() of
-        // Moodle, a library) goes to the error stream, and the errors and warnings of PHP are shown there too.
+        // that is not JSON. They are written to the stream itself, not echoed. What is echoed meanwhile (debugging() of Moodle, a
+        // library) is caught by an output buffer and goes to the error stream, and so does what mtrace() of Moodle writes, which
+        // does not pass the buffer, and the errors and warnings of PHP. cli_writeln() and a write to STDOUT are not caught: the
+        // extraction does not use them.
+        global $CFG;
+        require_once(__DIR__ . '/../../../restore_mtrace.php');
         $display = ini_set('display_errors', 'stderr');
+        $wrapper = $CFG->mtrace_wrapper ?? null;
+        $CFG->mtrace_wrapper = 'tool_secbackup_restore_mtrace';
+        self::$active = $this;
         $level = ob_get_level();
-        ob_start(function (string $text): string {
-            if ($text !== '') {
-                $this->say(rtrim($text, "\n"));
-            }
+        ob_start(static function (string $text): string {
+            self::stray($text);
             return '';
         }, 1);
         try {
@@ -151,6 +170,12 @@ final class restore_command {
                 ob_end_flush();
             }
             ini_set('display_errors', (string) $display);
+            self::$active = null;
+            if ($wrapper === null) {
+                unset($CFG->mtrace_wrapper);
+            } else {
+                $CFG->mtrace_wrapper = $wrapper;
+            }
         }
     }
 

@@ -32,5 +32,6 @@ return new class extends phpunit_coverage_info {
     protected $includelistfolders = ['classes', 'cli', 'db', 'lang'];
 
     /** @var array Files to include. */
-    protected $includelistfiles = ['version.php', 'settings.php', 'index.php', 'connect.php', 'diagnostics.php'];
+    protected $includelistfiles = ['version.php', 'settings.php', 'index.php', 'connect.php', 'diagnostics.php',
+        'restore_mtrace.php'];
 };

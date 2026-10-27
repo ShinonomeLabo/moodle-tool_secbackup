@@ -25,6 +25,16 @@
 
 define('CLI_SCRIPT', true);
 
+// phpcs:disable moodle.Files.MoodleInternal.MoodleInternalGlobalState
+// The standard output is for the lines of the extraction: whatever PHP shows or something echoes, also while Moodle starts,
+// goes to the error stream.
+ini_set('display_errors', 'stderr');
+ob_start(static function (string $text): string {
+    fwrite(STDERR, $text);
+    return '';
+}, 1);
+// phpcs:enable moodle.Files.MoodleInternal.MoodleInternalGlobalState
+
 require(__DIR__ . '/../../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
 

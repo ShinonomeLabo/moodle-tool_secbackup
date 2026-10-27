@@ -23,6 +23,7 @@ use tool_secbackup\tests\fail_after_filter;
 use tool_secbackup\tests\restore_fixture;
 
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\cli\restore_command::class)]
+#[\PHPUnit\Framework\Attributes\CoversFunction('tool_secbackup_restore_mtrace')]
 /**
  * Tests for the extraction on the command line: the talk with the restore host, the progress lines and the errors.
  *
@@ -33,6 +34,7 @@ use tool_secbackup\tests\restore_fixture;
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  * @covers     \tool_secbackup\local\cli\restore_command
+ * @covers     ::tool_secbackup_restore_mtrace
  */
 final class restore_command_test extends \advanced_testcase {
     /** @var restore_fixture The generation. */
@@ -212,8 +214,13 @@ final class restore_command_test extends \advanced_testcase {
     public function test_the_memory_limit_is_raised_before_the_extractor_runs(): void {
         $before = ini_get('memory_limit');
         $inside = null;
+        // Lower than what is raised to, and not lower than what is in use, which PHP refuses.
+        $low = max(get_real_size('192M'), memory_get_usage(true) + get_real_size('32M'));
+        if ($low >= get_real_size('1G')) {
+            $this->markTestSkipped('The process uses too much memory to lower the limit below the one that is raised to.');
+        }
         try {
-            ini_set('memory_limit', '192M');
+            ini_set('memory_limit', (string) $low);
             $this->run_command(
                 [$this->keys_line(), $this->go_line(self::some_input())],
                 $this->fake(function () use (&$inside): array {
@@ -228,7 +235,7 @@ final class restore_command_test extends \advanced_testcase {
         $this->assertGreaterThanOrEqual(get_real_size('1G'), get_real_size($inside));
     }
 
-    public function test_what_is_echoed_during_the_extraction_goes_to_the_error_stream_and_not_to_the_lines(): void {
+    public function test_what_is_echoed_or_traced_during_the_extraction_goes_to_the_error_stream_and_not_to_the_lines(): void {
         $display = ini_get('display_errors');
         $level = ob_get_level();
         $seen = null;
@@ -238,6 +245,8 @@ final class restore_command_test extends \advanced_testcase {
                 $seen = ini_get('display_errors');
                 $progress(0, 3);
                 echo 'stray text of a library';
+                echo "++ stray debugging in the form of the command line ++\n";
+                mtrace('stray trace of Moodle');
                 debugging('stray debugging of Moodle', DEBUG_DEVELOPER);
                 $progress(3, 3);
                 print "more\n";
@@ -255,7 +264,35 @@ final class restore_command_test extends \advanced_testcase {
         $this->assertCount(5, $lines);
         $this->assertStringContainsString('stray text of a library', $err);
         $this->assertStringContainsString('more', $err);
+        $this->assertStringContainsString("++ stray debugging in the form of the command line ++\n", $err);
+        $this->assertStringContainsString('stray trace of Moodle', $err);
         $this->assertStringNotContainsString('stray', $raw);
+    }
+
+    public function test_mtrace_is_given_to_the_error_stream_while_the_extraction_runs_and_the_old_setting_comes_back(): void {
+        global $CFG;
+        foreach ([null, 'some_function'] as $old) {
+            if ($old === null) {
+                unset($CFG->mtrace_wrapper);
+            } else {
+                $CFG->mtrace_wrapper = $old;
+            }
+            $inside = null;
+            $this->exchange = new key_exchange();
+            $this->run_command(
+                [$this->keys_line(), $this->go_line(self::some_input())],
+                $this->fake(function () use (&$inside): array {
+                    global $CFG;
+                    $inside = $CFG->mtrace_wrapper;
+                    return [];
+                })
+            );
+            $this->assertSame('tool_secbackup_restore_mtrace', $inside);
+            $this->assertTrue(function_exists($inside));
+            $this->assertSame($old, $CFG->mtrace_wrapper ?? null);
+        }
+        // Outside the extraction the function gives nothing to anyone.
+        tool_secbackup_restore_mtrace('nobody listens', "\n");
     }
 
     public function test_what_is_echoed_before_a_failure_goes_to_the_error_stream_and_the_buffer_is_closed(): void {
