@@ -148,6 +148,19 @@ $string['cli_diagnose_help'] = 'このサーバからバックアップのサー
 cron を動かす利用者で実行してください。例:
 $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/diagnose.php
 (Moodle 5.1 以降: public/admin/tool/secbackup/cli/diagnose.php)';
+$string['cli_restore_failed'] = '復元が、{$a} の種類の誤りで止まりました。';
+$string['cli_restore_help'] = 'ダウンロードしたバックアップを、戻すためのサーバで取り出し、またはデータベースへ取り込みます。戻すためのサーバが root で動かし、標準入力と標準出力で 1 行ずつ JSON をやり取りします。
+
+オプション:
+--extract    バックアップを取り出す。戻すためのサーバが、サイトの封をした鍵と入力ファイルのパスを送ります。
+--import     取り出したデータベースをこのサイトへ取り込む。
+-h, --help   この説明を出す。
+
+--extract と --import のどちらか 1 つだけを指定してください。終了コード: 0 完了、1 失敗 (原因を連携ツールが知っているときは、標準出力の誤りの行 {"type":"error","code":...} が伝えます)。
+
+戻すためのサーバで実行してください。例:
+$ sudo php admin/tool/secbackup/cli/restore.php --extract
+(Moodle 5.1 以降: public/admin/tool/secbackup/cli/restore.php)';
 $string['clock_skew_warning'] = 'このサーバの時刻が、サービスの時刻と約 {$a} 分ずれています。5 分を超えてずれると、サービスがこのサイトの要求を受け付けなくなります。NTP などでこのサーバの時刻を合わせてください。';
 $string['connect_again_explain'] = 'プラットフォームで登録コードを発行し直したときや、このサイトの公開鍵を作り直したときは、ここで登録し直してください。';
 $string['connect_again_heading'] = '登録し直す';
