@@ -42,6 +42,9 @@ final class plugin_dirs_test extends \advanced_testcase {
         'local' => 'local',
     ];
 
+    /** @var array Subsystems of the trees (a part): one with a folder and two without, as lib/components.json could have them. */
+    private const SUBSYSTEMS = ['course' => 'course', 'help' => null, 'pagetype' => ''];
+
     protected function setUp(): void {
         parent::setUp();
         $this->resetAfterTest();
@@ -68,7 +71,7 @@ final class plugin_dirs_test extends \advanced_testcase {
      */
     private static function tree_405(): string {
         $root = make_request_directory();
-        self::put($root, 'lib/components.json', json_encode(['plugintypes' => self::TYPES_405, 'subsystems' => []]));
+        self::put($root, 'lib/components.json', json_encode(['plugintypes' => self::TYPES_405, 'subsystems' => self::SUBSYSTEMS]));
         self::put($root, 'mod/assign/db/subplugins.json', json_encode([
             'plugintypes' => ['assignsubmission' => 'mod/assign/submission', 'assignfeedback' => 'mod/assign/feedback'],
         ]));
@@ -83,7 +86,7 @@ final class plugin_dirs_test extends \advanced_testcase {
     private static function tree_501(): string {
         $root = make_request_directory();
         $types = array_map(static fn(string $folder): string => 'public/' . $folder, self::TYPES_405);
-        self::put($root, 'lib/components.json', json_encode(['plugintypes' => $types, 'subsystems' => []]));
+        self::put($root, 'lib/components.json', json_encode(['plugintypes' => $types, 'subsystems' => self::SUBSYSTEMS]));
         self::put($root, 'public/version.php', '<?php');
         self::put($root, 'public/mod/assign/db/subplugins.json', json_encode([
             'subplugintypes' => ['assignsubmission' => 'submission', 'assignfeedback' => 'feedback'],
@@ -159,9 +162,9 @@ final class plugin_dirs_test extends \advanced_testcase {
         // The same type in two parents: mod comes before tool, and local comes last; in a type, the names in byte order.
         self::put($root, 'mod/zeta/db/subplugins.json', json_encode(['plugintypes' => ['shared' => 'mod/zeta/shared']]));
         self::put($root, 'mod/alpha/db/subplugins.json', json_encode(['plugintypes' => ['shared' => 'mod/alpha/shared']]));
-        self::put($root, 'admin/tool/a/db/subplugins.json', json_encode(['plugintypes' => ['shared' => 'admin/tool/a/s']]));
-        self::put($root, 'local/a/db/subplugins.json', json_encode([
-            'plugintypes' => ['shared' => 'local/a/s', 'localsub' => 'local/a/sub'],
+        self::put($root, 'admin/tool/aa/db/subplugins.json', json_encode(['plugintypes' => ['shared' => 'admin/tool/aa/s']]));
+        self::put($root, 'local/aa/db/subplugins.json', json_encode([
+            'plugintypes' => ['shared' => 'local/aa/s', 'localsub' => 'local/aa/sub'],
         ]));
         self::put($root, 'lib/editor/tiny/db/subplugins.json', json_encode([
             'plugintypes' => ['tiny' => 'lib/editor/tiny/plugins'],
@@ -169,7 +172,7 @@ final class plugin_dirs_test extends \advanced_testcase {
         $dirs = new plugin_dirs($root);
         $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder('blockx_y')));
         $this->assertSame('mod/alpha/shared/y', $dirs->folder('shared_y'));
-        $this->assertSame('local/a/sub/y', $dirs->folder('localsub_y'));
+        $this->assertSame('local/aa/sub/y', $dirs->folder('localsub_y'));
         $this->assertSame('lib/editor/tiny/plugins/media2', $dirs->folder('tiny_media2'));
     }
 
@@ -223,6 +226,7 @@ final class plugin_dirs_test extends \advanced_testcase {
             'slash' => ['mod_a/b'],
             'parent folder' => ['mod_../x'],
             'line feed at the end' => ["mod_x\n"],
+            'line feed at the end of the type' => ["mod\n_x"],
             'nul' => ["mod_x\0"],
             'unknown type' => ['nosuchtype_x'],
             'core' => ['core_course'],
@@ -298,5 +302,165 @@ final class plugin_dirs_test extends \advanced_testcase {
         $this->assertSame('mod/attendance', $dirs->folder('mod_attendance'));
         self::put($root, 'lib/components.json', json_encode(['plugintypes' => ['mod' => 'changed']]));
         $this->assertSame('mod/attendance', $dirs->folder('mod_attendance'));
+    }
+
+    public function test_a_type_with_a_line_feed_at_the_end_is_not_looked_up(): void {
+        $root = make_request_directory();
+        self::put($root, 'lib/components.json', json_encode(['plugintypes' => ["mod\n" => 'mod', 'mod' => 'mod']]));
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder("mod\n_x")));
+    }
+
+    /**
+     * Folders of a parent type in lib/components.json that are not plain relative paths.
+     *
+     * @return array
+     */
+    public static function bad_parent_folder_provider(): array {
+        return [
+            'nul' => ["mo\0d"],
+            'out of the tree' => ['../outside'],
+            'absolute' => ['/outside'],
+            'not text' => [['mod']],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('bad_parent_folder_provider')]
+    /**
+     * The folder of a parent type is checked before it is listed: a folder that is not plain stops the lookup.
+     *
+     * @dataProvider bad_parent_folder_provider
+     * @param mixed $folder The folder that lib/components.json gives to the type mod.
+     */
+    public function test_a_parent_folder_that_is_not_a_plain_relative_path_stops_before_it_is_read(mixed $folder): void {
+        $dir = make_request_directory();
+        $root = $dir . '/root';
+        // What lies where the folder leads, out of the tree, would give a plain folder.
+        self::put($dir, 'outside/x/db/subplugins.json', json_encode([
+            'plugintypes' => ['assignsubmission' => 'mod/assign/submission'],
+        ]));
+        self::put($root, 'lib/components.json', json_encode(['plugintypes' => ['mod' => $folder, 'local' => 'local']]));
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder('assignsubmission_x')));
+    }
+
+    /**
+     * Folders in the folder of a parent type that core_component does not take as plugins.
+     *
+     * @return array
+     */
+    public static function not_a_plugin_provider(): array {
+        $cases = [
+            'activity module with an underscore' => ['mod', 'a_x'],
+            'activity module named as a subsystem with a folder' => ['mod', 'course'],
+            'name ending with an underscore' => ['admin/tool', 'xy_'],
+            'name with two underscores' => ['admin/tool', 'ab__c'],
+            'name of one letter' => ['local', 'x'],
+            'name with a digit first' => ['local', '1x'],
+        ];
+        foreach (['amd', 'classes', 'db', 'fonts', 'lang', 'pix', 'simpletest', 'templates', 'tests', 'yui'] as $ignored) {
+            $cases['folder ' . $ignored] = ['mod', $ignored];
+        }
+        return $cases;
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('not_a_plugin_provider')]
+    /**
+     * A folder that core_component does not take as a plugin of a parent type declares no subplugins.
+     *
+     * @dataProvider not_a_plugin_provider
+     * @param string $parent The folder of the parent type.
+     * @param string $name The name of the folder in it.
+     */
+    public function test_a_folder_that_moodle_does_not_take_as_a_plugin_declares_no_subplugins(string $parent, string $name): void {
+        $root = self::tree_405();
+        self::put($root, $parent . '/' . $name . '/db/subplugins.json', json_encode(['subplugintypes' => ['odd' => 'odd']]));
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder('odd_y')));
+    }
+
+    public function test_the_plugins_that_moodle_takes_declare_subplugins(): void {
+        $root = self::tree_405();
+        // Other plugins may have single underscores, and an activity module may have the name of a subsystem without a folder.
+        self::put($root, 'admin/tool/a_b/db/subplugins.json', json_encode(['subplugintypes' => ['toolsub' => 'sub']]));
+        // The pattern of core_component does not look at two underscores right after the first letter, so neither does this.
+        self::put($root, 'admin/tool/a__b/db/subplugins.json', json_encode(['subplugintypes' => ['twosub' => 'sub']]));
+        self::put($root, 'mod/help/db/subplugins.json', json_encode(['subplugintypes' => ['helpsub' => 'sub']]));
+        self::put($root, 'mod/pagetype/db/subplugins.json', json_encode(['subplugintypes' => ['pagesub' => 'sub']]));
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('admin/tool/a_b/sub/y', $dirs->folder('toolsub_y'));
+        $this->assertSame('admin/tool/a__b/sub/y', $dirs->folder('twosub_y'));
+        $this->assertSame('mod/help/sub/y', $dirs->folder('helpsub_y'));
+        $this->assertSame('mod/pagetype/sub/y', $dirs->folder('pagesub_y'));
+    }
+
+    public function test_a_folder_that_is_not_a_plugin_does_not_come_before_the_real_parent(): void {
+        $root = self::tree_405();
+        // In byte order "a_x" comes before "assign", but an activity module cannot have an underscore.
+        self::put($root, 'mod/a_x/db/subplugins.json', json_encode(['plugintypes' => ['assignsubmission' => 'mod/a_x/sub']]));
+        $this->assertSame('mod/assign/submission/foo', (new plugin_dirs($root))->folder('assignsubmission_foo'));
+    }
+
+    public function test_a_subplugin_type_with_the_name_of_a_subsystem_with_a_folder_is_passed_over(): void {
+        $root = self::tree_405();
+        self::put($root, 'mod/odd/db/subplugins.json', json_encode([
+            'plugintypes' => ['course' => 'mod/odd/course', 'help' => 'mod/odd/help', 'oddsub' => 'mod/odd/sub'],
+        ]));
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder('course_x')));
+        $this->assertSame('mod/odd/help/x', $dirs->folder('help_x'));
+        $this->assertSame('mod/odd/sub/x', $dirs->folder('oddsub_x'));
+    }
+
+    public function test_the_plugins_of_a_type_are_taken_in_byte_order_whatever_the_locale(): void {
+        $root = self::tree_405();
+        self::put($root, 'admin/tool/ab/db/subplugins.json', json_encode(['plugintypes' => ['shared' => 'admin/tool/ab/s']]));
+        self::put($root, 'admin/tool/a_c/db/subplugins.json', json_encode(['plugintypes' => ['shared' => 'admin/tool/a_c/s']]));
+        $old = setlocale(LC_COLLATE, '0');
+        // The locale of the language of a site may put "ab" before "a_c"; core_component sorts the bytes.
+        $this->assertNotFalse(setlocale(LC_COLLATE, 'en_AU.UTF-8'));
+        try {
+            $folder = (new plugin_dirs($root))->folder('shared_y');
+        } finally {
+            setlocale(LC_COLLATE, $old);
+        }
+        $this->assertSame('admin/tool/a_c/s/y', $folder);
+    }
+
+    public function test_a_deprecated_plugin_type_and_a_deprecated_subplugin_type_have_their_folders(): void {
+        $root = make_request_directory();
+        self::put($root, 'lib/components.json', json_encode([
+            'plugintypes' => ['mod' => 'public/mod', 'local' => 'public/local'],
+            'deprecatedplugintypes' => ['mnetservice' => 'public/mnet/service', 'mod' => 'public/elsewhere'],
+            'subsystems' => [],
+        ]));
+        self::put($root, 'public/mod/assign/db/subplugins.json', json_encode([
+            'subplugintypes' => ['assignsubmission' => 'submission'],
+            'deprecatedsubplugintypes' => ['assignold' => 'old', 'assignsubmission' => 'elsewhere'],
+        ]));
+        self::put($root, 'public/mod/quiz/db/subplugins.json', json_encode([
+            'plugintypes' => ['quiz' => 'mod/quiz/report'],
+            'deprecatedsubplugintypes' => ['quizold' => 'old', 'quizbad' => ['old']],
+        ]));
+        self::put($root, 'public/local/odd/db/subplugins.json', json_encode(['deprecatedsubplugintypes' => 'not a list']));
+        self::put($root, 'public/version.php', '<?php');
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('public/mnet/service/enrol2', $dirs->folder('mnetservice_enrol2'));
+        // A type that is both active and deprecated has its active folder.
+        $this->assertSame('public/mod/x', $dirs->folder('mod_x'));
+        $this->assertSame('public/mod/assign/old/x', $dirs->folder('assignold_x'));
+        $this->assertSame('public/mod/assign/submission/x', $dirs->folder('assignsubmission_x'));
+        $this->assertSame('public/mod/quiz/report/x', $dirs->folder('quiz_x'));
+        $this->assertSame('public/mod/quiz/old/x', $dirs->folder('quizold_x'));
+        $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder('quizbad_x')));
+    }
+
+    public function test_deprecated_plugin_types_that_are_not_a_list_are_none(): void {
+        $root = self::tree_405();
+        $components = json_decode(file_get_contents($root . '/lib/components.json'), true);
+        file_put_contents($root . '/lib/components.json', json_encode($components + ['deprecatedplugintypes' => 'mnet/service']));
+        $dirs = new plugin_dirs($root);
+        $this->assertSame('mod/x', $dirs->folder('mod_x'));
+        $this->assertSame('restore_path_unsafe', $this->code_of(static fn() => $dirs->folder('mnetservice_x')));
     }
 }

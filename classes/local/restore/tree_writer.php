@@ -29,10 +29,18 @@ use tool_secbackup\local\plugin_exception;
  * PHP has no openat() and no O_NOFOLLOW, and its fopen() follows a link even in the mode "x" (PHP resolves the path itself
  * before it opens it). So the writer goes down the folders one name at a time: it looks at the name with lstat(), enters it
  * with chdir(), and checks that the folder it is in is the one it looked at (the same device and inode). A link, or a folder
- * swapped for a link in between, leads to another folder and is refused there, before anything is written. Each later step
- * names one entry of the folder the process is in (lstat(), mkdir(), unlink(), rename(), chmod('.')), which no change of a
- * parent folder can redirect. Only fopen() goes by the absolute path of that folder again, so the writer checks that the file
- * it opened is that entry of the folder before it gives the handle, and checks it again before the rename.
+ * swapped for a link in between, leads to another folder and is refused there, before anything is written. On a PHP without
+ * thread safety (NTS, as the CLI of the restore host is), each later step (lstat(), mkdir(), unlink(), rename(), chmod('.'))
+ * names one entry of the folder the process is in, which no change of a parent folder can redirect. A PHP with thread safety
+ * (ZTS) keeps a working folder of its own and makes those calls with absolute paths: a link that was there before is still
+ * refused by the same comparison, but a parent folder swapped while the writer works is not.
+ *
+ * Only fopen() goes by an absolute path again: PHP joins getcwd() and the name, resolves the links in it and then opens it.
+ * Two changes are not prevented: a parent folder swapped for a link between that getcwd() and the open(2), and a link put as
+ * the part file between the unlink() of the one that was there and the fopen(). Either makes PHP create an empty file where
+ * the link leads. The writer then finds that the file it opened is not that entry of the folder and refuses it before it
+ * gives the handle, so no byte of content is written there; it checks again before the rename. The restore relies on no other
+ * process writing in the folders while it runs.
  *
  * A file is written as "<name>.part" and takes its name in commit(). It is made with the mode of the writer at once (through
  * the umask), so no chmod() ever names a file. A folder that the writer makes gets its mode from inside, with chmod('.'),
