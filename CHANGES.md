@@ -35,6 +35,8 @@
   site administrators get a message when backups are stopped three times in a row. Each time the status page is opened, it
   shows a warning when the files of the site are in an external storage (such as tool_objectfs), and when the last backup
   found that Moodle's code may have been modified; scheduled backups do not wait for it.
+  The stage that the page and `cli/backup.php` show stays at the sending of the code until the code is all sent; it no longer
+  says that the backup is being finished while the last chunks of the data are still being sent.
 - The connection diagnostics also check the server load, the free memory, the database response, the temporary folder, the
   clock and Moodle's automated backup.
 - Tested also with a data directory on NFS (v3 and v4.2), with files in an S3-compatible storage through tool_objectfs, and

@@ -386,6 +386,19 @@ final class run_context {
     }
 
     /**
+     * Sends everything that waits, so that a stage that names what it sends ends only when it is all sent.
+     *
+     * Chunks are queued as they are made and sent when the temporary budget is full, so a stage can end with a lot still
+     * waiting; the next stages make only small chunks, and the stage "complete" would send the rest under its own name.
+     *
+     * @return bool False when something is left (the uploader waits, and has paused the run).
+     */
+    public function send_all(): bool {
+        $this->uploader->drain($this->run, true);
+        return $this->uploader->pending() === 0;
+    }
+
+    /**
      * The most bytes of a chunk that holds a payload of a size.
      *
      * @param int $payload Bytes of the payload.

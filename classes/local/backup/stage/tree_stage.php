@@ -186,6 +186,13 @@ final class tree_stage {
             }
         }
         if ($outcome === 'next' && $this->waiting === []) {
+            if ($nextstage === 'manifest') {
+                // The last stage of the data: what still waits is sent in it, not in the stages that only build the list.
+                $this->commit();
+                if (!$this->context->send_all()) {
+                    return 'more';
+                }
+            }
             $this->context->next_stage($nextstage);
             return 'next';
         }

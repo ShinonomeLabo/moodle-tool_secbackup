@@ -385,6 +385,47 @@ final class runner_test extends \advanced_testcase {
         $this->assertSame([], glob($this->tempdir . '/present-*') ?: []);
     }
 
+    public function test_the_stage_complete_sends_only_the_list_and_the_index(): void {
+        $stages = [];
+        $this->fixture->intercept = function (RequestInterface $request) use (&$stages) {
+            if ($request->getMethod() === 'PUT') {
+                $stages[] = run_record::recent(1)[0]->stage();
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $this->assertSame('done', $this->finish($this->runner(), $run));
+        $counts = array_count_values($stages);
+        // The two chunks that are made in the last stages (the list of the generation and its index) are all that the
+        // stage "complete" sends; the stage "receipt" and the stages before the list send nothing of their own.
+        $this->assertSame(2, $counts['complete'] ?? 0, implode(',', $stages));
+        $others = ['prepare', 'start', 'present', 'capacity', 'manifest', 'index', 'receipt', 'done'];
+        $this->assertSame([], array_intersect(array_keys($counts), $others));
+        $this->assertGreaterThan(2, count($stages));
+    }
+
+    public function test_a_run_that_cannot_send_what_waits_at_the_end_of_the_code_stays_in_that_stage(): void {
+        $busy = 1;
+        $this->fixture->intercept = function (RequestInterface $request) use (&$busy) {
+            $asks = str_ends_with($request->getUri()->getPath(), '/upload-urls');
+            if ($busy > 0 && $asks && run_record::recent(1)[0]->stage() === 'code') {
+                $busy--;
+                $request->getBody()->getContents();
+                return new Response(503, ['Retry-After' => '60'], json_encode(['error' => ['code' => 'busy']]));
+            }
+            return null;
+        };
+        $run = run_record::create('manual', $this->fixture->time);
+        $runner = $this->runner();
+        for ($i = 0; $i < 50 && $busy > 0; $i++) {
+            $runner->step($run, 600);
+        }
+        $this->assertSame(0, $busy);
+        $this->assertSame('code', $run->stage());
+        $this->assertSame('paused', $run->status());
+        $this->assertSame('done', $this->finish($runner, $run));
+    }
+
     public function test_a_budget_of_one_second_gives_the_same_backup(): void {
         $run = run_record::create('manual', $this->fixture->time);
         $this->assertSame('done', $this->finish($this->runner(['timer' => $this->fast_timer()]), $run, 1));
