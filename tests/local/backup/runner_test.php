@@ -1961,7 +1961,8 @@ final class runner_test extends \advanced_testcase {
             'diskspace' => fn(string $folder): array => [0, 1000],
         ]);
         $this->assertSame('done', $this->finish($runner, $run));
-        $this->assertSame(['db', 'files', 'dataroot', 'code', 'manifest', 'index', 'complete'], array_keys($failed));
+        // The stage "manifest" builds the list and sends nothing: what waited when the code ended is sent in the stage "code".
+        $this->assertSame(['db', 'files', 'dataroot', 'code', 'index', 'complete'], array_keys($failed));
         $puts = $this->fixture->puts();
         $objects = $this->fixture->service->state['objects'];
         foreach ($failed as $stage => $path) {
