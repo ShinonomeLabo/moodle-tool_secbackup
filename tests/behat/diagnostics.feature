@@ -37,3 +37,14 @@ Feature: Check the connection to the backup service
     And "//div[contains(@class, 'alert-info')][contains(., 'To check the network of this server')]//button" "xpath_element" should not exist
     And I click on "Connection diagnostics" "link" in the ".alert-info" "css_element"
     And I should see "Direct connection, without a proxy."
+
+  Scenario: The checks of the server that a backup depends on are listed
+    Given the site is registered with the fake backup service
+    When I open "Plugins > Admin tools > Shinonome LMS Backup > Connection diagnostics" in site administration
+    Then I should see "Temporary folder" in the "region-main" "region"
+    And I should see "Server load" in the "region-main" "region"
+    And I should see "Available memory" in the "region-main" "region"
+    And I should see "Database response" in the "region-main" "region"
+    And I should see "Automated backup of Moodle" in the "region-main" "region"
+    And I should see "Free space:" in the "Temporary folder" "table_row"
+    And I should see "One simple read took" in the "Database response" "table_row"

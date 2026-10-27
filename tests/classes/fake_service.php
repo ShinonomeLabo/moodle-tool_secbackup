@@ -79,6 +79,18 @@ final class fake_service {
      *   site_removed, bad_status.
      * - enrollpayload: fields that replace those of the enrolment answer.
      * - sitename and platformname: the names the enrolment answer gives.
+     * - encryptionkey: the site's encryption public key that the enrolment accepts (ENCRYPTION_KEY unless a test, or a
+     *   development run that opens its backup, registers with a key pair of its own).
+     * - instructions: the signed instruction envelopes that the status answer carries, by kind.
+     * - awsranges: the content that GET /aws-ranges gives, or null for none.
+     * - objects: the bodies that PUT /_s3/<key> stored, by key (base64, so that the state can be kept as JSON).
+     * - signed: the headers that the last upload URL of a key was signed with, by key, with lower-case names.
+     * - runs: the runs by ID; nextrun: counter of run IDs; holdverify: true to leave a completed run in verifying until
+     *   verify_run() is called; receiptpayload: fields that replace those of the receipt; coremanifests: published lists.
+     * - mode (more): run_in_progress, run_limit_reached, run_not_found, run_state_invalid, capacity_recheck_required,
+     *   artifact_signature_invalid, core_manifest_not_found, contract_inactive answer every request with that error.
+     * - urllife: seconds that an upload URL stays valid (900 in the contract).
+     * - contractinactive: true to refuse only a new run and the upload URLs with contract_inactive (the contract ended).
      *
      * @return array
      */
@@ -92,7 +104,19 @@ final class fake_service {
             'enrollpayload' => [],
             'sitename' => self::SITE_NAME,
             'platformname' => self::PLATFORM_NAME,
+            'encryptionkey' => self::ENCRYPTION_KEY,
             'status' => 'active',
+            'instructions' => [],
+            'awsranges' => null,
+            'objects' => [],
+            'signed' => [],
+            'runs' => [],
+            'nextrun' => 1,
+            'holdverify' => false,
+            'receiptpayload' => [],
+            'contractinactive' => false,
+            'urllife' => 900,
+            'coremanifests' => [],
             'requests' => [],
             'lastbody' => null,
             'lastheaders' => null,
@@ -122,6 +146,25 @@ final class fake_service {
                 return [403, [], self::error('ip_not_allowed', ['ip' => '198.51.100.7'])];
             case 'unexpected':
                 return [500, ['Content-Type' => 'text/html'], '<html>error</html>'];
+            case 'run_in_progress':
+                return [409, [], self::error('run_in_progress', ['run_id' => '99999999-0000-4000-8000-000000000001'])];
+            case 'run_limit_reached':
+                return [429, ['Retry-After' => '3600'], self::error('run_limit_reached', ['retry_after' => 3600])];
+            case 'run_not_found':
+                return [404, [], self::error('run_not_found')];
+            case 'run_state_invalid':
+                return [409, [], self::error('run_state_invalid', ['status' => 'verifying'])];
+            case 'capacity_recheck_required':
+                return [409, [], self::error('capacity_recheck_required', ['requested_bytes' => 100, 'estimated_bytes' => 50])];
+            case 'artifact_signature_invalid':
+                return [422, [], self::error('artifact_signature_invalid', ['artifact' => 'manifest'])];
+            case 'core_manifest_not_found':
+                return [404, [], self::error('core_manifest_not_found')];
+            case 'contract_inactive':
+                return [403, [], self::error('contract_inactive')];
+        }
+        if (str_starts_with($path, '/_s3/')) {
+            return $this->object($method, substr($path, strlen('/_s3/')), $headers, $body);
         }
         if ($method === 'POST' && $path === $this->basepath . '/enroll') {
             return $this->enroll($host, $path, $headers, $body);
@@ -129,7 +172,55 @@ final class fake_service {
         if ($method === 'GET' && $path === $this->basepath . '/status') {
             return $this->status($host, $path, $headers);
         }
+        if ($method === 'GET' && $path === $this->basepath . '/aws-ranges') {
+            return $this->aws_ranges($host, $path, $headers);
+        }
+        if (str_starts_with($path, $this->basepath . '/runs') || $path === $this->basepath . '/core-manifests') {
+            return $this->run_api($method, $host, $path, $headers, $body);
+        }
         return [404, [], self::error('not_found')];
+    }
+
+    /**
+     * Sets the instruction of a kind that the status answer carries, signed with the service's key.
+     *
+     * @param string $kind settings or aws_ranges.
+     * @param int $seq Sequence number.
+     * @param array $body Body of the instruction.
+     * @param string|null $siteid Site ID in the instruction; null for the one given at enrolment, and for aws_ranges none.
+     */
+    public function set_instruction(string $kind, int $seq, array $body, ?string $siteid = null): void {
+        $this->state['instructions'][$kind] = $this->signer->parts([
+            'type' => 'instruction',
+            'kind' => $kind,
+            'site_id' => $kind === 'aws_ranges' ? null : ($siteid ?? self::SITE_ID),
+            'seq' => $seq,
+            'issued_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
+            'body' => $body,
+        ]);
+    }
+
+    /**
+     * Publishes a list of AWS ranges: stores the content for GET /aws-ranges and sets the instruction that names it.
+     *
+     * @param int $seq Sequence number.
+     * @param string $content The content.
+     */
+    public function publish_aws_ranges(int $seq, string $content): void {
+        $this->state['awsranges'] = $content;
+        $this->set_instruction('aws_ranges', $seq, [
+            'sync_token' => '1791766626',
+            'create_date' => '2026-10-18-00-00-00',
+            'sha256' => hash('sha256', $content),
+            'size' => strlen($content),
+        ]);
+    }
+
+    /**
+     * Removes the instructions.
+     */
+    public function clear_instructions(): void {
+        $this->state['instructions'] = [];
     }
 
     /**
@@ -150,8 +241,516 @@ final class fake_service {
                 $headers,
                 (string) $request->getBody()
             );
+            // A bare handler does not fill the sink option of a request; the MockHandler of Guzzle does.
+            if (isset($options['sink']) && is_string($options['sink'])) {
+                file_put_contents($options['sink'], $body);
+            }
             return \GuzzleHttp\Promise\Create::promiseFor(new \GuzzleHttp\Psr7\Response($status, $responseheaders, $body));
         };
+    }
+
+    /**
+     * Publishes the list of official files of a Moodle build: stores the gzip and keeps the signed envelope.
+     *
+     * @param string $version Moodle version, such as 2024100703.10.
+     * @param string $build Build, such as 20250113.
+     * @param string $gzip The content of the list (already compressed).
+     * @param array $payload Fields that replace those of the envelope's payload.
+     */
+    public function publish_core_manifest(string $version, string $build, string $gzip, array $payload = []): void {
+        $this->state['objects']['core-manifests/' . $version . '/' . $build . '.gz'] = base64_encode($gzip);
+        $this->state['coremanifests'][$version . '/' . $build] = $this->signer->parts(array_merge([
+            'type' => 'core_manifest',
+            'version' => $version,
+            'build' => $build,
+            'release' => '4.5.3+ (Build: ' . $build . ')',
+            'sha256' => base64_encode(hash('sha256', $gzip, true)),
+            'size' => strlen($gzip),
+            'count' => 3,
+            'published_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
+        ], $payload));
+    }
+
+    /**
+     * Verifies a run that was completed: the artifacts and the chunks must be in the storage as the report says. A run that
+     * passes gets a signed receipt and is completed; one that does not is failed with the service's reason.
+     *
+     * @param string $id Run ID.
+     */
+    public function verify_run(string $id): void {
+        $run = &$this->state['runs'][$id];
+        $failure = $this->verification_failure($id, $run);
+        if ($failure !== null) {
+            $run['status'] = 'failed';
+            $run['failure_code'] = $failure;
+            return;
+        }
+        $run['status'] = 'completed';
+        $run['receipt'] = $this->signer->parts(array_merge([
+            'type' => 'receipt',
+            'site_id' => self::SITE_ID,
+            'run_id' => $id,
+            'kind' => $run['kind'],
+            'manifest_sha256' => $run['manifest']['sha256'],
+            'index_sha256' => $run['index']['sha256'],
+            'chunk_count' => $run['index']['count'],
+            'stored_bytes' => $run['storedbytes'],
+            'verified_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
+        ], $this->state['receiptpayload']));
+    }
+
+    /**
+     * Why a completed run does not pass verification.
+     *
+     * @param string $id Run ID.
+     * @param array $run The run; its storedbytes is set here.
+     * @return string|null The failure code, or null when the run passes.
+     */
+    private function verification_failure(string $id, array &$run): ?string {
+        $prefix = 'sites/' . self::SITE_ID . '/';
+        $manifest = $this->stored($prefix . 'manifests/' . $id);
+        $index = $this->stored($prefix . 'indexes/' . $id);
+        if ($manifest === null || $index === null) {
+            return 'verify_missing_chunks';
+        }
+        foreach ([[$manifest, $run['manifest']], [$index, $run['index']]] as [$stored, $declared]) {
+            if (strlen($stored) !== $declared['size'] || base64_encode(hash('sha256', $stored, true)) !== $declared['sha256']) {
+                return 'verify_artifact_mismatch';
+            }
+        }
+        $text = gzdecode($index);
+        $lines = $text === false ? [] : explode("\n", rtrim($text, "\n"));
+        $header = json_decode((string) array_shift($lines), true);
+        if (
+            !is_array($header)
+            || ($header['site_id'] ?? null) !== self::SITE_ID
+            || ($header['run_id'] ?? null) !== $id
+            || ($header['count'] ?? null) !== $run['index']['count']
+            || count($lines) !== $run['index']['count']
+        ) {
+            return 'verify_index_invalid';
+        }
+        $total = strlen($manifest) + strlen($index);
+        foreach ($lines as $line) {
+            if (preg_match('/^([0-9a-f]{64}) (\d+)\z/', $line, $m) !== 1) {
+                return 'verify_index_invalid';
+            }
+            $chunk = $this->stored($prefix . 'objects/' . $m[1]);
+            if ($chunk === null) {
+                return 'verify_missing_chunks';
+            }
+            if (strlen($chunk) !== (int) $m[2]) {
+                return 'verify_size_mismatch';
+            }
+            $total += strlen($chunk);
+        }
+        $run['storedbytes'] = $total;
+        return null;
+    }
+
+    /**
+     * An object of the storage.
+     *
+     * @param string $key Key.
+     * @return string|null The body, or null when there is none.
+     */
+    private function stored(string $key): ?string {
+        return isset($this->state['objects'][$key]) ? (string) base64_decode($this->state['objects'][$key], true) : null;
+    }
+
+    /**
+     * The origin of the connection URL (scheme, host and port), where the fake storage lives.
+     *
+     * @return string
+     */
+    private function origin(): string {
+        return substr($this->apibase, 0, strlen($this->apibase) - strlen($this->basepath));
+    }
+
+    /**
+     * A URL of the fake storage for an object key, in the shape of a pre-signed one.
+     *
+     * @param string $key Key.
+     * @return string
+     */
+    private function storage_url(string $key): string {
+        return $this->origin() . '/_s3/' . $key . '?X-Amz-Expires=900&X-Amz-Signature=0123456789abcdef';
+    }
+
+    /**
+     * The run endpoints and the list of official files. The request is signed like every other one.
+     *
+     * @param string $method Method.
+     * @param string $host Host.
+     * @param string $path Path.
+     * @param string[] $headers Headers.
+     * @param string $body Body.
+     * @return array
+     */
+    private function run_api(string $method, string $host, string $path, array $headers, string $body): array {
+        $problem = $this->authenticate($method, $host, $path, $headers, $body);
+        if ($problem !== null) {
+            return $problem;
+        }
+        $relative = substr($path, strlen($this->basepath));
+        $data = json_decode($body, true);
+        if ($method === 'POST' && $relative === '/core-manifests') {
+            return $this->core_manifest($data);
+        }
+        if ($method === 'POST' && $relative === '/runs') {
+            return $this->start_run($data);
+        }
+        if (preg_match('~^/runs/([0-9a-f-]{36})(?:/(capacity|upload-urls|complete|fail))?\z~', $relative, $m) !== 1) {
+            return [404, [], self::error('not_found')];
+        }
+        $id = $m[1];
+        $action = $m[2] ?? '';
+        if (!isset($this->state['runs'][$id])) {
+            return [404, [], self::error('run_not_found')];
+        }
+        if ($action === '' && $method === 'GET') {
+            $run = $this->state['runs'][$id];
+            return $this->json(200, ['run_id' => $id, 'status' => $run['status'], 'failure_code' => $run['failure_code'],
+                'receipt' => $run['receipt']]);
+        }
+        if ($action === '' || $method !== 'POST') {
+            return [404, [], self::error('not_found')];
+        }
+        if (!is_array($data) || array_is_list($data) && $data !== []) {
+            return [422, [], self::error('invalid_request')];
+        }
+        return match ($action) {
+            'capacity' => $this->capacity($id, $data),
+            'upload-urls' => $this->upload_urls($id, $data),
+            'complete' => $this->complete($id, $data),
+            default => $this->fail($id, $data),
+        };
+    }
+
+    /**
+     * Authenticates a signed request: the headers, the site, the signature and the nonce.
+     *
+     * @param string $method Method.
+     * @param string $host Host.
+     * @param string $path Path.
+     * @param string[] $headers Headers.
+     * @param string $body Body.
+     * @return array|null An error answer, or null.
+     */
+    private function authenticate(string $method, string $host, string $path, array $headers, string $body): ?array {
+        $problem = $this->header_problem($headers);
+        if ($problem !== null) {
+            return $problem;
+        }
+        if (($headers['x-secbackup-site'] ?? '') !== self::SITE_ID || $this->state['signingkey'] === null) {
+            return [401, [], self::error('site_not_enrolled')];
+        }
+        return $this->verify_problem($method, $host, $path, $headers, $body, (string) base64_decode($this->state['signingkey']));
+    }
+
+    /**
+     * A JSON answer.
+     *
+     * @param int $status HTTP status.
+     * @param array $data The body.
+     * @return array
+     */
+    private function json(int $status, array $data): array {
+        return [$status, ['Content-Type' => 'application/json'], json_encode($data, JSON_UNESCAPED_SLASHES)];
+    }
+
+    /**
+     * POST /runs.
+     *
+     * @param mixed $data The decoded body.
+     * @return array
+     */
+    private function start_run(mixed $data): array {
+        if (!is_array($data) || array_keys($data) !== ['kind'] || $data['kind'] !== 'full') {
+            return [422, [], self::error('invalid_request')];
+        }
+        if ($this->state['contractinactive']) {
+            return [403, [], self::error('contract_inactive')];
+        }
+        foreach ($this->state['runs'] as $id => $run) {
+            if (in_array($run['status'], ['started', 'uploading', 'verifying'], true)) {
+                return [409, [], self::error('run_in_progress', ['run_id' => $id])];
+            }
+        }
+        $id = sprintf('aaaaaaaa-bbbb-4ccc-8ddd-%012d', $this->state['nextrun']++);
+        $this->state['runs'][$id] = ['status' => 'started', 'kind' => 'full', 'failure_code' => null, 'receipt' => null,
+            'estimated' => null, 'reserved' => 0, 'started' => $this->now(), 'manifest' => null, 'index' => null,
+            'storedbytes' => 0];
+        $parts = $this->signer->parts([
+            'type' => 'run',
+            'site_id' => self::SITE_ID,
+            'run_id' => $id,
+            'kind' => 'full',
+            'started_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now()),
+            'present_url' => $this->storage_url('sites/' . self::SITE_ID . '/indexes/present'),
+            'present_url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now() + 900),
+        ]);
+        return [201, ['Content-Type' => 'application/json'], json_encode($parts, JSON_UNESCAPED_SLASHES)];
+    }
+
+    /**
+     * POST /runs/{run}/capacity: the fake continues unless the estimate is 1 TB or more (limit 1 TB, used 100 bytes).
+     *
+     * @param string $id Run ID.
+     * @param array $data The decoded body.
+     * @return array
+     */
+    private function capacity(string $id, array $data): array {
+        if (array_keys($data) !== ['estimated_bytes'] || !is_int($data['estimated_bytes']) || $data['estimated_bytes'] < 0) {
+            return [422, [], self::error('invalid_request')];
+        }
+        $run = &$this->state['runs'][$id];
+        if (!in_array($run['status'], ['started', 'uploading'], true)) {
+            return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
+        }
+        $continue = $data['estimated_bytes'] < 1000000000000;
+        $run['estimated'] = $continue ? $data['estimated_bytes'] : null;
+        return $this->json(200, ['decision' => $continue ? 'continue' : 'refuse', 'limit_bytes' => 1000000000000,
+            'used_bytes' => 100]);
+    }
+
+    /**
+     * POST /runs/{run}/upload-urls.
+     *
+     * @param string $id Run ID.
+     * @param array $data The decoded body.
+     * @return array
+     */
+    private function upload_urls(string $id, array $data): array {
+        $items = $data['items'] ?? null;
+        if (
+            array_keys($data) !== ['items']
+            || !is_array($items) || !array_is_list($items) || $items === [] || count($items) > 256
+        ) {
+            return [422, [], self::error('invalid_request')];
+        }
+        $total = 0;
+        foreach ($items as $item) {
+            if (!self::upload_item_valid($item)) {
+                return [422, [], self::error('invalid_request')];
+            }
+            $total += $item['size'];
+        }
+        if ($this->state['contractinactive']) {
+            return [403, [], self::error('contract_inactive')];
+        }
+        $run = &$this->state['runs'][$id];
+        if (!in_array($run['status'], ['started', 'uploading'], true)) {
+            return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
+        }
+        $requested = $run['reserved'] + $total;
+        if ($run['estimated'] === null || $requested > $run['estimated'] * 1.1) {
+            // The figure is what was granted so far: the refused batch is not in it.
+            return [409, [], self::error('capacity_recheck_required', ['requested_bytes' => $run['reserved'],
+                'estimated_bytes' => $run['estimated']])];
+        }
+        $run['reserved'] = $requested;
+        $run['status'] = 'uploading';
+        // Lock of the personal plan (14 days) and 14 days to spare after the URL is issued, rounded up to a midnight of UTC.
+        $retain = gmdate('Y-m-d\T00:00:00\Z', (int) (ceil(($this->now() + 28 * 86400) / 86400) * 86400));
+        $issued = [];
+        foreach ($items as $item) {
+            $prefix = 'sites/' . self::SITE_ID . '/';
+            $key = match ($item['kind']) {
+                'object' => $prefix . 'objects/' . $item['name'],
+                'manifest' => $prefix . 'manifests/' . $id,
+                default => $prefix . 'indexes/' . $id,
+            };
+            $entry = ['kind' => $item['kind']];
+            if (isset($item['name'])) {
+                $entry['name'] = $item['name'];
+            }
+            $headers = [
+                'Content-Length' => (string) $item['size'],
+                'x-amz-checksum-sha256' => $item['sha256'],
+                'x-amz-storage-class' => 'STANDARD',
+                'x-amz-object-lock-mode' => 'COMPLIANCE',
+                'x-amz-object-lock-retain-until-date' => $retain,
+            ];
+            if ($item['kind'] === 'object') {
+                // An object is stored once; the manifest and the index are named by the run and can be sent again.
+                $headers['If-None-Match'] = '*';
+            }
+            // A real storage checks every header that a URL was signed with: the PUT must send each, with the same value.
+            $this->state['signed'][$key] = array_change_key_case($headers, CASE_LOWER);
+            $issued[] = $entry + [
+                'url' => $this->storage_url($key),
+                'headers' => $headers,
+                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now() + $this->state['urllife']),
+            ];
+        }
+        return $this->json(200, ['items' => $issued]);
+    }
+
+    /**
+     * Whether an item of an upload URL request has the service's shape.
+     *
+     * @param mixed $item The item.
+     * @return bool
+     */
+    private static function upload_item_valid(mixed $item): bool {
+        if (!is_array($item) || !in_array($item['kind'] ?? null, ['object', 'manifest', 'index'], true)) {
+            return false;
+        }
+        $keys = $item['kind'] === 'object' ? ['kind', 'name', 'size', 'sha256'] : ['kind', 'size', 'sha256'];
+        $given = array_keys($item);
+        sort($given);
+        sort($keys);
+        return $given === $keys
+            && is_int($item['size']) && $item['size'] >= 0
+            && self::is_sha256($item['sha256'])
+            && ($item['kind'] !== 'object' || (is_string($item['name']) && preg_match('/^[0-9a-f]{64}\z/', $item['name']) === 1));
+    }
+
+    /**
+     * Whether a value is the standard base64 of 32 bytes.
+     *
+     * @param mixed $value The value.
+     * @return bool
+     */
+    private static function is_sha256(mixed $value): bool {
+        return is_string($value) && preg_match('/^[A-Za-z0-9+\/]{43}=\z/', $value) === 1
+            && base64_encode((string) base64_decode($value, true)) === $value;
+    }
+
+    /**
+     * POST /runs/{run}/complete: checks the shape and the signatures, then verifies at once (unless holdverify is set).
+     *
+     * @param string $id Run ID.
+     * @param array $data The decoded body.
+     * @return array
+     */
+    private function complete(string $id, array $data): array {
+        $manifest = $data['manifest'] ?? null;
+        $index = $data['index'] ?? null;
+        if (
+            array_keys($data) !== ['manifest', 'index', 'stats']
+            || !is_array($manifest) || array_keys($manifest) !== ['sha256', 'size', 'signature']
+            || !is_array($index) || array_keys($index) !== ['sha256', 'size', 'count', 'signature']
+            || !self::is_sha256($manifest['sha256']) || !is_int($manifest['size']) || !is_string($manifest['signature'])
+            || !self::is_sha256($index['sha256']) || !is_int($index['size']) || !is_int($index['count'])
+            || !is_string($index['signature']) || !is_array($data['stats'])
+        ) {
+            return [422, [], self::error('invalid_request')];
+        }
+        $run = &$this->state['runs'][$id];
+        if ($run['status'] !== 'uploading') {
+            return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
+        }
+        if ($run['estimated'] === null) {
+            // A refused decision is no decision: the report is a state error, as it is for a run that is not uploading.
+            return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
+        }
+        $key = (string) base64_decode($this->state['signingkey']);
+        $manifesttext = "SECBACKUP-MANIFEST-V1\n" . self::SITE_ID . "\n" . $id . "\n" . $manifest['sha256'];
+        $indextext = "SECBACKUP-INDEX-V1\n" . self::SITE_ID . "\n" . $id . "\n" . $index['sha256'] . "\n" . $index['count'];
+        foreach (['manifest' => [$manifest, $manifesttext], 'index' => [$index, $indextext]] as $artifact => [$part, $text]) {
+            $signature = self::b64url_decode($part['signature']);
+            if ($signature === null || strlen($signature) !== 64 || !sodium_crypto_sign_verify_detached($signature, $text, $key)) {
+                return [422, [], self::error('artifact_signature_invalid', ['artifact' => $artifact])];
+            }
+        }
+        $run['manifest'] = $manifest;
+        $run['index'] = $index;
+        $run['status'] = 'verifying';
+        if (!$this->state['holdverify']) {
+            $this->verify_run($id);
+        }
+        return $this->json(202, ['status' => 'verifying']);
+    }
+
+    /**
+     * POST /runs/{run}/fail.
+     *
+     * @param string $id Run ID.
+     * @param array $data The decoded body.
+     * @return array
+     */
+    private function fail(string $id, array $data): array {
+        $codes = ['server_busy', 'disk_low', 'db_slow', 'nfs_slow', 'selinux_denied', 'capacity_refused', 'network_check_failed',
+            'signature_invalid', 'tamper_detected', 'version_too_old', 'upload_failed', 'window_ended', 'restarted',
+            'contract_inactive'];
+        if (array_keys($data) !== ['code'] || !in_array($data['code'], $codes, true)) {
+            return [422, [], self::error('invalid_request')];
+        }
+        $run = &$this->state['runs'][$id];
+        if (!in_array($run['status'], ['started', 'uploading'], true)) {
+            return [409, [], self::error('run_state_invalid', ['status' => $run['status']])];
+        }
+        $run['status'] = 'failed';
+        $run['failure_code'] = $data['code'];
+        return $this->json(200, ['status' => 'failed']);
+    }
+
+    /**
+     * POST /core-manifests.
+     *
+     * @param mixed $data The decoded body.
+     * @return array
+     */
+    private function core_manifest(mixed $data): array {
+        if (
+            !is_array($data) || array_keys($data) !== ['version', 'build']
+            || !is_string($data['version']) || preg_match('/^\d{10}\.\d{2}\z/', $data['version']) !== 1
+            || !is_string($data['build']) || preg_match('/^\d{8}\z/', $data['build']) !== 1
+        ) {
+            return [422, [], self::error('invalid_request')];
+        }
+        $name = $data['version'] . '/' . $data['build'];
+        if (!isset($this->state['coremanifests'][$name])) {
+            return [404, [], self::error('core_manifest_not_found')];
+        }
+        return $this->json(200, ['manifest' => $this->state['coremanifests'][$name],
+            'url' => $this->storage_url('core-manifests/' . $name . '.gz'),
+            'url_expires_at' => gmdate('Y-m-d\TH:i:s\Z', $this->now() + 900)]);
+    }
+
+    /**
+     * The storage: PUT /_s3/<key> keeps a body, GET gives it back.
+     *
+     * A real storage refuses a PUT whose signed headers differ from the request, so does this one: Content-Length and
+     * x-amz-checksum-sha256 must match the body, both object-lock headers must be there (MinIO does not check them), and a
+     * key that an upload URL was issued for needs every header that the URL was signed with, with the same value.
+     *
+     * @param string $method HTTP method.
+     * @param string $key Key of the object.
+     * @param string[] $headers Headers by lower-case name.
+     * @param string $body Body.
+     * @return array
+     */
+    private function object(string $method, string $key, array $headers, string $body): array {
+        if ($method === 'PUT') {
+            foreach ($this->state['signed'][$key] ?? [] as $name => $value) {
+                if (($headers[$name] ?? null) !== $value) {
+                    return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+                }
+            }
+            if (
+                ($headers['content-length'] ?? null) !== (string) strlen($body)
+                || ($headers['x-amz-checksum-sha256'] ?? null) !== base64_encode(hash('sha256', $body, true))
+                || !isset($headers['x-amz-object-lock-mode'], $headers['x-amz-object-lock-retain-until-date'])
+            ) {
+                return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+            }
+            $condition = $headers['if-none-match'] ?? null;
+            if ($condition !== null && $condition !== '*') {
+                return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
+            }
+            if ($condition === '*' && isset($this->state['objects'][$key])) {
+                return [412, [], '<Error><Code>PreconditionFailed</Code></Error>'];
+            }
+            $this->state['objects'][$key] = base64_encode($body);
+            return [200, [], ''];
+        }
+        if ($method === 'GET' && isset($this->state['objects'][$key])) {
+            return [200, [], (string) base64_decode($this->state['objects'][$key], true)];
+        }
+        return [404, [], '<Error><Code>NoSuchKey</Code></Error>'];
     }
 
     /**
@@ -204,7 +803,8 @@ final class fake_service {
         ) {
             return [401, [], self::error('enrollment_code_invalid')];
         }
-        $encryptionfp = self::fingerprint((string) base64_decode(substr(self::ENCRYPTION_KEY, 7)));
+        $encryptionkey = $this->state['encryptionkey'] ?? self::ENCRYPTION_KEY;
+        $encryptionfp = self::fingerprint((string) base64_decode(substr($encryptionkey, 7)));
         if (strtoupper(str_replace(' ', '', $data['encryption_key_fingerprint'])) !== $encryptionfp) {
             return [409, [], self::error('encryption_key_mismatch')];
         }
@@ -291,7 +891,34 @@ final class fake_service {
             return [200, [], '{"site_id":"00000000-0000-4000-8000-000000000000","status":"active"}'];
         }
         return [200, ['Content-Type' => 'application/json'], json_encode(['site_id' => self::SITE_ID,
-            'status' => $this->state['status'], 'server_time' => $this->now(), 'instructions' => []])];
+            'status' => $this->state['status'], 'server_time' => $this->now(),
+            'instructions' => array_values($this->state['instructions'])])];
+    }
+
+    /**
+     * The list of AWS ranges.
+     *
+     * @param string $host Host.
+     * @param string $path Path.
+     * @param string[] $headers Headers.
+     * @return array
+     */
+    private function aws_ranges(string $host, string $path, array $headers): array {
+        $problem = $this->header_problem($headers);
+        if ($problem !== null) {
+            return $problem;
+        }
+        if (($headers['x-secbackup-site'] ?? '') !== self::SITE_ID || $this->state['signingkey'] === null) {
+            return [401, [], self::error('site_not_enrolled')];
+        }
+        $problem = $this->verify_problem('GET', $host, $path, $headers, '', (string) base64_decode($this->state['signingkey']));
+        if ($problem !== null) {
+            return $problem;
+        }
+        if ($this->state['awsranges'] === null) {
+            return [404, [], self::error('not_found')];
+        }
+        return [200, ['Content-Type' => 'application/json'], $this->state['awsranges']];
     }
 
     /**

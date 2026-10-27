@@ -29,7 +29,11 @@ add_block() {
     echo "added ($1) to $config"
 }
 
-add_block 'tool_secbackup development settings' "$(cat <<'PHP'
+# The settings of remote-service.sh define the same constant: while they are there, the fake service's are not added.
+if grep -q 'tool_secbackup remote service settings' "$config"; then
+    echo "not added (the remote service settings are set; remote-service.sh $1 --off removes them): $config"
+else
+    add_block 'tool_secbackup development settings' "$(cat <<'PHP'
 // tool_secbackup development settings (added by .dev/env/devconfig.sh).
 define('TOOL_SECBACKUP_DEVELOPER', [
     'trustedkeys' => ['PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw='],
@@ -40,6 +44,7 @@ define('TOOL_SECBACKUP_DEVELOPER', [
 // End of tool_secbackup development settings.
 PHP
 )"
+fi
 add_block 'tool_secbackup Behat browsers' "$(cat <<'PHP'
 // tool_secbackup Behat browsers (added by .dev/env/devconfig.sh).
 $CFG->behat_profiles['firefox'] = [

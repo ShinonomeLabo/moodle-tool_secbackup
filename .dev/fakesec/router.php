@@ -59,6 +59,47 @@ if ($method === 'POST' && str_starts_with($path, '/_fake/')) {
         $state['mode'] = $m[1];
     } else if (preg_match('~^status/([a-z_]+)\z~', $action, $m) === 1) {
         $state['status'] = $m[1];
+    } else if (preg_match('~^instruction/(settings|aws_ranges)\z~', $action, $m) === 1) {
+        // The body is {"seq": N, "body": {...}} for settings, or {"seq": N, "content": "..."} for aws_ranges.
+        $given = json_decode((string) file_get_contents('php://input'), true);
+        $fake = new fake_service($apibase, $state);
+        if (!is_array($given) || !is_int($given['seq'] ?? null)) {
+            http_response_code(400);
+            return;
+        }
+        if ($m[1] === 'aws_ranges') {
+            $fake->publish_aws_ranges($given['seq'], (string) ($given['content'] ?? ''));
+        } else {
+            $fake->set_instruction('settings', $given['seq'], (array) ($given['body'] ?? []));
+        }
+        $state = $fake->state;
+    } else if ($action === 'encryptionkey') {
+        // The site's encryption public key that the enrolment accepts, as the platform shows it (secbk1:...).
+        $key = trim((string) file_get_contents('php://input'));
+        if (preg_match('~^secbk1:[A-Za-z0-9+/]{43}=\z~', $key) !== 1) {
+            http_response_code(400);
+            return;
+        }
+        $state['encryptionkey'] = $key;
+    } else if ($action === 'core-manifest') {
+        // The body is {"version", "build", "release", "count", "content": the list, compressed, in base64}.
+        $given = json_decode((string) file_get_contents('php://input'), true);
+        $gzip = is_array($given) ? base64_decode((string) ($given['content'] ?? ''), true) : false;
+        if (
+            !is_string($gzip) || $gzip === '' || !is_string($given['version'] ?? null) || !is_string($given['build'] ?? null)
+            || !is_string($given['release'] ?? null) || !is_int($given['count'] ?? null)
+        ) {
+            http_response_code(400);
+            return;
+        }
+        $fake = new fake_service($apibase, $state);
+        $fake->publish_core_manifest($given['version'], $given['build'], $gzip,
+            ['release' => $given['release'], 'count' => $given['count']]);
+        $state = $fake->state;
+    } else if ($action === 'instructions/clear') {
+        $fake = new fake_service($apibase, $state);
+        $fake->clear_instructions();
+        $state = $fake->state;
     } else if (preg_match('~^clock/(-?\d+)\z~', $action, $m) === 1) {
         $state['now'] = time() + (int) $m[1];
     } else {
@@ -79,7 +120,17 @@ foreach ($_SERVER as $name => $value) {
 $host = (string) preg_replace('/:\d+\z/', '', $_SERVER['HTTP_HOST'] ?? 'localhost');
 $service = new fake_service($apibase, $state);
 [$status, $responseheaders, $body] = $service->handle($method, $host, $path, $headers, (string) file_get_contents('php://input'));
-file_put_contents($statefile, json_encode($service->state), LOCK_EX);
+// The body of an object sent to the storage is binary, which JSON cannot hold (json_encode() would fail and the state would be
+// lost); the storage keeps it in base64 already, so the copy of the last body is dropped.
+if (preg_match('//u', (string) $service->state['lastbody']) !== 1) {
+    $service->state['lastbody'] = null;
+}
+$json = json_encode($service->state);
+if ($json === false) {
+    http_response_code(500);
+    return;
+}
+file_put_contents($statefile, $json, LOCK_EX);
 http_response_code($status);
 foreach ($responseheaders as $name => $value) {
     header($name . ': ' . $value);

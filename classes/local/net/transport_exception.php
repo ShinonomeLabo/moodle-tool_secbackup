@@ -30,9 +30,30 @@ use tool_secbackup\local\plugin_exception;
  */
 class transport_exception extends plugin_exception {
     /**
+     * @var string The debug information of a connection, or of every lookup over HTTPS, that failed at once (cURL error 7:
+     *     refused, unreachable or denied by the system), and so did not time out.
+     */
+    public const CONNECT_FAILED = 'cURL error 7';
+
+    /** @var string[] The errors whose debug information can say that the connection failed at once. */
+    private const CONNECTIONS = ['transport_connect', 'dns_doh_unavailable'];
+
+    /**
+     * Whether an error of the plugin is a connection to the service or its storage, or the lookups over HTTPS, that failed at
+     * once: the only failure of the network that a denial of the system (SELinux) can be. A timeout and a failed lookup are
+     * not.
+     *
+     * @param plugin_exception $e The error; also one that was made again from its parts.
+     * @return bool
+     */
+    public static function failed_at_connect(plugin_exception $e): bool {
+        return in_array($e->errorcode, self::CONNECTIONS, true) && $e->debuginfo === self::CONNECT_FAILED;
+    }
+
+    /**
      * Constructor.
      *
-     * @param string $errorcode One of the dns_* or transport_* language strings.
+     * @param string $errorcode One of the dns_*, transport_* or object_* language strings.
      * @param string|null $debuginfo Short technical detail without secrets, such as "cURL error 60".
      */
     public function __construct(string $errorcode, ?string $debuginfo = null) {

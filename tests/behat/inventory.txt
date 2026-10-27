@@ -8,6 +8,7 @@
 # Status page.
 index.php | Connection settings | status.feature: The status page links to the connection settings
 index.php | Connection diagnostics | status.feature: The status page links to the connection diagnostics
+index.php | Back up now | backup_status.feature: The button queues a backup and cannot be pressed again
 
 # Connection settings page: the first step, the second step, the registered site.
 connect.php | Next | registration.feature: Register the site
@@ -26,6 +27,7 @@ settings.php | Shinonome LMS Backup | plugin_installed.feature: The category of 
 settings.php | Status | registration.feature: The status page explains that the site is not registered
 settings.php | Connection settings | registration.feature: Register the site
 settings.php | Connection diagnostics | diagnostics.feature: The registered site is checked at once
+settings.php | Limits of the backup | limits.feature: A valid limit is saved and an invalid one is refused
 
 # A page of Moodle that this plugin adds a row to (Site administration > Server > Tasks > Scheduled tasks). The edit, disable
 # and run-now controls of the row are Moodle's, not the plugin's; the plugin owns the name of the task.

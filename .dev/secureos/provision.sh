@@ -28,28 +28,78 @@ errorlog="$dataroot/secbk-php-errors.log"
 extrarepos=none
 extensions="curl dom gd iconv intl json mbstring openssl pgsql simplexml soap sodium xml zip zlib ctype"
 
+# Runs a command that reads the mirrors of the distribution, up to three times, a minute apart: a mirror that fails for a
+# while (an expired certificate, a sync in progress) is usually not the one that the next attempt gets. Anything else that
+# fails fails the same way three times, and then stops the script.
+from_mirrors() {
+    local attempt
+    for attempt in 1 2 3; do
+        if "$@"; then
+            return 0
+        fi
+        [ "$attempt" = 3 ] || { echo "a mirror of the distribution failed (attempt $attempt of 3); again in 60 s" >&2; sleep 60; }
+    done
+    echo "the mirrors of the distribution failed three times: $*" >&2
+    return 1
+}
+
 # The newest stream of a dnf module, or nothing when the distribution has no such module.
 newest_stream() {
     { dnf -q module list "$1" 2> /dev/null || true; } | awk -v name="$1" '$1 == name { print $2 }' | sort -V | tail -n 1
 }
 
+# The source repository of a repository of the distribution (appstream, baseos or crb) on the primary server of the
+# distribution, for the release of this machine. The mirrors of a source repository can lag hours behind the binary one
+# after an update (a run failed on a mirror that listed no source package of the PHP just installed, three times), while the
+# primary server is always current. What is read from it is checked as from a mirror: the signature of the distribution and
+# the version of the installed PHP.
+primary_source_url() {
+    local folder
+    case "$1" in
+        appstream) folder=AppStream ;;
+        baseos) folder=BaseOS ;;
+        crb) folder=CRB ;;
+        *) return 1 ;;
+    esac
+    case "$ID" in
+        rocky) echo "https://dl.rockylinux.org/pub/rocky/$(rpm -E %rhel)/$folder/source/tree/" ;;
+        almalinux) echo "https://vault.almalinux.org/$(rpm -E %rhel)/$folder/Source/" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Rocky Linux 9 and AlmaLinux 9 have no php-sodium for PHP 8.1 and later: EPEL's package is for PHP 8.0. The extension is
 # part of PHP, so it is built from the source package of the distribution's own PHP, with libsodium-devel from EPEL.
-# The source repository is the one that belongs to the repository PHP comes from; the source package must be signed by the
-# distribution and must be the version that is installed; and the result must load in php-fpm and in the command line.
+# The source repository is the one that belongs to the repository PHP comes from, read from the primary server of the
+# distribution (primary_source_url), and the package is the one that the installed PHP was built from, by name, version and
+# release: the binary comes from a mirror, which can be behind the primary server or ahead of the mirror of the sources.
+# The source package must be signed by the distribution and must be the version that is installed; and the result must load
+# in php-fpm and in the command line.
 build_sodium() {
-    local work repos repo installed modules
+    local work repos repo source srpms srpm installed modules
     work="$(mktemp -d)"
-    dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
+    from_mirrors dnf -y install gcc make autoconf php-devel libsodium-devel rpm-build
     # The whole output is read first: a pipe into head can fail when head ends before dnf does (SIGPIPE under pipefail).
     repos="$(dnf -q repoquery --qf '%{repoid}\n' php-common)"
     repo="${repos%%$'\n'*}"
     [ -n "$repo" ] || { echo "cannot tell which repository PHP comes from" >&2; exit 1; }
+    source="$(primary_source_url "$repo")" || { echo "no primary server is known for the source of $repo on $ID" >&2; exit 1; }
+    # php-<version>-<release>.src.rpm, without .src.rpm: the name, version and release of the source package to download.
+    srpms="$(rpm -q --qf '%{SOURCERPM}\n' php-common)"
+    srpm="${srpms%%$'\n'*}"
+    srpm="${srpm%.src.rpm}"
+    [[ "$srpm" == php-* ]] || { echo "cannot tell which source package PHP was built from" >&2; exit 1; }
     installed="$(php-config --version)"
     (
         set -e
         cd "$work"
-        dnf -y --enablerepo="$repo-source" download --source php
+        # Only the repository of PHP and its source repository: dnf download --source would also enable the source repository
+        # of every other enabled one (EPEL's too), whose mirrors are not needed here and can fail. The source repository is
+        # read from the primary server instead of its mirror list, and every attempt reads its metadata again (--refresh):
+        # without it, an attempt reuses the list that the first one cached.
+        from_mirrors dnf -y --refresh --disablerepo='*' --enablerepo="$repo" --enablerepo="$repo-source" \
+            --setopt="$repo-source.baseurl=$source" --setopt="$repo-source.mirrorlist=" --setopt="$repo-source.metalink=" \
+            download --source "$srpm"
         signature="$(rpm -K ./php-*.src.rpm)"
         echo "$signature" >&2
         if [[ "$signature" != *'signatures OK'* || "$signature" =~ NOKEY|BAD|'NOT OK' ]]; then
@@ -78,13 +128,16 @@ build_sodium() {
 
 install_el() {
     local phpstream pgstream
-    dnf -y install dnf-plugins-core
+    from_mirrors dnf -y install dnf-plugins-core
     phpstream="$(newest_stream php)"
     pgstream="$(newest_stream postgresql)"
-    [ -z "$phpstream" ] || { dnf -y module reset php; dnf -y module enable "php:$phpstream"; }
-    [ -z "$pgstream" ] || { dnf -y module reset postgresql; dnf -y module enable "postgresql:$pgstream"; }
+    [ -z "$phpstream" ] || { from_mirrors dnf -y module reset php; from_mirrors dnf -y module enable "php:$phpstream"; }
+    [ -z "$pgstream" ] || {
+        from_mirrors dnf -y module reset postgresql
+        from_mirrors dnf -y module enable "postgresql:$pgstream"
+    }
     # php-fpm only: the "php" package is mod_php, which would run PHP inside Apache. A package AppStream lacks is skipped.
-    dnf -y install --setopt=strict=0 httpd git rsync curl php-cli php-fpm php-pgsql php-intl php-mbstring php-xml php-zip \
+    from_mirrors dnf -y install --setopt=strict=0 httpd git rsync curl php-cli php-fpm php-pgsql php-intl php-mbstring php-xml php-zip \
         php-gd php-soap php-opcache php-sodium postgresql-server policycoreutils-python-utils audit setroubleshoot-server
     # Whatever AppStream did not provide comes from EPEL and CRB, and only that.
     local missing=() unbuilt=() ext
@@ -92,7 +145,7 @@ install_el() {
         php -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$ext" || missing+=("$ext")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
-        dnf -y install epel-release
+        from_mirrors dnf -y install epel-release
         dnf config-manager --set-enabled crb epel
         for ext in "${missing[@]}"; do
             dnf -y install "php-$ext" || unbuilt+=("$ext")
@@ -110,8 +163,8 @@ install_el() {
 install_deb() {
     local phpver
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get -y install apache2 git rsync curl postgresql apparmor apparmor-utils php-cli php-fpm php-pgsql php-intl php-mbstring \
+    from_mirrors apt-get update
+    from_mirrors apt-get -y install apache2 git rsync curl postgresql apparmor apparmor-utils php-cli php-fpm php-pgsql php-intl php-mbstring \
         php-xml php-zip php-gd php-soap php-curl
     phpver="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
     apt-get -y install "php$phpver-opcache" || true

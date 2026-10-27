@@ -27,7 +27,10 @@
 
 require_once(__DIR__ . '/../../../../../lib/behat/behat_base.php');
 
+use Behat\Mink\Element\NodeElement;
 use Behat\Mink\Exception\ExpectationException;
+use Facebook\WebDriver\Exception\NoSuchWindowException;
+use tool_secbackup\local\backup\run_record;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\endpoint\endpoint;
 use tool_secbackup\local\enrollment\enroller;
@@ -155,7 +158,9 @@ class behat_tool_secbackup extends behat_base {
         $tab = array_shift($nodes);
         $link = array_pop($nodes);
 
-        // The click may meet a page that the step before has not finished leaving, so it is tried again.
+        // The click may meet a page that the step before has not finished leaving, so it is tried again. Moodle's step makes
+        // its checks after the click; when they meet the page that is being replaced, the attempt is tried again and clicks
+        // "Site administration" once more, which the new page has too.
         $this->click_and_wait_for_new_page(function (): void {
             $this->execute('behat_navigation::i_select_from_primary_navigation', [get_string('administrationsite')]);
         }, 'Site administration');
@@ -178,24 +183,30 @@ class behat_tool_secbackup extends behat_base {
      * so an element can be missing at first, or can be gone from the old page when it is clicked. The attempt starts again
      * with a new search, until the time of Behat for slow steps is over.
      *
+     * A click that loads a page is the last command of its attempt: the checks that Moodle makes after the click of a step
+     * (pending JavaScript, exceptions, deprecated styles and icons) wait until the new page is there
+     * (click_and_wait_for_new_page()).
+     *
      * @param string $xpath The element.
      * @param string $message What to say when the element did not come.
      * @param bool $loadspage Whether the click loads a new page, which is then waited for.
      * @param string $name What is clicked, for the message when no new page came.
      */
     private function click_when_present(string $xpath, string $message, bool $loadspage, string $name = ''): void {
-        $attempt = function () use ($xpath, $message): void {
+        $find = function () use ($xpath, $message): NodeElement {
             $node = $this->getSession()->getPage()->find('xpath', $xpath);
             if ($node === null) {
                 throw new ExpectationException($message, $this->getSession());
             }
-            $this->execute('behat_general::i_click_on', [$node, 'NodeElement']);
+            return $node;
         };
         if ($loadspage) {
-            $this->click_and_wait_for_new_page($attempt, $name);
+            $this->click_and_wait_for_new_page(function () use ($find): void {
+                $find()->click();
+            }, $name);
         } else {
-            $this->spin(function () use ($attempt): bool {
-                $attempt();
+            $this->spin(function () use ($find): bool {
+                $this->execute('behat_general::i_click_on', [$find(), 'NodeElement']);
                 return true;
             }, false, self::get_extended_timeout());
         }
@@ -205,7 +216,19 @@ class behat_tool_secbackup extends behat_base {
      * Runs a click that loads a new page, again and again until it could be done, and returns when the new page has
      * replaced the old one.
      *
-     * A marker is put on the old page before each attempt; the new page does not have it.
+     * A marker is put on the old page before each attempt; the new page does not have it. An attempt is tried again only
+     * when it threw, so the click is the last command of the attempt: an attempt that clicked and then failed on the page
+     * that was being replaced would be tried again on the new page, where the element is not, and the step would fail with
+     * the first exception although the page had come. (The click of the primary navigation in
+     * i_open_in_site_administration() is Moodle's step, which checks after the click; trying it again is harmless there.)
+     *
+     * While the old page is replaced, safaridriver can answer a command with "no such window" (the NoSuchWindowException of
+     * php-webdriver): WebKit gives up a script that runs when the old page unloads ("WindowNotFound;Callback was not called
+     * before the unload event."), and the same window then shows the new page. So such an answer during the wait means that the
+     * new page has not come yet. (Moodle 4.5 and 5.0 catch this answer in their wait for pending JavaScript as the
+     * NoSuchWindowException of Mink, which the php-webdriver driver does not throw; Moodle 5.1 and later catch the class of
+     * php-webdriver there, but not in the check for deprecated icons. See the comment of the job behat-safari in ci.yml.) The
+     * checks that Moodle makes after the actions of a step run once the new page is there.
      *
      * @param callable $click The click; it throws when it cannot be done (yet).
      * @param string $name What is clicked, for the message when no new page came.
@@ -218,15 +241,37 @@ class behat_tool_secbackup extends behat_base {
         }, false, self::get_extended_timeout());
         // A page can be slow to load (an emulated browser on a slow machine took more than the usual 10 seconds), so the wait
         // is six times the extended time of Behat; it ends as soon as the new page is there.
-        $arrived = $this->getSession()->wait(
-            self::get_extended_timeout() * 6 * 1000,
-            '(typeof window.tool_secbackup_old_page === "undefined" && document.readyState === "complete")'
-        );
+        $end = microtime(true) + self::get_extended_timeout() * 6;
+        // The answer "no such window" of the last check, if it had one.
+        $lostwindow = null;
+        do {
+            try {
+                $arrived = (bool) $this->getSession()->evaluateScript('return typeof window.tool_secbackup_old_page === "undefined"'
+                    . ' && document.readyState === "complete";');
+                $lostwindow = null;
+            } catch (NoSuchWindowException $e) {
+                $arrived = false;
+                $lostwindow = $e;
+            }
+            if (!$arrived) {
+                usleep(100000);
+            }
+        } while (!$arrived && microtime(true) < $end);
         if (!$arrived) {
             // Going on would let the next step look at the old page, and a text that both pages show would pass.
-            throw new ExpectationException('"' . $name . '" did not load a new page.', $this->getSession());
+            $message = '"' . $name . '" did not load a new page.';
+            if ($lostwindow !== null) {
+                // Then the window itself may be gone, not only the new page late: the message says so, with the class that
+                // .dev/ci/behat-known-failures.sh looks for, and the answer is the previous exception.
+                $message .= ' The last check of the wait got ' . get_class($lostwindow) . ' ("no such window"): the window'
+                    . ' itself may be gone.';
+            }
+            throw new ExpectationException($message, $this->getSession(), $lostwindow);
         }
         $this->wait_for_pending_js();
+        $this->look_for_exceptions();
+        $this->look_for_deprecated_styles();
+        $this->look_for_deprecated_icons();
     }
 
     /**
@@ -272,13 +317,90 @@ class behat_tool_secbackup extends behat_base {
     }
 
     /**
+     * Makes the fake backup service send the settings of the backup, with a window of one hour that starts twelve hours from
+     * now (in UTC), so that the scheduled start never falls in the time that a scenario runs, whatever the time of day is.
+     * A backup is then started only by the button.
+     *
+     * @Given /^the fake backup service gives the settings of the backup$/
+     */
+    public function the_fake_backup_service_gives_the_settings_of_the_backup(): void {
+        $this->give_settings(12 * HOURSECS);
+    }
+
+    /**
+     * Sends settings whose window of one hour starts some seconds from now.
+     *
+     * @param int $offset Seconds from now to the start of the window, which is then rounded down to the hour or the half hour.
+     */
+    private function give_settings(int $offset): void {
+        // The service sends times on the hour or the half hour.
+        $from = intdiv(time() + $offset, 1800) * 1800;
+        $start = gmdate('H:i', $from);
+        $end = gmdate('H:i', $from + HOURSECS);
+        $this->control('instruction/settings', [
+            'seq' => 1,
+            'body' => [
+                'timezone' => 'UTC',
+                'window_start' => $start,
+                'window_end' => $end,
+                'runs_per_day' => 1,
+                'full_interval' => 'weekly',
+                'bandwidth_mbps' => 0,
+                'include_logs' => false,
+            ],
+        ]);
+    }
+
+    /**
+     * Puts a backup in the record that completed a short time ago.
+     *
+     * @Given /^a backup of the site completed in (\d+) seconds after sending (\d+) chunks of (\d+) bytes$/
+     * @param string $seconds How long the backup took.
+     * @param string $chunks The chunks that were sent.
+     * @param string $bytes The bytes that were sent.
+     */
+    public function a_backup_of_the_site_completed(string $seconds, string $chunks, string $bytes): void {
+        $start = time() - (int) $seconds - 60;
+        $run = run_record::create('schedule', $start);
+        $run->add_uploaded((int) $bytes, (int) $chunks);
+        $run->finish($start + (int) $seconds);
+    }
+
+    /**
+     * Puts a backup in the record that was stopped a short time ago.
+     *
+     * @Given /^a backup of the site was stopped with the reason "(?P<code_string>[a-z_]+)"$/
+     * @param string $code The reason.
+     */
+    public function a_backup_of_the_site_was_stopped(string $code): void {
+        $start = time() - 300;
+        run_record::create('schedule', $start)->abort($code, $start + 100);
+    }
+
+    /**
+     * Puts a backup in the record that the backup service did not start.
+     *
+     * @Given /^the backup service did not start a backup of the site, with the answer "(?P<code_string>[a-z_]+)"$/
+     * @param string $code The answer of the service.
+     */
+    public function the_backup_service_did_not_start_a_backup(string $code): void {
+        $start = time() - 300;
+        run_record::create('manual', $start)->refuse($code, $start + 1);
+    }
+
+    /**
      * Sends a control request to the fake backup service.
      *
      * @param string $action Control action.
+     * @param array|null $body A body to send as JSON, or null for none.
      */
-    private function control(string $action): void {
+    private function control(string $action, ?array $body = null): void {
         $client = new \core\http_client(['ignoresecurity' => true]);
-        $response = $client->post(self::FAKE . '/_fake/' . $action, ['http_errors' => false, 'timeout' => 10]);
+        $options = ['http_errors' => false, 'timeout' => 10];
+        if ($body !== null) {
+            $options['json'] = $body;
+        }
+        $response = $client->post(self::FAKE . '/_fake/' . $action, $options);
         if ($response->getStatusCode() !== 204) {
             throw new \Exception(
                 'The fake backup service did not accept "' . $action . '". Start it with .dev/fakesec/start.sh.'

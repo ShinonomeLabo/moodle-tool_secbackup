@@ -1,0 +1,198 @@
+name: Storage
+
+# Whole backup runs on the kinds of storage that a site may have and the everyday CI does not: a data directory on NFS (v3 and
+# v4.2), files in an S3-compatible storage through tool_objectfs, and the run under SELinux and AppArmor in virtual machines.
+# Each run backs up a real site to the fake backup service with cli/backup.php or from the status page, and opens the backup
+# to check its files. Manual only: the runs take long, and the job secureos of ci.yml has the same run of the secure machines
+# with every other check. The input selects one kind, for a quicker answer while one of them is changed.
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'all, nfs (NFS v3 and v4.2), objectfs (files in MinIO through tool_objectfs) or secureos (a run in the SELinux and AppArmor machines).'
+        type: choice
+        options:
+          - all
+          - nfs
+          - objectfs
+          - secureos
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  # .dev/nfs/run.sh: the kernel's NFS server of the runner exports a folder to 127.0.0.1, it is mounted with the version of the
+  # row, and the site has its data directory there. The read speed that the reason nfs_slow is judged by is measured and kept.
+  nfs:
+    name: NFS v${{ matrix.nfs }} Moodle 5.3 PHP 8.4 pgsql
+    if: inputs.job == 'all' || inputs.job == 'nfs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        nfs: ['3', '4.2']
+
+    services:
+      db:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP 8.4
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      # 3 to 4 minutes on GitHub (run 39581833297).
+      - name: Back up a site whose data directory is on NFS v${{ matrix.nfs }}
+        timeout-minutes: 30
+        env:
+          NFS_VERSION: ${{ matrix.nfs }}
+        run: bash .dev/nfs/run.sh "$NFS_VERSION" MOODLE_503_STABLE
+
+      - name: Show the results
+        if: ${{ !cancelled() }}
+        run: |
+          file="$RUNNER_TEMP/secbk-storage/results.txt"
+          [ -f "$file" ] || exit 0
+          cat "$file"
+          { echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The results and the logs of the fake service, never the secret key of the site or the admin password.
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nfs-${{ matrix.nfs }}
+          path: |
+            ${{ runner.temp }}/secbk-storage/results.txt
+            ${{ runner.temp }}/secbk-storage/measure-*.txt
+            ${{ runner.temp }}/secbk-storage/verify.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # .dev/objectfs/run.sh: MinIO in a container, tool_objectfs at a pinned commit, every file of the site moved to the bucket;
+  # the status page is opened in Chrome (ChromeDriver of the runner image) and the backup is started with its button.
+  objectfs:
+    name: tool_objectfs and MinIO Moodle 4.5 PHP 8.3 pgsql
+    if: inputs.job == 'all' || inputs.job == 'objectfs'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    services:
+      db:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP 8.3
+        timeout-minutes: 10
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Create the database
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE moodle'
+
+      # MinIO no longer distributes its server, so the image is Bitnami's legacy build of MinIO RELEASE.2025-04-22T22-12-26Z
+      # (no longer updated), pinned by tag and digest (.dev/objectfs/README.md).
+      # About 3 minutes on GitHub (run 39581833297).
+      - name: Back up a site whose files are in MinIO through tool_objectfs
+        timeout-minutes: 30
+        env:
+          SECBK_MINIO_IMAGE: bitnamilegacy/minio:2025.4.22-debian-12-r2@sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01
+        run: bash .dev/objectfs/run.sh MOODLE_405_STABLE
+
+      - name: Show the results
+        if: ${{ !cancelled() }}
+        run: |
+          file="$RUNNER_TEMP/secbk-storage/results.txt"
+          [ -f "$file" ] || exit 0
+          cat "$file"
+          { echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the results and the screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: objectfs
+          path: |
+            ${{ runner.temp }}/secbk-storage/results.txt
+            ${{ runner.temp }}/secbk-storage/screen.txt
+            ${{ runner.temp }}/secbk-storage/*.png
+            ${{ runner.temp }}/secbk-storage/verify.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The rows run of the job secureos of ci.yml, alone: a whole backup run in a virtual machine under SELinux (Rocky Linux 9)
+  # and AppArmor (Ubuntu 24.04), started with the button and run by the cron of Moodle from the web server
+  # (.dev/secureos/run-check.sh). The steps are those of ci.yml; the connection URL is not used by this state.
+  secureos:
+    name: Secure OS ${{ matrix.template }} run
+    if: inputs.job == 'all' || inputs.job == 'secureos'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        template: [rocky-9, ubuntu-24.04]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Lima
+        timeout-minutes: 10
+        uses: lima-vm/lima-actions/setup@55627e31b78637bf254a8b2a14da8ea7d12564e5 # v1.1.0
+        with:
+          version: v2.2.1
+          ssh: false
+
+      # 5 to 10 minutes on GitHub (run 39581833297).
+      - name: A backup run in ${{ matrix.template }}
+        timeout-minutes: 45
+        env:
+          TEMPLATE: ${{ matrix.template }}
+        run: bash .dev/secureos/run-template.sh -s run "$TEMPLATE"
