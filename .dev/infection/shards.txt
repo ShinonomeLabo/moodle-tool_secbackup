@@ -25,10 +25,12 @@ crypto-reader classes/local/crypto/padme.php
 crypto-keys classes/local/crypto/artifact_signature.php
 crypto-keys classes/local/crypto/base64url.php
 crypto-keys classes/local/crypto/fingerprint.php
+crypto-keys classes/local/crypto/key_exchange.php
 crypto-keys classes/local/crypto/key_exception.php
 crypto-keys classes/local/crypto/public_key_format.php
 crypto-keys classes/local/crypto/signing_keypair.php
 crypto-keys classes/local/crypto/signing_keys.php
+crypto-keys classes/local/crypto/site_keys.php
 net-object classes/local/net/guarded_options.php
 net-object classes/local/net/object_transport.php
 net-object classes/local/net/object_url.php
