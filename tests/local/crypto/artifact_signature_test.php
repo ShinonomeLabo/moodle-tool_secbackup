@@ -170,4 +170,146 @@ final class artifact_signature_test extends \basic_testcase {
         $this->expectException(\coding_exception::class);
         artifact_signature::manifest_message(self::SITE, 'x', self::sha());
     }
+
+    public function test_a_signature_of_the_manifest_verifies(): void {
+        $pair = signing_keypair::generate();
+        $signature = artifact_signature::manifest($pair, self::SITE, self::RUN, self::sha());
+        $this->assertTrue(artifact_signature::verify_manifest($pair->public_key(), self::SITE, self::RUN, self::sha(), $signature));
+    }
+
+    public function test_the_verified_message_is_the_one_of_the_service(): void {
+        // A signature made by libsodium over the message written out above, not by manifest().
+        $pair = sodium_crypto_sign_keypair();
+        $raw = sodium_crypto_sign_detached(hex2bin(self::MANIFEST_HEX), sodium_crypto_sign_secretkey($pair));
+        $signature = base64url::encode($raw);
+        $this->assertTrue(artifact_signature::verify_manifest(
+            sodium_crypto_sign_publickey($pair),
+            self::SITE,
+            self::RUN,
+            self::sha(),
+            $signature
+        ));
+    }
+
+    /**
+     * A manifest whose signature must not verify: what is changed from the signed values (32 bytes of 0x01 as the digest).
+     *
+     * @return array
+     */
+    public static function unverified_provider(): array {
+        $sha = base64_encode(str_repeat("\x01", 32));
+        $othersha = 'B' . substr($sha, 1);
+        return [
+            // The first character of the digest, still a canonical digest of 32 bytes.
+            'a digest that differs in one character' => [['sha' => $othersha]],
+            'another run' => [['run' => '33333333-3333-4333-8333-333333333333']],
+            'another site' => [['site' => '44444444-4444-4444-8444-444444444444']],
+            'another key' => [['key' => 'another']],
+            'the signature of the index of the same run' => [['signature' => 'index']],
+            'a signature with one bit changed' => [['signature' => 'flipped']],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unverified_provider')]
+    /**
+     * A signature does not verify for any other manifest, site, run or key.
+     *
+     * @dataProvider unverified_provider
+     * @param array $change What differs from the signed manifest.
+     */
+    public function test_a_signature_does_not_verify_for_anything_else(array $change): void {
+        $pair = signing_keypair::generate();
+        $signature = artifact_signature::manifest($pair, self::SITE, self::RUN, self::sha());
+        $key = $pair->public_key();
+        if (($change['key'] ?? null) === 'another') {
+            $key = signing_keypair::generate()->public_key();
+        }
+        if (($change['signature'] ?? null) === 'index') {
+            $signature = artifact_signature::index($pair, self::SITE, self::RUN, self::sha(), 1);
+        } else if (($change['signature'] ?? null) === 'flipped') {
+            $raw = base64url::decode($signature);
+            $raw[10] = chr(ord($raw[10]) ^ 0x01);
+            $signature = base64url::encode($raw);
+        }
+        $this->assertFalse(artifact_signature::verify_manifest(
+            $key,
+            $change['site'] ?? self::SITE,
+            $change['run'] ?? self::RUN,
+            $change['sha'] ?? self::sha(),
+            $signature
+        ));
+        // The control: the signature of the unchanged manifest verifies.
+        $this->assertTrue(artifact_signature::verify_manifest(
+            $pair->public_key(),
+            self::SITE,
+            self::RUN,
+            self::sha(),
+            artifact_signature::manifest($pair, self::SITE, self::RUN, self::sha())
+        ));
+    }
+
+    /**
+     * Values that are not in their form. Each is given in place of the value of a valid signature, which then must not verify.
+     *
+     * @return array
+     */
+    public static function malformed_provider(): array {
+        $sha = base64_encode(str_repeat("\x01", 32));
+        return [
+            'a public key of 31 bytes' => ['key', fn(string $key) => substr($key, 1)],
+            'a public key of 33 bytes' => ['key', fn(string $key) => $key . "\0"],
+            'an empty public key' => ['key', fn(string $key) => ''],
+            'the public key in base64' => ['key', fn(string $key) => base64_encode($key)],
+            // A point of small order, which libsodium refuses as a public key.
+            'a public key of zeros' => ['key', fn(string $key) => str_repeat("\0", 32)],
+            'a signature in standard base64' => ['signature', fn(string $signature) => base64_encode(
+                base64url::decode($signature)
+            )],
+            'a signature with padding' => ['signature', fn(string $signature) => $signature . '=='],
+            'a signature with a line feed' => ['signature', fn(string $signature) => $signature . "\n"],
+            'a signature of 63 bytes' => ['signature', fn(string $signature) => base64url::encode(
+                substr(base64url::decode($signature), 1)
+            )],
+            'a signature of 65 bytes' => ['signature', fn(string $signature) => base64url::encode(
+                base64url::decode($signature) . "\0"
+            )],
+            'an empty signature' => ['signature', fn(string $signature) => ''],
+            // Signed as they are, by libsodium: only the check of the form refuses them.
+            'a run with capital letters' => ['run', fn(string $run) => 'AAAAAAAA' . substr($run, 8)],
+            'a site with a line feed' => ['site', fn(string $site) => $site . "\n"],
+            'a digest that is not canonical' => ['sha', fn(string $sha) => substr($sha, 0, 42) . 'F='],
+            'a digest of 35 bytes' => ['sha', fn(string $sha) => base64_encode(str_repeat("\x01", 35))],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformed_provider')]
+    /**
+     * A value that is not in its form does not verify, and is not a coding error: it comes from outside.
+     *
+     * Where the message changes, the signature is made by libsodium over the changed message, so that only the check of the form
+     * can refuse it.
+     *
+     * @dataProvider malformed_provider
+     * @param string $field The value that is changed: key, signature, site, run or sha.
+     * @param \Closure $change Makes the changed value from the valid one.
+     */
+    public function test_a_malformed_value_does_not_verify(string $field, \Closure $change): void {
+        $pair = sodium_crypto_sign_keypair();
+        $values = ['key' => sodium_crypto_sign_publickey($pair), 'site' => self::SITE, 'run' => self::RUN, 'sha' => self::sha()];
+        if ($field !== 'signature') {
+            $values[$field] = $change($values[$field]);
+        }
+        $message = "SECBACKUP-MANIFEST-V1\n" . $values['site'] . "\n" . $values['run'] . "\n" . $values['sha'];
+        $values['signature'] = base64url::encode(sodium_crypto_sign_detached($message, sodium_crypto_sign_secretkey($pair)));
+        if ($field === 'signature') {
+            $values['signature'] = $change($values['signature']);
+        }
+        $this->assertFalse(artifact_signature::verify_manifest(
+            $values['key'],
+            $values['site'],
+            $values['run'],
+            $values['sha'],
+            $values['signature']
+        ));
+    }
 }

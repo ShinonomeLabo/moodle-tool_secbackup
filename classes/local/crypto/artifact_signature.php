@@ -17,7 +17,8 @@
 namespace tool_secbackup\local\crypto;
 
 /**
- * The signatures that the backup service checks on the manifest and the index of a run.
+ * The signatures that the backup service checks on the manifest and the index of a run, and that a restore checks on the
+ * manifest before it trusts it.
  *
  * The messages are the contract's: a name and a version, then the site, the run and the SHA-256 (standard base64), and for
  * the index the count, each on a line of its own. They are not the messages of request_signer, so a signature of a request
@@ -72,6 +73,39 @@ final class artifact_signature {
     }
 
     /**
+     * Whether a signature of the manifest is valid.
+     *
+     * Every value comes from outside (the restore gets them from the backup service and from the storage), so a value that is
+     * not in its form makes the signature invalid rather than a coding error: a public key that is not 32 bytes, a signature
+     * that is not 64 bytes in base64url without padding, and a site, run or digest that manifest() would refuse to sign. The
+     * message is the text itself, so another spelling of the same digest is another message.
+     *
+     * @param string $publickey The Ed25519 public key of the plugin of the site (32 bytes).
+     * @param string $siteid Site ID.
+     * @param string $runid Run ID.
+     * @param string $sha256base64 SHA-256 of the manifest chunk, in standard base64.
+     * @param string $signaturebase64url The signature, in base64url without padding.
+     * @return bool
+     */
+    public static function verify_manifest(
+        string $publickey,
+        string $siteid,
+        string $runid,
+        string $sha256base64,
+        string $signaturebase64url
+    ): bool {
+        $signature = base64url::decode($signaturebase64url);
+        if (
+            strlen($signature ?? '') !== SODIUM_CRYPTO_SIGN_BYTES
+            || strlen($publickey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES
+            || !self::well_formed($siteid, $runid, $sha256base64)
+        ) {
+            return false;
+        }
+        return sodium_crypto_sign_verify_detached($signature, self::manifest_message($siteid, $runid, $sha256base64), $publickey);
+    }
+
+    /**
      * The text that is signed for the manifest.
      *
      * @param string $siteid Site ID.
@@ -112,12 +146,22 @@ final class artifact_signature {
      * @throws \coding_exception When one is not in its form.
      */
     private static function check(string $siteid, string $runid, string $sha256base64): void {
-        $raw = preg_match('/^[A-Za-z0-9+\/]{43}=\z/', $sha256base64) === 1 ? base64_decode($sha256base64, true) : false;
-        if (
-            preg_match(self::UUID, $siteid) !== 1 || preg_match(self::UUID, $runid) !== 1
-            || $raw === false || base64_encode($raw) !== $sha256base64
-        ) {
+        if (!self::well_formed($siteid, $runid, $sha256base64)) {
             throw new \coding_exception('A site and a run are lower-case UUIDs, and a digest is the base64 of 32 bytes.');
         }
+    }
+
+    /**
+     * Whether the parts of a message are in their form.
+     *
+     * @param string $siteid Site ID: a lower-case UUID.
+     * @param string $runid Run ID: a lower-case UUID.
+     * @param string $sha256base64 SHA-256: the canonical standard base64 of 32 bytes.
+     * @return bool
+     */
+    private static function well_formed(string $siteid, string $runid, string $sha256base64): bool {
+        $raw = preg_match('/^[A-Za-z0-9+\/]{43}=\z/', $sha256base64) === 1 ? base64_decode($sha256base64, true) : false;
+        return preg_match(self::UUID, $siteid) === 1 && preg_match(self::UUID, $runid) === 1
+            && $raw !== false && base64_encode($raw) === $sha256base64;
     }
 }

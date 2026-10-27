@@ -33,9 +33,12 @@ defined('MOODLE_INTERNAL') || die();
  * the classes of this namespace call this function instead of the one of libsodium. PHPUnit loads this file, which declares
  * it, before any test runs.
  *
- * @param string $buffer The buffer, which is wiped.
+ * The parameter has no type of string: PHP would turn a value of another type, such as false, into a string before the call,
+ * and hide the SodiumException that libsodium throws for it.
+ *
+ * @param mixed $buffer The buffer, which is wiped.
  */
-function sodium_memzero(string &$buffer): void {
+function sodium_memzero(mixed &$buffer): void {
     signing_keys_test::$wiped[] = $buffer;
     \sodium_memzero($buffer);
 }
