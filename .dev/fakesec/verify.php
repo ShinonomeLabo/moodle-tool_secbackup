@@ -36,12 +36,14 @@ define('CLI_SCRIPT', true);
 
 require(__DIR__ . '/../../../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
+require_once(__DIR__ . '/../../tests/classes/fake_service.php');
 
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
 use tool_secbackup\local\crypto\public_key_format;
 use tool_secbackup\local\enrollment\state;
+use tool_secbackup\tests\fake_service;
 
 [$options, $unrecognised] = cli_get_params(
     ['secretkey' => '', 'state' => sys_get_temp_dir() . '/tool_secbackup_fakesec.json', 'help' => false],
@@ -90,11 +92,13 @@ $folder = make_request_directory();
 function secbk_dev_open(array $fake, string $key, string $name, array $context): chunk_reader {
     static $readers = [];
     if (!isset($readers[$key])) {
-        if (!isset($fake['objects'][$key])) {
+        // The objects are files of the folder of the state, or in the state itself (see fake_service::initial_state()).
+        $body = fake_service::stored_object($fake, $key);
+        if ($body === null) {
             cli_error("The storage has no object for the chunk $name.");
         }
         $path = $context[0] . '/' . sha1($key);
-        file_put_contents($path, base64_decode($fake['objects'][$key], true));
+        file_put_contents($path, $body);
         $readers[$key] = new chunk_reader($path, $context[1], $context[2], $context[3], $name);
     }
     return $readers[$key];

@@ -37,12 +37,40 @@ require __DIR__ . '/../../tests/classes/fake_service.php';
 
 use tool_secbackup\tests\fake_service;
 
+/**
+ * The state of a fresh service, whose storage keeps the objects as files in a folder; the files of an earlier state are
+ * removed (the folder is made again when the first object is stored).
+ *
+ * @param string $objectdir The folder of the objects.
+ * @return array
+ */
+function secbk_dev_fresh_state(string $objectdir): array {
+    if (is_dir($objectdir) && !is_link($objectdir)) {
+        // The iterator does not go into a link to a folder: the link itself is removed, never what it points to.
+        $items = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($objectdir, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($items as $item) {
+            if ($item->isDir() && !$item->isLink()) {
+                rmdir($item->getPathname());
+            } else {
+                unlink($item->getPathname());
+            }
+        }
+        rmdir($objectdir);
+    }
+    return array_merge(fake_service::initial_state(), ['objectdir' => $objectdir]);
+}
+
 $statefile = sys_get_temp_dir() . '/tool_secbackup_fakesec.json';
+// The stored objects are files under this folder, by key, and not in the state file (see fake_service::initial_state()).
+$objectdir = sys_get_temp_dir() . '/tool_secbackup_fakesec/objects';
 $apibase = getenv('SECBK_FAKESEC_URL') ?: 'http://localhost:8099/api/lms-backup/v1';
 $method = $_SERVER['REQUEST_METHOD'];
 $path = (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $saved = is_file($statefile) ? json_decode((string) file_get_contents($statefile), true) : null;
-$state = is_array($saved) ? $saved : fake_service::initial_state();
+$state = is_array($saved) ? $saved : secbk_dev_fresh_state($objectdir);
 
 if ($method === 'GET' && $path === '/_fake/state') {
     header('Content-Type: application/json');
@@ -52,7 +80,7 @@ if ($method === 'GET' && $path === '/_fake/state') {
 if ($method === 'POST' && str_starts_with($path, '/_fake/')) {
     $action = substr($path, strlen('/_fake/'));
     if ($action === 'reset') {
-        $state = fake_service::initial_state();
+        $state = secbk_dev_fresh_state($objectdir);
     } else if ($action === 'newcode') {
         $state['codeused'] = false;
     } else if (preg_match('~^mode/([a-z_]*)\z~', $action, $m) === 1) {
@@ -121,7 +149,7 @@ $host = (string) preg_replace('/:\d+\z/', '', $_SERVER['HTTP_HOST'] ?? 'localhos
 $service = new fake_service($apibase, $state);
 [$status, $responseheaders, $body] = $service->handle($method, $host, $path, $headers, (string) file_get_contents('php://input'));
 // The body of an object sent to the storage is binary, which JSON cannot hold (json_encode() would fail and the state would be
-// lost); the storage keeps it in base64 already, so the copy of the last body is dropped.
+// lost); the storage keeps it already (as a file, or in base64), so the copy of the last body is dropped.
 if (preg_match('//u', (string) $service->state['lastbody']) !== 1) {
     $service->state['lastbody'] = null;
 }

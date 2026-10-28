@@ -84,6 +84,9 @@ final class fake_service {
      * - instructions: the signed instruction envelopes that the status answer carries, by kind.
      * - awsranges: the content that GET /aws-ranges gives, or null for none.
      * - objects: the bodies that PUT /_s3/<key> stored, by key (base64, so that the state can be kept as JSON).
+     * - objectdir: a folder that keeps those bodies as files instead, each at its key (object_file()), or null for objects.
+     *   The development server sets it: a run that sends the whole Moodle program stores hundreds of megabytes, which one
+     *   state file would have to hold, read and write again for every request.
      * - signed: the headers that the last upload URL of a key was signed with, by key, with lower-case names.
      * - runs: the runs by ID; nextrun: counter of run IDs; holdverify: true to leave a completed run in verifying until
      *   verify_run() is called; receiptpayload: fields that replace those of the receipt; coremanifests: published lists.
@@ -109,6 +112,7 @@ final class fake_service {
             'instructions' => [],
             'awsranges' => null,
             'objects' => [],
+            'objectdir' => null,
             'signed' => [],
             'runs' => [],
             'nextrun' => 1,
@@ -258,7 +262,7 @@ final class fake_service {
      * @param array $payload Fields that replace those of the envelope's payload.
      */
     public function publish_core_manifest(string $version, string $build, string $gzip, array $payload = []): void {
-        $this->state['objects']['core-manifests/' . $version . '/' . $build . '.gz'] = base64_encode($gzip);
+        $this->keep('core-manifests/' . $version . '/' . $build . '.gz', $gzip);
         $this->state['coremanifests'][$version . '/' . $build] = $this->signer->parts(array_merge([
             'type' => 'core_manifest',
             'version' => $version,
@@ -355,7 +359,89 @@ final class fake_service {
      * @return string|null The body, or null when there is none.
      */
     private function stored(string $key): ?string {
-        return isset($this->state['objects'][$key]) ? (string) base64_decode($this->state['objects'][$key], true) : null;
+        return self::stored_object($this->state, $key);
+    }
+
+    /**
+     * An object of the storage of a state of the service: in its folder of objects when it has one, else in the state.
+     *
+     * @param array $state The state.
+     * @param string $key Key.
+     * @return string|null The body, or null when there is none.
+     */
+    public static function stored_object(array $state, string $key): ?string {
+        $dir = $state['objectdir'] ?? null;
+        if (!is_string($dir)) {
+            return isset($state['objects'][$key]) ? (string) base64_decode($state['objects'][$key], true) : null;
+        }
+        $file = self::object_file($dir, $key);
+        if ($file === null || !is_file($file)) {
+            return null;
+        }
+        $body = file_get_contents($file);
+        return $body === false ? null : $body;
+    }
+
+    /**
+     * The file of an object in a folder of objects: the key is its path in the folder.
+     *
+     * @param string $dir The folder.
+     * @param string $key Key.
+     * @return string|null The path, or null for a key that is not names of letters, digits, dots, hyphens and underscores
+     *     between single slashes, none of them starting with a dot (so none is "." or "..").
+     */
+    public static function object_file(string $dir, string $key): ?string {
+        if (preg_match('~\A[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*\z~', $key) !== 1) {
+            return null;
+        }
+        return rtrim($dir, '/') . '/' . $key;
+    }
+
+    /**
+     * Whether the storage has an object.
+     *
+     * @param string $key Key.
+     * @return bool
+     */
+    private function has_object(string $key): bool {
+        $dir = $this->state['objectdir'] ?? null;
+        if (!is_string($dir)) {
+            return isset($this->state['objects'][$key]);
+        }
+        $file = self::object_file($dir, $key);
+        return $file !== null && is_file($file);
+    }
+
+    /**
+     * Stores an object: in the folder of objects when the state has one (written beside it first, then renamed, so that a
+     * reader never sees part of it), else in the state.
+     *
+     * @param string $key Key.
+     * @param string $body Body.
+     * @return bool False when the key cannot be a file of the folder, or the file cannot be written.
+     */
+    private function keep(string $key, string $body): bool {
+        $dir = $this->state['objectdir'] ?? null;
+        if (!is_string($dir)) {
+            $this->state['objects'][$key] = base64_encode($body);
+            return true;
+        }
+        $file = self::object_file($dir, $key);
+        if ($file === null) {
+            return false;
+        }
+        $folder = dirname($file);
+        if (!is_dir($folder) && !mkdir($folder, 0700, true) && !is_dir($folder)) {
+            return false;
+        }
+        $part = $file . '.' . bin2hex(random_bytes(6)) . '.part';
+        if (file_put_contents($part, $body) !== strlen($body) || !rename($part, $file)) {
+            if (is_file($part)) {
+                unlink($part);
+            }
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -741,14 +827,18 @@ final class fake_service {
             if ($condition !== null && $condition !== '*') {
                 return [400, [], '<Error><Code>SignatureDoesNotMatch</Code></Error>'];
             }
-            if ($condition === '*' && isset($this->state['objects'][$key])) {
+            if ($condition === '*' && $this->has_object($key)) {
                 return [412, [], '<Error><Code>PreconditionFailed</Code></Error>'];
             }
-            $this->state['objects'][$key] = base64_encode($body);
+            if (!$this->keep($key, $body)) {
+                // Only a folder of objects refuses a key: one that is not a path of names in it.
+                return [400, [], '<Error><Code>InvalidArgument</Code></Error>'];
+            }
             return [200, [], ''];
         }
-        if ($method === 'GET' && isset($this->state['objects'][$key])) {
-            return [200, [], (string) base64_decode($this->state['objects'][$key], true)];
+        $stored = $method === 'GET' ? $this->stored($key) : null;
+        if ($stored !== null) {
+            return [200, [], $stored];
         }
         return [404, [], '<Error><Code>NoSuchKey</Code></Error>'];
     }

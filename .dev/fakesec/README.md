@@ -23,12 +23,12 @@ Two scripts of this folder make a whole backup run against the fake service poss
 `.dev/objectfs` and the state `run` of `.dev/secureos` use them). Both are Moodle command line scripts in the site's copy of
 the plugin.
 
-- `prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099]` resets the fake service, tells it which encryption
-  public key it accepts, registers the site (as the Behat step does), makes it send the settings of the backup with a window
-  twelve hours away (so that only a start by hand begins a run), receives them with the regular status request, and publishes
-  the list of the official files of this Moodle build, made from the site itself. The run then sends the added plugins as
-  code but not the whole Moodle program: the fake service keeps every stored object in its one state file, which the whole
-  program would make hundreds of megabytes large.
+- `prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099] [--no-core-manifest]` resets the fake service, tells
+  it which encryption public key it accepts, registers the site (as the Behat step does), makes it send the settings of the
+  backup with a window twelve hours away (so that only a start by hand begins a run), receives them with the regular status
+  request, and publishes the list of the official files of this Moodle build, made from the site itself. The run then sends
+  the added plugins as code but not the whole Moodle program. With `--no-core-manifest` no list is published and the run
+  sends the whole program, as a backup that is to be restored needs (`.dev/restore`).
 - `verify.php --secretkey=<file> [--state=<file>]` opens the last completed run that the fake service holds with the secret
   key of the key pair that `prepare.php` registered (the fixed key of the fake site has no known secret key), decrypts the
   list of the generation and every file of it, and checks each against the site: the SHA-1 of its pieces put together is the
@@ -40,11 +40,13 @@ the plugin.
 `start.sh` starts PHP's built-in server in the web server container of the environment. It runs as root and listens on
 127.0.0.1:8099 inside the container only; nothing is published to the host. It keeps its state in the container's temporary
 directory, in the file `tool_secbackup_fakesec.json`, which holds the last request, with the registration code that was sent.
+The objects that the site stores (the chunks, the lists and the indexes of the runs) are files under
+`tool_secbackup_fakesec/objects/` in the same directory, one for each key; a reset removes them.
 `.dev/env/behat.sh` starts it before it runs Behat, and every Behat scenario resets it first.
 
-To stop it (the file of the state stays until the container is removed):
+To stop it (the file of the state and the objects stay until the container is removed):
 
     .dev/env/run.sh 503 pgsql pkill -f 'php -S 127.0.0.1:8099'
 
-To remove the state as well, add `rm -f /tmp/tool_secbackup_fakesec.json` with `.dev/env/run.sh 503 pgsql`. The file router.php
-answers "not found" when it is not run by PHP's built-in server.
+To remove them as well, add `rm -rf /tmp/tool_secbackup_fakesec.json /tmp/tool_secbackup_fakesec` with
+`.dev/env/run.sh 503 pgsql`. The file router.php answers "not found" when it is not run by PHP's built-in server.

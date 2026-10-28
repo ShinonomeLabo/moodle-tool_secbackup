@@ -21,14 +21,16 @@
  * the Behat step does, without the pages); the fake service sends the settings of the backup, with a window of one hour that
  * starts twelve hours from now, so that only a start by hand (the button, or cli/backup.php --now) begins a run; the regular
  * status request receives them; and the list of the official files of this Moodle build is made from this site and published,
- * so that a run sends the added plugins as code but not the whole Moodle program (the fake service keeps every object in one
- * file of its state, which a whole program would make too large). The developer settings must trust the key of the fake
- * service and allow its address (.dev/env/devconfig.sh writes such settings).
+ * so that a run sends the added plugins as code but not the whole Moodle program, which is quicker. The developer settings must
+ * trust the key of the fake service and allow its address (.dev/env/devconfig.sh writes such settings).
  *
- * Usage: php <plugin>/.dev/fakesec/prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099]
- *   --publickey  the site's encryption public key; the fixed key of the fake site when it is left out. A key pair of the run's
- *                own lets .dev/fakesec/verify.php open the backup afterwards.
- *   --fake       the address of the fake service.
+ * Usage: php <plugin>/.dev/fakesec/prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099] [--no-core-manifest]
+ *   --publickey         the site's encryption public key; the fixed key of the fake site when it is left out. A key pair of
+ *                       the run's own lets .dev/fakesec/verify.php open the backup afterwards.
+ *   --fake              the address of the fake service.
+ *   --no-core-manifest  publish no list of official files: a run then sends the whole Moodle program as code, which a restore
+ *                       needs (a generation that holds only the differences from the official files cannot be restored yet,
+ *                       see .dev/restore).
  * Prints what it did, never a key or the registration code.
  *
  * @package    tool_secbackup
@@ -53,11 +55,11 @@ use tool_secbackup\local\trust\developer_settings;
 use tool_secbackup\tests\fake_service;
 
 [$options, $unrecognised] = cli_get_params(
-    ['publickey' => fake_service::ENCRYPTION_KEY, 'fake' => 'http://localhost:8099', 'help' => false],
+    ['publickey' => fake_service::ENCRYPTION_KEY, 'fake' => 'http://localhost:8099', 'no-core-manifest' => false, 'help' => false],
     ['h' => 'help']
 );
 if ($unrecognised || $options['help']) {
-    cli_writeln('Usage: php .dev/fakesec/prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099]');
+    cli_writeln('Usage: php .dev/fakesec/prepare.php [--publickey=secbk1:...] [--fake=http://localhost:8099] [--no-core-manifest]');
     exit($unrecognised ? 1 : 0);
 }
 $fake = rtrim($options['fake'], '/');
@@ -110,6 +112,10 @@ if (!settings::current()->is_received()) {
 }
 cli_writeln('settings received: window ' . gmdate('H:i', $from) . '-' . gmdate('H:i', $from + HOURSECS) . ' UTC');
 
+if ($options['no-core-manifest']) {
+    cli_writeln('official files not published: a run sends the whole Moodle program');
+    exit(0);
+}
 $diff = new core_diff();
 $parts = $diff->release_parts();
 $lines = '';

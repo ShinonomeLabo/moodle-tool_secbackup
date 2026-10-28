@@ -532,4 +532,45 @@ final class fake_service_test extends \basic_testcase {
         $this->assertSame(200, $put('third', [])[0]);
         $this->assertSame('third', base64_decode($service->state['objects']['k']));
     }
+
+    public function test_the_fake_storage_keeps_objects_as_files_when_it_has_a_folder_of_objects(): void {
+        $dir = make_request_directory();
+        $service = new fake_service(self::API, array_merge(fake_service::initial_state(), ['now' => self::NOW,
+            'objectdir' => $dir . '/objects']));
+        $put = static fn(string $key, string $body, array $more = []): array => $service->handle(
+            'PUT',
+            'app.example.test',
+            '/_s3/' . $key,
+            [
+                'content-length' => (string) strlen($body),
+                'x-amz-checksum-sha256' => base64_encode(hash('sha256', $body, true)),
+                'x-amz-object-lock-mode' => 'COMPLIANCE',
+                'x-amz-object-lock-retain-until-date' => '2025-11-07T00:00:00Z',
+            ] + $more,
+            $body
+        );
+        $this->assertSame(200, $put('sites/x/objects/y', "first\0", ['if-none-match' => '*'])[0]);
+        $this->assertSame("first\0", file_get_contents($dir . '/objects/sites/x/objects/y'));
+        $this->assertSame([], $service->state['objects']);
+        $this->assertSame(412, $put('sites/x/objects/y', 'second', ['if-none-match' => '*'])[0]);
+        $this->assertSame(
+            [200, [], "first\0"],
+            $service->handle('GET', 'app.example.test', '/_s3/sites/x/objects/y', [], '')
+        );
+        $this->assertSame("first\0", fake_service::stored_object($service->state, 'sites/x/objects/y'));
+        $this->assertNull(fake_service::stored_object($service->state, 'sites/x/objects/z'));
+        $this->assertSame(404, $service->handle('GET', 'app.example.test', '/_s3/sites/x/objects/z', [], '')[0]);
+        // A key that is not a path of names in the folder is refused, and nothing is written for it.
+        foreach (['../y', 'sites/../y', 'a//b', '.hidden', 'a/', 'a\\b'] as $key) {
+            $this->assertSame(400, $put($key, 'x')[0], $key);
+            $this->assertNull(fake_service::object_file($dir . '/objects', $key), $key);
+        }
+        $this->assertSame(['sites'], array_values(array_diff(scandir($dir . '/objects'), ['.', '..'])));
+        $this->assertFalse(is_file($dir . '/y'));
+        // The published list of official files is a file there too, and the state without a folder reads its own objects.
+        $service->publish_core_manifest('2024100703.10', '20250113', 'gzip');
+        $this->assertSame('gzip', file_get_contents($dir . '/objects/core-manifests/2024100703.10/20250113.gz'));
+        $this->assertSame('z', fake_service::stored_object(['objects' => ['k' => base64_encode('z')]], 'k'));
+        $this->assertNull(fake_service::stored_object(['objects' => []], 'k'));
+    }
 }

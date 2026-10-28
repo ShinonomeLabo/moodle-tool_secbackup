@@ -82,7 +82,7 @@ storage_config() {
 }
 
 # Starts the fake backup service on 127.0.0.1:8099 (its state is the file tool_secbackup_fakesec.json in the temporary folder
-# of this user, which verify.php reads). It keeps every stored object in that file, so it has no memory limit.
+# of this user, which verify.php reads, and the objects it stores are files of tool_secbackup_fakesec/objects next to it).
 storage_fake_start() {
     nohup php -d memory_limit=-1 -S 127.0.0.1:8099 "$(storage_plugin)/.dev/fakesec/router.php" \
         > "$SECBK_STORAGE_DIR/fakesec.log" 2>&1 &
