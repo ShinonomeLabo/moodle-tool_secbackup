@@ -74,6 +74,29 @@ final class temp_admin_test extends \advanced_testcase {
         return $DB->insert_record('mnet_host', ['wwwroot' => $wwwroot, 'ip_address' => '', 'name' => 'Host', 'public_key' => '']);
     }
 
+    /**
+     * How many contexts a user has, read from the table: context_user::instance() would make the context that it looks for.
+     *
+     * @param int $id The id of the user.
+     * @return int
+     */
+    private static function contexts(int $id): int {
+        global $DB;
+        return $DB->count_records('context', ['contextlevel' => CONTEXT_USER, 'instanceid' => $id]);
+    }
+
+    /**
+     * The columns of a user that user_create_user() takes from the settings of the site.
+     *
+     * @param int $id The id of the user.
+     * @return string[]
+     */
+    private static function site_columns(int $id): array {
+        global $DB;
+        $columns = 'lang, calendartype, maildisplay, mailformat, maildigest, autosubscribe, trackforums, city, country';
+        return (array) $DB->get_record('user', ['id' => $id], $columns, MUST_EXIST);
+    }
+
     public function test_the_administrator_is_made_when_the_site_does_not_have_one(): void {
         global $DB, $CFG;
         $this->assertFalse($DB->record_exists('user', ['username' => self::USERNAME]));
@@ -100,9 +123,106 @@ final class temp_admin_test extends \advanced_testcase {
         $this->assertGreaterThanOrEqual($before, (int) $user->timemodified);
         $this->assertTrue(validate_internal_user_password($user, self::PASSWORD));
         $this->assertStringNotContainsString(self::PASSWORD, $user->password);
-        // Read from the table: context_user::instance() would make the context that it looks for.
-        $this->assertTrue($DB->record_exists('context', ['contextlevel' => CONTEXT_USER, 'instanceid' => $id]));
+        $this->assertSame(1, self::contexts($id));
         $this->assertTrue(self::logs_in(self::PASSWORD));
+    }
+
+    public function test_a_new_administrator_takes_the_values_that_the_site_sets_for_new_users(): void {
+        $settings = ['lang' => 'xx', 'calendartype' => 'secbk_cal', 'defaultpreference_maildisplay' => '0',
+            'defaultpreference_mailformat' => '0', 'defaultpreference_maildigest' => '2', 'defaultpreference_autosubscribe' => '0',
+            'defaultpreference_trackforums' => '1', 'defaultcity' => 'Kyoto', 'country' => 'JP'];
+        foreach ($settings as $name => $value) {
+            set_config($name, $value);
+        }
+        $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
+        $this->assertSame(
+            ['lang' => 'xx', 'calendartype' => 'secbk_cal', 'maildisplay' => '0', 'mailformat' => '0', 'maildigest' => '2',
+                'autosubscribe' => '0', 'trackforums' => '1', 'city' => 'Kyoto', 'country' => 'JP'],
+            self::site_columns($id)
+        );
+    }
+
+    public function test_a_site_without_the_settings_gives_the_values_of_the_table(): void {
+        global $DB;
+        // Deleted from the table only: $CFG of this process keeps them, and they are not what counts.
+        $DB->delete_records_list('config', 'name', ['lang', 'calendartype', 'defaultpreference_maildisplay',
+            'defaultpreference_mailformat', 'defaultpreference_maildigest', 'defaultpreference_autosubscribe',
+            'defaultpreference_trackforums', 'defaultcity', 'country']);
+        $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
+        $this->assertSame(
+            ['lang' => 'en', 'calendartype' => 'gregorian', 'maildisplay' => '2', 'mailformat' => '1', 'maildigest' => '0',
+                'autosubscribe' => '1', 'trackforums' => '0', 'city' => '', 'country' => ''],
+            self::site_columns($id)
+        );
+    }
+
+    /**
+     * Settings of the site that a column of the user does not take, and the edges of the ones that it takes.
+     *
+     * @return array
+     */
+    public static function site_setting_provider(): array {
+        return [
+            'a calendar in capitals' => ['calendartype', 'Gregorian', 'calendartype', 'gregorian'],
+            'a calendar of 31 characters' => ['calendartype', str_repeat('a', 31), 'calendartype', 'gregorian'],
+            'a calendar of 30 characters' => ['calendartype', str_repeat('a', 30), 'calendartype', str_repeat('a', 30)],
+            'an empty calendar' => ['calendartype', '', 'calendartype', 'gregorian'],
+            'a display of 3' => ['defaultpreference_maildisplay', '3', 'maildisplay', '2'],
+            'a display with a line break' => ['defaultpreference_maildisplay', "1\n", 'maildisplay', '2'],
+            'a format of 2' => ['defaultpreference_mailformat', '2', 'mailformat', '1'],
+            'a digest of 3' => ['defaultpreference_maildigest', '3', 'maildigest', '0'],
+            'a digest of 1' => ['defaultpreference_maildigest', '1', 'maildigest', '1'],
+            'a subscription of 2' => ['defaultpreference_autosubscribe', '2', 'autosubscribe', '1'],
+            'a tracking of 2' => ['defaultpreference_trackforums', '2', 'trackforums', '0'],
+            'a city of 121 characters' => ['defaultcity', str_repeat('京', 121), 'city', ''],
+            'a city of 120 characters' => ['defaultcity', str_repeat('京', 120), 'city', str_repeat('京', 120)],
+            'a city with a line break' => ['defaultcity', "Kyoto\nShi", 'city', ''],
+            'a country in lower case' => ['country', 'jp', 'country', ''],
+            'a country of three letters' => ['country', 'JPN', 'country', ''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('site_setting_provider')]
+    /**
+     * A setting of the site that the column of the user does not take gives the value of the table instead.
+     *
+     * @dataProvider site_setting_provider
+     * @param string $setting The setting of the site.
+     * @param string $value Its value.
+     * @param string $column The column of the user.
+     * @param string $expected The value that the column gets.
+     */
+    public function test_a_setting_that_the_column_does_not_take_gives_the_value_of_the_table(
+        string $setting,
+        string $value,
+        string $column,
+        string $expected
+    ): void {
+        set_config($setting, $value);
+        $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
+        $this->assertSame($expected, self::site_columns($id)[$column]);
+    }
+
+    public function test_the_administrator_has_one_context_also_when_it_is_made_again(): void {
+        global $DB;
+        $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
+        $this->assertSame(1, self::contexts($id));
+        temp_admin::ensure(self::USERNAME, 'Another-Password-2');
+        $this->assertSame(1, self::contexts($id));
+        // A row that the import wrote without its context gets one.
+        $DB->delete_records('context', ['contextlevel' => CONTEXT_USER, 'instanceid' => $id]);
+        \context_helper::reset_caches();
+        temp_admin::ensure(self::USERNAME, 'Another-Password-3');
+        $this->assertSame(1, self::contexts($id));
+    }
+
+    public function test_no_event_is_triggered(): void {
+        $sink = $this->redirectEvents();
+        $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
+        set_user_preference('login_lockout', time(), $id);
+        temp_admin::ensure(self::USERNAME, 'Another-Password-2');
+        $this->assertSame([], $sink->get_events());
+        $sink->close();
     }
 
     public function test_the_administrator_is_a_site_administrator_once(): void {
@@ -123,8 +243,9 @@ final class temp_admin_test extends \advanced_testcase {
             'city' => 'Kyoto',
         ]);
         // A row of the backed-up site, as the import wrote it.
-        $DB->update_record('user', ['id' => $old->id, 'deleted' => 1, 'lang' => 'fr', 'timecreated' => 1000,
-            'timemodified' => 1000]);
+        $DB->update_record('user', ['id' => $old->id, 'deleted' => 1, 'lang' => 'fr', 'calendartype' => 'secbk_old',
+            'timecreated' => 1000, 'timemodified' => 1000]);
+        set_config('calendartype', 'secbk_cal');
         $before = time();
         $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
         $this->assertSame((int) $old->id, $id);
@@ -142,6 +263,7 @@ final class temp_admin_test extends \advanced_testcase {
         $this->assertSame('secbackup_admin@example.invalid', $user->email);
         $this->assertSame('Kyoto', $user->city, 'What the administrator does not need stays as it was.');
         $this->assertSame('fr', $user->lang);
+        $this->assertSame('secbk_old', $user->calendartype);
         $this->assertTrue(self::logs_in(self::PASSWORD));
         // Not by logging in: a login that fails writes to the log of PHP with the browser of a request.
         $this->assertFalse(validate_internal_user_password($user, 'Old-password-1'));

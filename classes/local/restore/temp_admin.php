@@ -24,8 +24,10 @@ use tool_secbackup\local\plugin_exception;
  * The user is made when the restored site does not have one of the name on its own host, and made again when it has: a
  * manual account that is confirmed, not suspended nor deleted, has agreed to the policy, has the name of the language string
  * restore_admin_fullname in the language of the restored site, and an address in the domain example.invalid. The password
- * is hashed with hash_internal_user_password(), and a lockout of the user is lifted. A new user has the language of the site
- * and every text column that cannot be null empty, and gets its context. The user is added to the site administrators once.
+ * is hashed with hash_internal_user_password(), and a lockout of the user is lifted. A new user also gets what
+ * user_create_user() gives it without a side effect: the values that the site sets for new users (SITE_DEFAULTS, among them
+ * its language and calendar), and every other text column that cannot be null empty. The user has its context, and is added
+ * to the site administrators once.
  *
  * Only secbackup_admin: another name could be a user of the backed-up site, whom this would take over. The user is written
  * to the table directly, so that the observers of the events of the additional plugins of the site do not run. The values are
@@ -43,15 +45,29 @@ final class temp_admin {
     /** @var string The address of the administrator, which no mail reaches. */
     private const EMAIL = 'secbackup_admin@example.invalid';
 
-    /** @var string Pattern of the code of a language, which the column user.lang holds. */
-    private const LANG = '/\A[a-z][a-z0-9_]{0,29}\z/';
+    /**
+     * @var string[][] The columns of a new user that user_create_user() takes from a setting of the site: the setting, the
+     *     value when the site does not have it or has one that the column does not take, and the pattern of the values that the
+     *     column takes.
+     */
+    private const SITE_DEFAULTS = [
+        'lang' => ['lang', 'en', '/\A[a-z][a-z0-9_]{0,29}\z/'],
+        'calendartype' => ['calendartype', 'gregorian', '/\A[a-z0-9_]{1,30}\z/'],
+        'maildisplay' => ['defaultpreference_maildisplay', '2', '/\A[0-2]\z/'],
+        'mailformat' => ['defaultpreference_mailformat', '1', '/\A[01]\z/'],
+        'maildigest' => ['defaultpreference_maildigest', '0', '/\A[0-2]\z/'],
+        'autosubscribe' => ['defaultpreference_autosubscribe', '1', '/\A[01]\z/'],
+        'trackforums' => ['defaultpreference_trackforums', '0', '/\A[01]\z/'],
+        'city' => ['defaultcity', '', '/\A.{0,120}\z/u'],
+        'country' => ['country', '', '/\A[A-Z]{2}\z/'],
+    ];
 
     /**
-     * @var string[] The text columns of the user that cannot be null and have no default in install.xml: empty for a new user,
-     *     not left to the default that the database gives them.
+     * @var string[] The other text columns of the user that cannot be null and have no default in install.xml: empty for a new
+     *     user, not left to the default that the database gives them.
      */
-    private const EMPTY_COLUMNS = ['idnumber', 'phone1', 'phone2', 'institution', 'department', 'address', 'city', 'country',
-        'theme', 'lastip', 'secret'];
+    private const EMPTY_COLUMNS = ['idnumber', 'phone1', 'phone2', 'institution', 'department', 'address', 'theme', 'lastip',
+        'secret'];
 
     /**
      * Checks the user name and the password, and writes nothing.
@@ -84,7 +100,7 @@ final class temp_admin {
         require_once($CFG->libdir . '/authlib.php');
         self::check($username, $password);
         $host = (int) self::database_setting('mnet_localhost_id', (string) $CFG->mnet_localhost_id);
-        $lang = self::lang();
+        $site = self::site_defaults();
         $now = time();
         $fields = [
             'auth' => 'manual',
@@ -94,14 +110,14 @@ final class temp_admin {
             'policyagreed' => 1,
             'mnethostid' => $host,
             'password' => hash_internal_user_password($password),
-            'firstname' => get_string_manager()->get_string('restore_admin_fullname', 'tool_secbackup', null, $lang),
+            'firstname' => get_string_manager()->get_string('restore_admin_fullname', 'tool_secbackup', null, $site['lang']),
             'lastname' => '',
             'email' => self::EMAIL,
             'timemodified' => $now,
         ];
         $user = $DB->get_record('user', ['username' => $username, 'mnethostid' => $host], 'id');
         if ($user === false) {
-            $new = ['username' => $username, 'lang' => $lang, 'timecreated' => $now] + array_fill_keys(self::EMPTY_COLUMNS, '');
+            $new = ['username' => $username, 'timecreated' => $now] + $site + array_fill_keys(self::EMPTY_COLUMNS, '');
             $id = (int) $DB->insert_record('user', $new + $fields);
         } else {
             $id = (int) $user->id;
@@ -118,13 +134,18 @@ final class temp_admin {
     }
 
     /**
-     * The language of the restored site, or English when its setting is not the code of a language.
+     * The values that the restored site sets for new users, by column: the value of each setting of SITE_DEFAULTS, or the
+     * value without it when the site does not have it or the column does not take it.
      *
-     * @return string
+     * @return string[]
      */
-    private static function lang(): string {
-        $lang = self::database_setting('lang', 'en');
-        return preg_match(self::LANG, $lang) === 1 ? $lang : 'en';
+    private static function site_defaults(): array {
+        $values = [];
+        foreach (self::SITE_DEFAULTS as $column => [$setting, $default, $pattern]) {
+            $value = self::database_setting($setting, $default);
+            $values[$column] = preg_match($pattern, $value) === 1 ? $value : $default;
+        }
+        return $values;
     }
 
     /**

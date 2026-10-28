@@ -799,7 +799,10 @@ final class restore_command_test extends \advanced_testcase {
     public function test_a_staging_folder_is_imported_and_the_administrator_logs_in(): void {
         global $DB;
         $staging = self::staging();
+        $sink = $this->redirectEvents();
         [$code, $lines, $err, $raw] = $this->run_import([self::import_line()], $staging);
+        $this->assertSame([], $sink->get_events(), 'The import triggers no event.');
+        $sink->close();
 
         $this->assertSame(0, $code, $err);
         $this->assertSame('', $err);
