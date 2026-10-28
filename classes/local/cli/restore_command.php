@@ -136,7 +136,7 @@ final class restore_command {
         // does not pass the buffer, and the errors and warnings of PHP. cli_writeln() and a write to STDOUT are not caught: the
         // extraction does not use them.
         global $CFG;
-        require_once(__DIR__ . '/../../../restore_mtrace.php');
+        require_once(__DIR__ . '/../../../cli/restore_mtrace.php');
         $display = ini_set('display_errors', 'stderr');
         $wrapper = $CFG->mtrace_wrapper ?? null;
         $CFG->mtrace_wrapper = 'tool_secbackup_restore_mtrace';
