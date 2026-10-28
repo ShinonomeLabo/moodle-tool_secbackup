@@ -28,8 +28,9 @@ use tool_secbackup\local\plugin_exception;
  * Only a name that is an ASCII identifier (letters, digits and underscores) is written, in the settings of core and of a
  * plugin: MySQL and MariaDB compare names with their collation, which takes a name with a blank at its end, an accent or
  * full-width letters for another name. Of those names, a setting that describes the server of the backed-up site (a path, the
- * database, the sessions, mail) is not written: a name of NAMES, or a name that starts with one of PREFIXES, compared in lower
- * case (the collations do not tell the case), also among the settings of a plugin. Neither is a value that a setting cannot
+ * database, the sessions, mail, the sites of the Behat and PHPUnit tests with their prefixes and folders) is not written: a
+ * name of NAMES, or a name that starts with one of PREFIXES, compared in lower case (the collations do not tell the case),
+ * also among the settings of a plugin. Neither is a value that a setting cannot
  * hold (an array, or null, which set_config() takes for a deletion), a name that is too long for its table, the settings of
  * this plugin, which the restore does not bring back, and the settings of a name that is not one of a plugin (set_config()
  * writes the settings of an empty name, or of "0", to core).
@@ -45,11 +46,10 @@ final class forced_settings {
         'backuptempdir', 'localrequestdir', 'sharedcachedir', 'alternative_file_system_class', 'noemailever',
         'divertallemailsto', 'routerconfigured', 'preventexecpath', 'xsendfile', 'xsendfilealiases', 'alternateloginurl',
         'secretdataroot', 'themedir', 'customscripts', 'langotherroot', 'langlocalroot', 'alternative_component_cache',
-        'altcacheconfigpath', 'aspellpath', 'behat_dataroot', 'behat_faildump_path', 'blockmanagerclassfile',
-        'moodlepageclassfile', 'file_lock_root', 'filedir', 'phpunit_dataroot'];
+        'altcacheconfigpath', 'aspellpath', 'blockmanagerclassfile', 'moodlepageclassfile', 'file_lock_root', 'filedir'];
 
-    /** @var string[] The starts of the names of the settings that describe the server, in lower case. */
-    private const PREFIXES = ['db', 'session', 'pathto', 'smtp', 'proxy', 'mail'];
+    /** @var string[] The starts of the names of the settings that describe the server or the sites of the tests, in lower case. */
+    private const PREFIXES = ['db', 'session', 'pathto', 'smtp', 'proxy', 'mail', 'behat_', 'phpunit_'];
 
     /** @var string The plugin whose settings are not restored. */
     private const COMPONENT = 'tool_secbackup';

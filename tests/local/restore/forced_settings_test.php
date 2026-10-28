@@ -39,7 +39,7 @@ final class forced_settings_test extends \advanced_testcase {
         'moodlepageclassfile', 'file_lock_root', 'filedir', 'phpunit_dataroot'];
 
     /** @var string[] The starts of the names that are never written. */
-    private const PREFIXES = ['db', 'session', 'pathto', 'smtp', 'proxy', 'mail'];
+    private const PREFIXES = ['db', 'session', 'pathto', 'smtp', 'proxy', 'mail', 'behat_', 'phpunit_'];
 
     protected function setUp(): void {
         parent::setUp();
@@ -130,8 +130,12 @@ final class forced_settings_test extends \advanced_testcase {
             $names[$prefix] = [$prefix];
             $names[$prefix . ' and more'] = [$prefix . 'something'];
         }
+        foreach (['behat_prefix', 'behat_wwwroot', 'phpunit_prefix', 'phpunit_dataroot'] as $name) {
+            $names['a setting of the tests: ' . $name] = [$name];
+        }
         $names['a name in capitals'] = ['WWWROOT'];
         $names['a start in capitals'] = ['DBHost'];
+        $names['a setting of the tests in capitals'] = ['BEHAT_PREFIX'];
         $names['a name in mixed letters'] = ['AlternateLoginUrl'];
         return $names;
     }
@@ -208,19 +212,28 @@ final class forced_settings_test extends \advanced_testcase {
             'a name of the list with more after it' => ['wwwrootold'],
             'a start that is one letter short' => ['d'],
             'a name that the site uses' => ['forcelogin'],
+            'the start of a setting of the tests without its underscore' => ['behatx'],
+            'the name of the tests alone' => ['behat'],
+            'the start of a setting of the tests later in the name' => ['myphpunit_x'],
+            'the other name of the tests alone' => ['phpunit'],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('kept_name_provider')]
     /**
-     * Only the names of the list and the names that start with a start of the list are left out.
+     * Only the names of the list and the names that start with a start of the list are left out, in the settings of core and
+     * of a plugin.
      *
      * @dataProvider kept_name_provider
      * @param string $name The name.
      */
     public function test_a_name_that_only_looks_like_one_of_the_server_is_written(string $name): void {
-        $this->assertSame([$name], forced_settings::apply(['config' => [$name => 'v'], 'plugins' => []]));
+        $this->assertSame(
+            [$name, 'mod_attendance/' . $name],
+            forced_settings::apply(['config' => [$name => 'v'], 'plugins' => ['mod_attendance' => [$name => 'w']]])
+        );
         $this->assertSame('v', self::core($name));
+        $this->assertSame('w', self::plugin('mod_attendance', $name));
     }
 
     public function test_the_values_are_written_as_the_database_keeps_them(): void {
