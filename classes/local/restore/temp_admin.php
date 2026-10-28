@@ -23,8 +23,9 @@ use tool_secbackup\local\plugin_exception;
  *
  * The user is made when the restored site does not have one of the name on its own host, and made again when it has: a
  * manual account that is confirmed, not suspended nor deleted, has agreed to the policy, has the name of the language string
- * restore_admin_fullname in the language of the restored site, and an address in the domain example.invalid. The password
- * is hashed with hash_internal_user_password(), and a lockout of the user is lifted. A new user also gets what
+ * restore_admin_fullname in the language of the restored site as its first name and the user name as its last name (Moodle
+ * sends a user without a last name to the page of its profile at every page), and an address in the domain example.invalid.
+ * The password is hashed with hash_internal_user_password(), and a lockout of the user is lifted. A new user also gets what
  * user_create_user() gives it without a side effect: the values that the site sets for new users (SITE_DEFAULTS, among them
  * its language and calendar), and every other text column that cannot be null empty. The user has its context, and is added
  * to the site administrators once.
@@ -111,7 +112,7 @@ final class temp_admin {
             'mnethostid' => $host,
             'password' => hash_internal_user_password($password),
             'firstname' => get_string_manager()->get_string('restore_admin_fullname', 'tool_secbackup', null, $site['lang']),
-            'lastname' => '',
+            'lastname' => self::USERNAME,
             'email' => self::EMAIL,
             'timemodified' => $now,
         ];

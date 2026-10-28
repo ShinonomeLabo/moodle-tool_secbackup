@@ -111,8 +111,10 @@ final class temp_admin_test extends \advanced_testcase {
         $this->assertEquals(1, $user->policyagreed);
         $this->assertEquals($CFG->mnet_localhost_id, $user->mnethostid);
         $this->assertSame('Temporary site administrator', $user->firstname);
-        $this->assertSame('', $user->lastname);
+        $this->assertSame(self::USERNAME, $user->lastname);
         $this->assertSame('secbackup_admin@example.invalid', $user->email);
+        // A user without a first name, a last name or an address is sent to the page of the profile at every page it opens.
+        $this->assertFalse(user_not_fully_set_up($user, true));
         $this->assertSame('en', $user->lang);
         $empty = ['idnumber', 'phone1', 'phone2', 'institution', 'department', 'address', 'city', 'country', 'theme', 'lastip',
             'secret'];
@@ -268,8 +270,9 @@ final class temp_admin_test extends \advanced_testcase {
         $this->assertGreaterThanOrEqual($before, (int) $user->timemodified);
         $this->assertEquals($CFG->mnet_localhost_id, $user->mnethostid);
         $this->assertSame('Temporary site administrator', $user->firstname);
-        $this->assertSame('', $user->lastname);
+        $this->assertSame(self::USERNAME, $user->lastname);
         $this->assertSame('secbackup_admin@example.invalid', $user->email);
+        $this->assertFalse(user_not_fully_set_up($user, true));
         $this->assertSame('Kyoto', $user->city, 'What the administrator does not need stays as it was.');
         $this->assertSame('fr', $user->lang);
         $this->assertSame('secbk_old', $user->calendartype);
