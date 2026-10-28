@@ -345,6 +345,10 @@ jobs:
           check 0 "$dir/backup.php" --help
           check 1 "$dir/backup.php" --no-such-option
           check 2 "$dir/backup.php"
+          # The extraction with nothing on its input gives its public key, finds no keys and ends with the error line (1).
+          check 0 "$dir/restore.php" --help
+          check 1 "$dir/restore.php" --no-such-option
+          check 1 "$dir/restore.php" --extract </dev/null
           bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
           exit "$failed"
 

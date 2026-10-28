@@ -48,7 +48,10 @@ if ($options['help']) {
 }
 // Exactly one of the two options, and no other. The import is not wired yet: it is not run here.
 if ($unrecognised || !$options['extract'] || $options['import']) {
-    \tool_secbackup\local\cli\restore_command::help(static fn(string $line) => fwrite(STDERR, $line . "\n"));
+    \tool_secbackup\local\cli\restore_command::help(static function (string $line): void {
+        // Echoed, so that the buffer above sends it to the error stream: the standard output is for the extraction.
+        echo $line, "\n";
+    });
     exit(1);
 }
 // The lines of the agreement go to the standard output: the extraction can take hours.
