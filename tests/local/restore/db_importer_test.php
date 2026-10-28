@@ -734,6 +734,9 @@ final class db_importer_test extends \advanced_testcase {
             'a number' => ['["5",7,null,null]'],
             'a value true' => ['["5","n",true,null]'],
             'an array' => ['["5",["n"],null,null]'],
+            'an empty array as a value' => ['["5",[],null,null]'],
+            'an object as a value' => ['["5",{"a":"n"},null,null]'],
+            'an empty object as a value' => ['["5",{},null,null]'],
             'binary that is not base64' => ['["5","n",null,"!!"]'],
             'an id that is not a number' => ['["x","n",null,null]'],
             'an id of 0' => ['["0","n",null,null]'],
@@ -761,6 +764,43 @@ final class db_importer_test extends \advanced_testcase {
         $this->assertSame($file, $e->debuginfo);
         $this->assertSame(['a'], array_column(self::rows(self::TABLE), 'name'));
         $this->assertFalse($DB->record_exists(self::TABLE, ['id' => 5]));
+    }
+
+    /**
+     * Ids of a row that are not ids of its block, which are 3 to 5.
+     *
+     * @return array[] The row, as a line.
+     */
+    public static function row_id_provider(): array {
+        return [
+            'before the first id' => ['["2","n",null,null]'],
+            'after the last id' => ['["6","n",null,null]'],
+            'a 0 before the id' => ['["04","n",null,null]'],
+            'a letter after the id' => ['["4x","n",null,null]'],
+            'a space before the id' => ['[" 4","n",null,null]'],
+            'a decimal id' => ['["4.0","n",null,null]'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('row_id_provider')]
+    /**
+     * A row whose id is not a number from the first to the last id of its block is refused, and nothing after it is written.
+     *
+     * @dataProvider row_id_provider
+     * @param string $line The row.
+     */
+    public function test_a_row_whose_id_is_not_one_of_its_block_is_refused(string $line): void {
+        global $DB;
+        self::create_table();
+        $file = $this->block(self::TABLE, self::COLUMNS, [['3', 'a', null, null], $line, ['5', 'c', null, null]]);
+        $this->manifest();
+
+        $e = $this->failure();
+
+        $this->assertSame('restore_content_mismatch', $e->errorcode);
+        $this->assertSame($file, $e->debuginfo);
+        $this->assertSame(['3' => 'a'], array_column(self::rows(self::TABLE), 'name', 'id'));
+        $this->assertSame(1, $DB->count_records(self::TABLE));
     }
 
     /**
@@ -910,5 +950,46 @@ final class db_importer_test extends \advanced_testcase {
         $this->assertSame($courses, self::rows('course'));
         $this->assertSame(['tables' => 1, 'rows' => 0], $summary);
         $this->assertSame([[0, 0]], $this->calls);
+    }
+
+    /**
+     * Adds rows to context_temp, the table of Moodle whose id is not a sequence: it takes the ids of the contexts.
+     *
+     * @param int[] $ids The ids.
+     */
+    private static function add_context_temp_rows(array $ids): void {
+        global $DB;
+        foreach ($ids as $id) {
+            $DB->import_record('context_temp', ['id' => $id, 'path' => '/1/' . $id, 'depth' => 2, 'locked' => 0]);
+        }
+    }
+
+    public function test_a_table_whose_id_is_not_a_sequence_is_emptied_when_it_has_no_rows(): void {
+        global $DB;
+        self::add_context_temp_rows([5]);
+        $this->tables['context_temp'] = 0;
+        $this->manifest();
+
+        $summary = $this->importer()->import();
+
+        $this->assertSame(0, $DB->count_records('context_temp'));
+        $this->assertSame(['tables' => 1, 'rows' => 0], $summary);
+    }
+
+    public function test_the_rows_of_a_table_whose_id_is_not_a_sequence_come_back_with_their_ids(): void {
+        self::add_context_temp_rows([5, 9]);
+        $source = [self::rows('context_temp'), self::rows('course')];
+        $this->export('context_temp');
+        // A table with a sequence in the same import.
+        $this->export('course');
+        $this->manifest();
+        self::add_context_temp_rows([7]);
+        $this->getDataGenerator()->create_course();
+
+        $summary = $this->importer()->import();
+
+        $this->assertSame($source, [self::rows('context_temp'), self::rows('course')]);
+        $this->assertSame([5, 9], array_keys($source[0]));
+        $this->assertSame(['tables' => 2, 'rows' => 2 + count($source[1])], $summary);
     }
 }

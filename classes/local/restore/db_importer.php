@@ -49,6 +49,11 @@ use tool_secbackup\local\plugin_exception;
  * are not yet after the ids of the blocks. So it needs no transaction, and uses none: on MySQL and MariaDB a transaction around
  * a large table would keep the undo of all its rows, and reset_sequence() there changes the table, which ends a transaction.
  *
+ * The caller stops the cron and the web of the restored site first, and calls it outside a transaction. A task that runs
+ * while its row of task_adhoc moves would delete the old id when it ends, and run again; in a transaction delete_records()
+ * deletes instead of truncating, and on MySQL and MariaDB reset_sequence() commits the transaction of the caller. The
+ * importer does not refuse a transaction: the PHPUnit tests on PostgreSQL run inside one.
+ *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -371,7 +376,10 @@ final class db_importer {
         foreach ($blocks as $block) {
             $imported += $this->write_block($table, $block, $kept, $done, $total);
         }
-        $this->db->get_manager()->reset_sequence($table);
+        // A table whose id is not a sequence (context_temp of Moodle) has no sequence to set, and PostgreSQL refuses to.
+        if (($this->db->get_columns($table)['id'] ?? null)?->auto_increment) {
+            $this->db->get_manager()->reset_sequence($table);
+        }
         $count = $kept === null
             ? $this->db->count_records($table)
             : $this->db->count_records_select($table, $kept . ' <> ?', [self::COMPONENT]);
@@ -421,7 +429,7 @@ final class db_importer {
                 if (++$rows > $block['rows']) {
                     throw new plugin_exception('restore_import_count_mismatch', null, $table);
                 }
-                $record = self::record($line, $columns, $block['file']);
+                $record = self::record($line, $columns, $block);
                 if ($kept === null || $record[$kept] !== self::COMPONENT) {
                     $this->db->import_record($table, $record);
                     $imported++;
@@ -460,14 +468,17 @@ final class db_importer {
      *
      * @param string $line The line.
      * @param array[] $columns The columns of the block.
-     * @param string $file The file of the block.
+     * @param array $block The block.
      * @return array The values by column, of a binary column decoded.
      * @throws plugin_exception With restore_content_mismatch when the line is not a row of the columns: a JSON array of as
-     *     many values, each text or null, the binary ones base64 and the id a positive number.
+     *     many values, each text or null, the binary ones base64 and the id a positive number from the first to the last id
+     *     of the block.
      */
-    private static function record(string $line, array $columns, string $file): array {
+    private static function record(string $line, array $columns, array $block): array {
+        $file = $block['file'];
         try {
-            // The values of a row are not arrays or objects: a deeper line is not a row.
+            // A row is an array of scalars, which depth 2 reads (the array takes one level): json_decode() refuses a row with
+            // an array or an object as a value, also an empty one. The types of the scalars are checked below.
             $values = json_decode($line, false, 2, JSON_THROW_ON_ERROR);
         } catch (\JsonException) {
             $values = null;
@@ -489,7 +500,8 @@ final class db_importer {
             }
             $record[$column['name']] = $value;
         }
-        if (!is_string($record['id']) || preg_match(self::ID, $record['id']) !== 1) {
+        $id = $record['id'];
+        if (!is_string($id) || preg_match(self::ID, $id) !== 1 || (int) $id < $block['from'] || (int) $id > $block['to']) {
             throw new plugin_exception('restore_content_mismatch', null, $file);
         }
         return $record;
