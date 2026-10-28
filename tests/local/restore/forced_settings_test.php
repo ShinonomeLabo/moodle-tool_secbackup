@@ -34,7 +34,9 @@ final class forced_settings_test extends \advanced_testcase {
         'filepermissions', 'umaskpermissions', 'sslproxy', 'reverseproxy', 'tempdir', 'cachedir', 'localcachedir',
         'backuptempdir', 'localrequestdir', 'sharedcachedir', 'alternative_file_system_class', 'noemailever',
         'divertallemailsto', 'routerconfigured', 'preventexecpath', 'xsendfile', 'xsendfilealiases', 'alternateloginurl',
-        'secretdataroot'];
+        'secretdataroot', 'themedir', 'customscripts', 'langotherroot', 'langlocalroot', 'alternative_component_cache',
+        'altcacheconfigpath', 'aspellpath', 'behat_dataroot', 'behat_faildump_path', 'blockmanagerclassfile',
+        'moodlepageclassfile', 'file_lock_root', 'filedir', 'phpunit_dataroot'];
 
     /** @var string[] The starts of the names that are never written. */
     private const PREFIXES = ['db', 'session', 'pathto', 'smtp', 'proxy', 'mail'];
@@ -150,6 +152,48 @@ final class forced_settings_test extends \advanced_testcase {
         $this->assertSame([], $written);
         $this->assertSame($config, $DB->get_records_menu('config', null, 'name', 'name, value'));
         $this->assertSame($plugins, $DB->count_records('config_plugins'));
+    }
+
+    /**
+     * Names that are not an ASCII identifier: MySQL and MariaDB can take some of them for another name.
+     *
+     * @return array
+     */
+    public static function not_an_identifier_provider(): array {
+        return [
+            'a blank at the end' => ['smtphosts '],
+            'a blank at the start' => [' theme'],
+            'an accent' => ['proxyhóst'],
+            'full-width letters' => ['ｗｗｗｒｏｏｔ'],
+            'a hyphen' => ['the-name'],
+            'a dot' => ['a.b'],
+            'a slash' => ['a/b'],
+            'a line break' => ["theme\n"],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('not_an_identifier_provider')]
+    /**
+     * A name that is not an ASCII identifier is not written, in the settings of core nor in the ones of a plugin.
+     *
+     * @dataProvider not_an_identifier_provider
+     * @param string $name The name.
+     */
+    public function test_a_name_that_is_not_an_ascii_identifier_is_not_written(string $name): void {
+        global $DB;
+        $config = $DB->get_records_menu('config', null, 'name', 'name, value');
+        $plugins = $DB->get_records_menu('config_plugins', null, 'id', 'id, value');
+        $written = forced_settings::apply(['config' => [$name => 'x'], 'plugins' => ['mod_attendance' => [$name => 'x']]]);
+        $this->assertSame([], $written);
+        $this->assertSame($config, $DB->get_records_menu('config', null, 'name', 'name, value'));
+        $this->assertSame($plugins, $DB->get_records_menu('config_plugins', null, 'id', 'id, value'));
+    }
+
+    public function test_a_name_of_letters_digits_and_underscores_in_any_case_is_written(): void {
+        $this->assertSame(['Secbk_Name_9', 'mod_attendance/Secbk_Name_9'], forced_settings::apply([
+            'config' => ['Secbk_Name_9' => 'v'],
+            'plugins' => ['mod_attendance' => ['Secbk_Name_9' => 'w']],
+        ]));
     }
 
     /**

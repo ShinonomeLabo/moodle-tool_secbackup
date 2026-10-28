@@ -25,11 +25,14 @@ use tool_secbackup\local\plugin_exception;
  * each plugin by name (site_config of the backup took them, without the secrets). The config.php of the restored site is the
  * one of the restore host, so without this a forced setting would fall back to the value in the database.
  *
- * A setting that describes the server of the backed-up site is not written: a name of NAMES, or a name that starts with one of
- * PREFIXES, in any letters (MySQL compares the names of settings without the case), also among the settings of a plugin.
- * Neither is a value that a setting cannot hold (an array, or null, which set_config() takes for a deletion), a name that is
- * empty or too long for its table, the settings of this plugin, which the restore does not bring back, and the settings of a
- * name that is not one of a plugin (set_config() writes the settings of an empty name, or of "0", to core).
+ * Only a name that is an ASCII identifier (letters, digits and underscores) is written, in the settings of core and of a
+ * plugin: MySQL and MariaDB compare names with their collation, which takes a name with a blank at its end, an accent or
+ * full-width letters for another name. Of those names, a setting that describes the server of the backed-up site (a path, the
+ * database, the sessions, mail) is not written: a name of NAMES, or a name that starts with one of PREFIXES, compared in lower
+ * case (the collations do not tell the case), also among the settings of a plugin. Neither is a value that a setting cannot
+ * hold (an array, or null, which set_config() takes for a deletion), a name that is too long for its table, the settings of
+ * this plugin, which the restore does not bring back, and the settings of a name that is not one of a plugin (set_config()
+ * writes the settings of an empty name, or of "0", to core).
  *
  * @package    tool_secbackup
  * @copyright  2026 Shinonome Laboratory LLC.
@@ -41,7 +44,9 @@ final class forced_settings {
         'filepermissions', 'umaskpermissions', 'sslproxy', 'reverseproxy', 'tempdir', 'cachedir', 'localcachedir',
         'backuptempdir', 'localrequestdir', 'sharedcachedir', 'alternative_file_system_class', 'noemailever',
         'divertallemailsto', 'routerconfigured', 'preventexecpath', 'xsendfile', 'xsendfilealiases', 'alternateloginurl',
-        'secretdataroot'];
+        'secretdataroot', 'themedir', 'customscripts', 'langotherroot', 'langlocalroot', 'alternative_component_cache',
+        'altcacheconfigpath', 'aspellpath', 'behat_dataroot', 'behat_faildump_path', 'blockmanagerclassfile',
+        'moodlepageclassfile', 'file_lock_root', 'filedir', 'phpunit_dataroot'];
 
     /** @var string[] The starts of the names of the settings that describe the server, in lower case. */
     private const PREFIXES = ['db', 'session', 'pathto', 'smtp', 'proxy', 'mail'];
@@ -51,6 +56,9 @@ final class forced_settings {
 
     /** @var string Pattern of the name of a plugin. */
     private const PLUGIN = '/\A[a-z][a-z0-9_]{0,99}\z/';
+
+    /** @var string Pattern of the name of a setting: an ASCII identifier. */
+    private const NAME = '/\A[A-Za-z0-9_]+\z/';
 
     /** @var int The most bytes of the name of a setting of core (the column config.name). */
     private const CORE_NAME = 255;
@@ -113,7 +121,7 @@ final class forced_settings {
      * @return bool
      */
     private static function writable(string $name, mixed $value, int $longest): bool {
-        if ($name === '' || strlen($name) > $longest || !is_scalar($value)) {
+        if (preg_match(self::NAME, $name) !== 1 || strlen($name) > $longest || !is_scalar($value)) {
             return false;
         }
         $lower = strtolower($name);

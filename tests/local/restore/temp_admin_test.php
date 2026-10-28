@@ -216,13 +216,22 @@ final class temp_admin_test extends \advanced_testcase {
         $this->assertSame(1, self::contexts($id));
     }
 
-    public function test_no_event_is_triggered(): void {
+    public function test_no_event_is_triggered_when_the_administrator_is_made(): void {
         $sink = $this->redirectEvents();
+        temp_admin::ensure(self::USERNAME, self::PASSWORD);
+        $this->assertSame([], $sink->get_events());
+        $sink->close();
+    }
+
+    public function test_no_event_is_triggered_when_the_administrator_is_made_again_and_unlocked(): void {
         $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
         set_user_preference('login_lockout', time(), $id);
+        set_user_preference('login_failed_count', 20, $id);
+        $sink = $this->redirectEvents();
         temp_admin::ensure(self::USERNAME, 'Another-Password-2');
         $this->assertSame([], $sink->get_events());
         $sink->close();
+        $this->assertNull(get_user_preferences('login_lockout', null, $id), 'The lockout was lifted.');
     }
 
     public function test_the_administrator_is_a_site_administrator_once(): void {

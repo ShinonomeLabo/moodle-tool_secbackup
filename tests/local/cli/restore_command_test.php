@@ -1282,6 +1282,40 @@ final class restore_command_test extends \advanced_testcase {
         }
     }
 
+    public function test_a_failure_of_the_database_after_the_import_is_an_import_failure_without_the_query(): void {
+        global $CFG, $DB;
+        // A write that the database refuses aborts the transaction of PostgreSQL that the tests would run in.
+        $this->preventResetByRollback();
+        // The language of the restored site names the administrator longer than the column of the first name holds (100).
+        $name = str_repeat('N', 101);
+        $root = make_request_directory();
+        mkdir($root . '/xx');
+        file_put_contents($root . '/xx/langconfig.php', "<?php\n\$string['parentlanguage'] = '';\n");
+        file_put_contents($root . '/xx/tool_secbackup.php', "<?php\n\$string['restore_admin_fullname'] = '$name';\n");
+        $old = $CFG->langotherroot;
+        $CFG->langotherroot = $root;
+        get_string_manager(true);
+        try {
+            $DB->set_field('config', 'value', 'xx', ['name' => 'lang']);
+            [$code, $out, $err, $raw] = $this->run_import(
+                [self::import_line()],
+                self::staging(),
+                $this->fake_importer(fn(): array => ['tables' => 0, 'rows' => 0])
+            );
+        } finally {
+            $CFG->langotherroot = $old;
+            get_string_manager(true);
+        }
+        $this->assertSame(1, $code);
+        $this->assertSame([['type' => 'error', 'code' => 'restore_import_failed']], $out);
+        $this->assertSame(get_string('restore_import_failed', 'tool_secbackup') . "\n", $err);
+        $this->assertFalse($DB->record_exists('user', ['username' => 'secbackup_admin']));
+        foreach ([$name, 'INSERT', 'secbackup_admin@example.invalid', '$6$'] as $text) {
+            $this->assertStringNotContainsString($text, $raw . $err);
+        }
+        $this->assert_no_secret($raw . $err, [self::PASSWORD]);
+    }
+
     public function test_an_error_that_is_not_the_plugin_s_ends_the_import_with_its_class_and_no_error_line(): void {
         $thrown = new \coding_exception('The value SECRET-VALUE of the row of /var/secret/path could not be read');
         [$code, $out, $err, $raw] = $this->run_import(

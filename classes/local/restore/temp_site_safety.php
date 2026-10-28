@@ -25,12 +25,19 @@ use tool_secbackup\local\plugin_exception;
  * It sets noemailever to 1, disables every message processor but popup (the notifications on the page), disables the
  * scheduled tasks of the additional plugins (the plugins of the header whose standard is false) and of CORE_TASKS, deletes the
  * ad hoc tasks of the additional plugins, and empties alternateloginurl, so that secbackup_admin can log in on the login page
- * of the site. The registration of this plugin is not restored (the import leaves its tables and settings out), and is
- * recorded only.
+ * of the site. A task that it disables is also marked as customised, as the page of the scheduled tasks of Moodle does: an
+ * upgrade of its component gives the tasks that are not customised their defaults again, which would enable it.
+ *
+ * This plugin is one of the additional plugins: the scheduled tasks of tool_secbackup of the restored site are disabled, and
+ * its ad hoc tasks are deleted too. The registration of this plugin is not restored, so they would do nothing, but a
+ * temporary site is safer with them stopped. db_importer keeps the rows of this plugin for another reason: so that the import
+ * does not overwrite the state of the plugin that the restore host installed with the state of the backed-up site. The
+ * registration is recorded only.
  *
  * Each thing that it changes is recorded in tool_secbackup_restore_stops with the value that it had, for a later resume of the
- * site: a setting with its value (none when the site did not have it), a processor and a task with their enabled and disabled
- * flags, and the ad hoc tasks of a class with how many were deleted. What was already stopped is not recorded. A thing that
+ * site: a setting with its value (none when the site did not have it), a processor with its enabled flag, a task with its
+ * disabled and customised flags as JSON ({"disabled":0,"customised":0}), and the ad hoc tasks of a class with how many were
+ * deleted. What was already stopped is not recorded. A thing that
  * has its record already is stopped again and not recorded again: the import can run again on the same staging folder and
  * bring the values of the backed-up site back, and the first record keeps them.
  *
@@ -115,10 +122,12 @@ final class temp_site_safety {
             $DB->set_field('message_processors', 'enabled', 0, ['id' => $processor->id]);
             self::record('processor', $processor->name, $processor->enabled);
         }
-        foreach ($DB->get_records('task_scheduled', ['disabled' => 0], 'classname', 'id, component, classname') as $task) {
+        $tasks = $DB->get_records('task_scheduled', ['disabled' => 0], 'classname', 'id, component, classname, customised');
+        foreach ($tasks as $task) {
             if (in_array($task->component, $additional, true) || in_array($task->classname, self::CORE_TASKS, true)) {
-                $DB->set_field('task_scheduled', 'disabled', 1, ['id' => $task->id]);
-                self::record('task', $task->classname, '0');
+                $DB->update_record('task_scheduled', ['id' => $task->id, 'disabled' => 1, 'customised' => 1]);
+                $previous = json_encode(['disabled' => 0, 'customised' => (int) $task->customised]);
+                self::record('task', $task->classname, $previous);
             }
         }
         foreach ($additional as $component) {

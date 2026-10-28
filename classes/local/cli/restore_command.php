@@ -23,6 +23,7 @@ use tool_secbackup\local\plugin_exception;
 use tool_secbackup\local\restore\db_importer;
 use tool_secbackup\local\restore\extractor;
 use tool_secbackup\local\restore\forced_settings;
+use tool_secbackup\local\restore\import_failed_exception;
 use tool_secbackup\local\restore\protocol;
 use tool_secbackup\local\restore\temp_admin;
 use tool_secbackup\local\restore\temp_site_safety;
@@ -260,7 +261,8 @@ final class restore_command {
      * The lines of the import, from the line of the restore host to the summary.
      *
      * @param string $stagingdir The staging folder.
-     * @throws plugin_exception With restore_input_invalid, or what the importer and the steps after it throw.
+     * @throws plugin_exception With restore_input_invalid, what the importer throws, or restore_import_failed
+     *     (import_failed_exception) when the database refuses a step after the import.
      */
     private function run_import(string $stagingdir): void {
         $line = $this->protocol->receive('import');
@@ -274,9 +276,15 @@ final class restore_command {
         temp_site_safety::check($header);
         $importer = ($this->importers)($stagingdir, $this->progress('importing', 'rows', self::PROGRESS_ROWS));
         $result = $importer->import();
-        forced_settings::apply($header['config']['forced']);
-        $stopped = temp_site_safety::apply($header);
-        temp_admin::ensure($admin['username'], $admin['password']);
+        try {
+            forced_settings::apply($header['config']['forced']);
+            $stopped = temp_site_safety::apply($header);
+            temp_admin::ensure($admin['username'], $admin['password']);
+        } catch (\dml_exception | \ddl_exception $e) {
+            // As the importer does: the code of the failure, without the exception of the database, whose query can hold the
+            // values of a row (here the hash of the password).
+            throw new import_failed_exception($e, '');
+        }
         // The first of the things stopped, as many as the backup service takes and the line holds: the table of the plugin
         // keeps all of them.
         $done = ['type' => 'done', 'summary' => [

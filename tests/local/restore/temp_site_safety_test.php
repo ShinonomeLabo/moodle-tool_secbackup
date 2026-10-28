@@ -184,6 +184,7 @@ final class temp_site_safety_test extends \advanced_testcase {
         temp_site_safety::apply(self::header());
         $after = $DB->get_record('task_scheduled', ['classname' => '\auth_db\task\sync_users']);
         $before->disabled = '1';
+        $before->customised = '1';
         $this->assertEquals($before, $after);
     }
 
@@ -227,7 +228,11 @@ final class temp_site_safety_test extends \advanced_testcase {
                 static fn(string $name): array => ['kind' => 'processor', 'name' => $name, 'previous' => '1'],
                 $processors
             ),
-            ...array_map(static fn(string $task): array => ['kind' => 'task', 'name' => $task, 'previous' => '0'], $tasks),
+            ...array_map(
+                static fn(string $task): array => ['kind' => 'task', 'name' => $task,
+                    'previous' => '{"disabled":0,"customised":0}'],
+                $tasks
+            ),
             ['kind' => 'adhoc', 'name' => '\local_secbkextra\task\pull', 'previous' => '1'],
             ['kind' => 'adhoc', 'name' => '\local_secbkextra\task\push', 'previous' => '2'],
             ['kind' => 'registration', 'name' => 'tool_secbackup', 'previous' => null],
@@ -241,6 +246,32 @@ final class temp_site_safety_test extends \advanced_testcase {
             $this->assertGreaterThanOrEqual($before, (int) $time);
             $this->assertLessThanOrEqual(time(), (int) $time);
         }
+    }
+
+    public function test_a_task_that_was_stopped_stays_stopped_when_its_component_is_upgraded(): void {
+        global $DB;
+        $this->live_site();
+        $DB->set_field('task_scheduled', 'customised', 0, ['classname' => '\auth_db\task\sync_users']);
+        temp_site_safety::apply(self::header());
+        // What an upgrade of the component does to its tasks that are not customised: it gives them their defaults again.
+        \core\task\manager::reset_scheduled_tasks_for_component('auth_db');
+        $task = $DB->get_record('task_scheduled', ['classname' => '\auth_db\task\sync_users'], 'disabled, customised');
+        $this->assertEquals(1, $task->disabled);
+        $this->assertEquals(1, $task->customised);
+        $records = $DB->count_records('tool_secbackup_restore_stops');
+        temp_site_safety::apply(self::header());
+        $this->assertSame($records, $DB->count_records('tool_secbackup_restore_stops'));
+    }
+
+    public function test_the_record_of_a_task_keeps_whether_it_was_customised(): void {
+        global $DB;
+        $this->live_site();
+        $DB->set_field('task_scheduled', 'customised', 0, ['classname' => '\auth_db\task\sync_users']);
+        $DB->set_field('task_scheduled', 'customised', 1, ['classname' => '\auth_ldap\task\sync_task']);
+        temp_site_safety::apply(self::header());
+        $previous = $DB->get_records_menu('tool_secbackup_restore_stops', ['kind' => 'task'], '', 'name, previous');
+        $this->assertSame('{"disabled":0,"customised":0}', $previous['\auth_db\task\sync_users']);
+        $this->assertSame('{"disabled":0,"customised":1}', $previous['\auth_ldap\task\sync_task']);
     }
 
     public function test_a_second_run_records_nothing_new_and_gives_the_same_list(): void {
