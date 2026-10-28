@@ -292,12 +292,16 @@ final class temp_admin_test extends \advanced_testcase {
     public function test_a_user_of_another_host_with_the_same_name_is_left_as_it_is(): void {
         global $DB;
         $remote = self::mnet_host('https://remote.example.com');
+        // Values that ensure() would change. Not the authentication mnet: Moodle 5.0 and later have no such plugin, and the
+        // generator cleans the name of a plugin that is not there to an empty one.
         $other = $this->getDataGenerator()->create_user(['username' => self::USERNAME, 'mnethostid' => $remote,
-            'auth' => 'mnet', 'firstname' => 'Remote']);
+            'auth' => 'nologin', 'firstname' => 'Remote', 'suspended' => 1, 'confirmed' => 0]);
+        set_user_preference('login_lockout', time(), $other);
+        $before = $DB->get_record('user', ['id' => $other->id], '*', MUST_EXIST);
         $id = temp_admin::ensure(self::USERNAME, self::PASSWORD);
         $this->assertNotSame((int) $other->id, $id);
-        $this->assertSame('Remote', $DB->get_field('user', 'firstname', ['id' => $other->id]));
-        $this->assertSame('mnet', $DB->get_field('user', 'auth', ['id' => $other->id]));
+        $this->assertEquals($before, $DB->get_record('user', ['id' => $other->id], '*', MUST_EXIST));
+        $this->assertNotNull(get_user_preferences('login_lockout', null, $other->id));
     }
 
     public function test_the_local_host_is_the_one_of_the_imported_settings(): void {
