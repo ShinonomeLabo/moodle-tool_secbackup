@@ -149,17 +149,19 @@ Run it as the user that runs cron, for example:
 $ sudo -u www-data /usr/bin/php admin/tool/secbackup/cli/diagnose.php
 (Moodle 5.1 and later: public/admin/tool/secbackup/cli/diagnose.php)';
 $string['cli_restore_failed'] = 'The restore stopped with an error of the kind {$a}.';
-$string['cli_restore_help'] = 'Extracts a downloaded backup for the restore host, or imports it into the database. The restore host runs it as root and talks to it over the standard input and output, one JSON line at a time.
+$string['cli_restore_help'] = 'Extracts a downloaded backup for the restore host, or imports it into the database. The restore host runs the extraction as root and the import as the user of the web server, and talks to it over the standard input and output, one JSON line at a time.
 
 Options:
---extract    Extract the backup: the restore host sends the sealed keys of the site and the path of the input file.
---import     Import the extracted database into this site.
--h, --help   Print this help.
+--extract          Extract the backup: the restore host sends the sealed keys of the site and the path of the input file.
+--import           Import the extracted database into this site and make it a temporary site: the restore host sends the administrator of the temporary site.
+--staging=<dir>    The staging folder that the extraction wrote, an absolute path. Give it with --import, and only with it.
+-h, --help         Print this help.
 
 Give exactly one of --extract and --import. Exit codes: 0 done, 1 failed (an error line {"type":"error","code":...} on the standard output tells why, when the plugin knows it).
 
 Run it on the restore host, for example:
 $ sudo php admin/tool/secbackup/cli/restore.php --extract
+$ sudo -u www-data php admin/tool/secbackup/cli/restore.php --import --staging=/path/to/staging
 (Moodle 5.1 and later: public/admin/tool/secbackup/cli/restore.php)';
 $string['clock_skew_warning'] = 'The clock of this server differs from the clock of the service by about {$a} minutes. When it differs by more than 5 minutes, the service refuses the requests of this site. Set the time of this server (for example with NTP).';
 $string['connect_again_explain'] = 'Register again when the platform issued a new registration code, or when the public key of this site was created again on the platform.';

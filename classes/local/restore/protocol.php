@@ -35,8 +35,22 @@ final class protocol {
     /** @var int The most bytes of a line, with its line break: the restore host counts them in the same way. */
     public const MAX_LINE = 65536;
 
-    /** @var string[][] The members of each message of the restore host, besides its type, and the type of each. */
-    private const MESSAGES = ['site_keys' => ['sealed' => 'array'], 'go' => ['input' => 'string']];
+    /**
+     * @var array[] The members of each message of the restore host, besides its type, and the shape of each: the type of the
+     *     value (array for a list), or the members of an object and the shape of each.
+     */
+    private const MESSAGES = [
+        'site_keys' => ['sealed' => 'array'],
+        'go' => ['input' => 'string'],
+        'import' => [
+            'admin' => ['username' => 'string', 'password' => 'string'],
+            'expires_at' => 'string',
+            'temp_host' => 'string',
+        ],
+    ];
+
+    /** @var string[] The messages without the member type: the one line that the restore host gives the import. */
+    private const UNTYPED = ['import'];
 
     /** @var int Flags of the JSON that is written. */
     private const JSON = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES;
@@ -59,6 +73,17 @@ final class protocol {
     }
 
     /**
+     * Whether a message fits in one line that the restore host reads: MAX_LINE bytes with its line break.
+     *
+     * @param array $message The message.
+     * @return bool
+     * @throws \JsonException When the message cannot be written as JSON.
+     */
+    public static function fits(array $message): bool {
+        return strlen(json_encode($message, self::JSON)) < self::MAX_LINE;
+    }
+
+    /**
      * Writes a message as one line, and flushes it, so that the restore host reads it at once.
      *
      * @param array $message The message.
@@ -66,10 +91,10 @@ final class protocol {
      * @throws \RuntimeException When the line is longer than MAX_LINE bytes with its line break, or cannot be written.
      */
     public function send(array $message): void {
-        $line = json_encode($message, self::JSON) . "\n";
-        if (strlen($line) > self::MAX_LINE) {
+        if (!self::fits($message)) {
             throw new \RuntimeException('A line is longer than the restore host reads.');
         }
+        $line = json_encode($message, self::JSON) . "\n";
         $written = error_silencer::run(fn() => fwrite($this->out, $line), $warning);
         if ($written !== strlen($line) || !error_silencer::run(fn() => fflush($this->out), $warning)) {
             throw new \RuntimeException('A line could not be written.');
@@ -79,11 +104,12 @@ final class protocol {
     /**
      * Reads the next line and checks that it is the message that is expected.
      *
-     * @param string $type The type of the message: site_keys or go.
+     * @param string $type The type of the message: site_keys, go, or import, whose line has no member type.
      * @param int $maxbytes The most bytes of the line, with its line break.
-     * @return array The message: its type and its members, of the shape that the type has.
+     * @return array The message: its type (but for import) and its members, of the shape that the type has.
      * @throws plugin_exception With restore_input_invalid when there is no line, the line is longer than $maxbytes, is not a
-     *     JSON object, is a message of another type, lacks a member, has a member that is not known or not of its shape.
+     *     JSON object, is a message of another type, lacks a member, has a member that is not known or not of its shape, also
+     *     inside a member that is an object.
      * @throws \coding_exception When the type is not one that the restore host sends.
      */
     public function receive(string $type, int $maxbytes = self::MAX_LINE): array {
@@ -106,20 +132,41 @@ final class protocol {
             throw self::invalid();
         }
         $members = self::MESSAGES[$type];
-        // The type and the members, and no other: with the count right, no member that is not known is there.
-        if (
-            !is_array($message) || array_is_list($message) || ($message['type'] ?? null) !== $type
-            || count($message) !== count($members) + 1
-        ) {
-            throw self::invalid();
-        }
-        foreach ($members as $name => $shape) {
-            $value = $message[$name] ?? null;
-            if (get_debug_type($value) !== $shape || ($shape === 'array' && !array_is_list($value))) {
+        if (!in_array($type, self::UNTYPED, true)) {
+            // The type is one more member, of its own value.
+            if (($message['type'] ?? null) !== $type) {
                 throw self::invalid();
             }
+            $members = ['type' => 'string'] + $members;
+        }
+        if (!self::shaped($message, $members)) {
+            throw self::invalid();
         }
         return $message;
+    }
+
+    /**
+     * Whether a value is an object with these members and no other, each of its shape.
+     *
+     * @param mixed $value The value, decoded.
+     * @param array $members The shape of each member: the type of the value (array for a list), or the members of an object.
+     * @return bool
+     */
+    private static function shaped(mixed $value, array $members): bool {
+        // With the count right, no member that is not known is there. A list has none of the names of the members.
+        if (!is_array($value) || count($value) !== count($members)) {
+            return false;
+        }
+        foreach ($members as $name => $shape) {
+            $member = $value[$name] ?? null;
+            $fits = is_array($shape)
+                ? self::shaped($member, $shape)
+                : get_debug_type($member) === $shape && ($shape !== 'array' || array_is_list($member));
+            if (!$fits) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

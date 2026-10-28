@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runs the command line scripts with the coverage collector (called by .dev/coverage/run.sh).
 # Usage: .dev/coverage/cli.sh <ver> <db>
-# Every run has its own expected exit code (0: ok or help, 1: an unknown option, a wrong URL or a restore that gets no keys,
-# 2: the backup ran nothing). Any other code, 255 above all, is a PHP fatal error: the script goes on with the other runs, then
-# exits 1.
+# Every run has its own expected exit code (0: ok or help, 1: an unknown option, a wrong URL, a restore that gets no keys or
+# an import that gets no line, 2: the backup ran nothing). Any other code, 255 above all, is a PHP fatal error: the script goes
+# on with the other runs, then exits 1.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=../env/env.sh
@@ -33,15 +33,22 @@ check 0 "$dir/restore.php" --help
 check 1 "$dir/restore.php" --no-such-option
 # The extraction with nothing on its input: it gives its public key, finds no keys and ends with the error line (1).
 check 1 "$dir/restore.php" --extract </dev/null
-# Whatever PHP shows goes to the error stream: every line on the standard output of the extraction is JSON. The line that
-# moodle-docker-compose itself prints before the command is not the command's, and is left out.
-stdout="$("$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php -d display_errors=stdout -d error_reporting=-1 \
-    "$dir/restore.php" --extract </dev/null 2>/dev/null | grep -v '^Including local options')" || true
+# The import without its staging folder is refused with the help (1). With nothing on its input it gets no line and ends with
+# the error line (1), before it reads the staging folder or writes anything to the site.
+check 1 "$dir/restore.php" --import
+check 1 "$dir/restore.php" --import --staging=/nonexistent/secbackup-staging </dev/null
+# Whatever PHP shows goes to the error stream: every line on the standard output of the extraction and of the import is JSON.
+# The line that moodle-docker-compose itself prints before the command is not the command's, and is left out.
 jsoncheck='while (($l = fgets(STDIN)) !== false) { json_decode($l, true, 512, JSON_THROW_ON_ERROR); }'
-if [ -z "$stdout" ] || ! printf '%s\n' "$stdout" | php -r "$jsoncheck"; then
-    echo "restore.php --extract wrote a line that is not JSON to the standard output" >&2
-    failed=1
-fi
+for args in "--extract" "--import --staging=/nonexistent/secbackup-staging"; do
+    # shellcheck disable=SC2086 # The arguments are split on purpose.
+    stdout="$("$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php -d display_errors=stdout -d error_reporting=-1 \
+        "$dir/restore.php" $args </dev/null 2>/dev/null | grep -v '^Including local options')" || true
+    if [ -z "$stdout" ] || ! printf '%s\n' "$stdout" | php -r "$jsoncheck"; then
+        echo "restore.php $args wrote a line that is not JSON to the standard output" >&2
+        failed=1
+    fi
+done
 check 1 "$dir/backup.php" --no-such-option
 # Without --now the backup goes on with a running one until it ends, so the plain run is made only on a site that has none:
 # then it runs nothing (2). A site with a running backup (or a check that fails) fails this script without that run.

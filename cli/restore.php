@@ -26,8 +26,8 @@
 define('CLI_SCRIPT', true);
 
 // phpcs:disable moodle.Files.MoodleInternal.MoodleInternalGlobalState
-// The standard output is for the lines of the extraction: whatever PHP shows or something echoes, also while Moodle starts,
-// goes to the error stream.
+// The standard output is for the lines of the extraction and the import: whatever PHP shows or something echoes, also while
+// Moodle starts, goes to the error stream.
 ini_set('display_errors', 'stderr');
 ob_start(static function (string $text): string {
     fwrite(STDERR, $text);
@@ -39,21 +39,24 @@ require(__DIR__ . '/../../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
 
 [$options, $unrecognised] = cli_get_params(
-    ['help' => false, 'extract' => false, 'import' => false],
+    ['help' => false, 'extract' => false, 'import' => false, 'staging' => ''],
     ['h' => 'help']
 );
 if ($options['help']) {
     \tool_secbackup\local\cli\restore_command::help('cli_writeln');
     exit(0);
 }
-// Exactly one of the two options, and no other. The import is not wired yet: it is not run here.
-if ($unrecognised || !$options['extract'] || $options['import']) {
+// Exactly one of the two options, the staging folder with the import and only with it, and no other option.
+$import = (bool) $options['import'];
+$staging = $options['staging'];
+if ($unrecognised || (bool) $options['extract'] === $import || $import !== (is_string($staging) && $staging !== '')) {
     \tool_secbackup\local\cli\restore_command::help(static function (string $line): void {
-        // Echoed, so that the buffer above sends it to the error stream: the standard output is for the extraction.
+        // Echoed, so that the buffer above sends it to the error stream: the standard output is for the lines of the agreement.
         echo $line, "\n";
     });
     exit(1);
 }
-// The lines of the agreement go to the standard output: the extraction can take hours.
+// The lines of the agreement go to the standard output: the extraction and the import can take hours.
 core_php_time_limit::raise();
-exit((new \tool_secbackup\local\cli\restore_command(STDIN, STDOUT, STDERR))->extract());
+$command = new \tool_secbackup\local\cli\restore_command(STDIN, STDOUT, STDERR);
+exit($import ? $command->import($staging) : $command->extract());

@@ -108,6 +108,13 @@ final class protocol_test extends \advanced_testcase {
         }
     }
 
+    public function test_a_message_fits_when_its_line_has_65536_bytes_with_its_line_break(): void {
+        $base = strlen(json_encode(['type' => 'x', 'pad' => '']));
+        $this->assertTrue(protocol::fits(['type' => 'x', 'pad' => str_repeat('a', 65535 - $base)]));
+        $this->assertFalse(protocol::fits(['type' => 'x', 'pad' => str_repeat('a', 65536 - $base)]));
+        $this->assertTrue(protocol::fits(['type' => 'x', 'pad' => str_repeat('/', 65535 - $base)]), 'Slashes are not escaped.');
+    }
+
     public function test_a_message_that_is_not_json_is_a_failure(): void {
         [$protocol] = self::talk('');
         $this->expectException(\JsonException::class);
@@ -258,6 +265,110 @@ final class protocol_test extends \advanced_testcase {
     public function test_the_items_of_the_sealed_keys_are_not_judged_here(): void {
         [$protocol] = self::talk("{\"type\":\"site_keys\",\"sealed\":[1,null,\"A\"]}\n");
         $this->assertSame([1, null, 'A'], $protocol->receive('site_keys')['sealed']);
+    }
+
+    /**
+     * The line of the import, as the restore host writes it.
+     *
+     * @param array $edit Members to change: a value each, or null to leave the member out.
+     * @return string
+     */
+    private static function import_line(array $edit = []): string {
+        $message = [
+            'admin' => ['username' => 'secbackup_admin', 'password' => 'Pa55-word!'],
+            'expires_at' => '2026-11-10T03:00:00Z',
+            'temp_host' => 'abc.restore.test',
+        ];
+        foreach ($edit as $name => $value) {
+            if ($value === null) {
+                unset($message[$name]);
+            } else {
+                $message[$name] = $value;
+            }
+        }
+        return json_encode($message, JSON_UNESCAPED_SLASHES) . "\n";
+    }
+
+    public function test_the_line_of_the_import_has_no_type_and_is_given_with_its_members(): void {
+        [$protocol] = self::talk(self::import_line());
+        $this->assertSame(
+            [
+                'admin' => ['username' => 'secbackup_admin', 'password' => 'Pa55-word!'],
+                'expires_at' => '2026-11-10T03:00:00Z',
+                'temp_host' => 'abc.restore.test',
+            ],
+            $protocol->receive('import')
+        );
+    }
+
+    public function test_the_members_of_the_import_line_may_come_in_any_order(): void {
+        [$protocol] = self::talk(
+            "{\"temp_host\":\"h.test\",\"admin\":{\"password\":\"p\",\"username\":\"u\"},\"expires_at\":\"e\"}\n"
+        );
+        $this->assertSame(['password' => 'p', 'username' => 'u'], $protocol->receive('import')['admin']);
+    }
+
+    /**
+     * Import lines that are not of the shape of the import.
+     *
+     * @return array
+     */
+    public static function import_refused_provider(): array {
+        $admin = ['username' => 'secbackup_admin', 'password' => 'p'];
+        return [
+            'a type' => [self::import_line(['type' => 'import'])],
+            'a member that is not known' => [self::import_line(['extra' => 1])],
+            'no admin' => [self::import_line(['admin' => null])],
+            'no time' => [self::import_line(['expires_at' => null])],
+            'no host' => [self::import_line(['temp_host' => null])],
+            'an admin that is text' => [self::import_line(['admin' => 'secbackup_admin'])],
+            'an admin that is a list' => [self::import_line(['admin' => ['secbackup_admin', 'p']])],
+            'an admin that is an empty object' => [str_replace('"admin":[]', '"admin":{}', self::import_line(['admin' => []]))],
+            'an admin without a password' => [self::import_line(['admin' => ['username' => 'secbackup_admin']])],
+            'an admin without a user name' => [self::import_line(['admin' => ['password' => 'p']])],
+            'an admin with a member that is not known' => [self::import_line(['admin' => $admin + ['email' => 'a@b.test']])],
+            'an admin with a member that is not known instead of one' => [
+                self::import_line(['admin' => ['username' => 'secbackup_admin', 'pass' => 'p']]),
+            ],
+            'a password that is a number' => [self::import_line(['admin' => ['username' => 'secbackup_admin', 'password' => 5]])],
+            'a password that is null' => [str_replace('"p"', 'null', self::import_line(['admin' => $admin]))],
+            'a user name that is a list' => [self::import_line(['admin' => ['username' => ['a'], 'password' => 'p']])],
+            'a time that is a number' => [self::import_line(['expires_at' => 1793674800])],
+            'a host that is a list' => [self::import_line(['temp_host' => ['abc.restore.test']])],
+            'a list of the members' => ["[\"secbackup_admin\",\"p\",\"2026-11-10T03:00:00Z\",\"h.test\"]\n"],
+            'the line of another message' => ["{\"type\":\"go\",\"input\":\"/x\"}\n"],
+            'nothing' => [''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('import_refused_provider')]
+    /**
+     * A line that is not the import line is refused, in any detail, also inside the admin.
+     *
+     * @dataProvider import_refused_provider
+     * @param string $text What the restore host sends.
+     */
+    public function test_an_import_line_not_of_its_shape_is_refused(string $text): void {
+        [$protocol] = self::talk($text);
+        $this->assertSame('restore_input_invalid', $this->code_of(fn() => $protocol->receive('import')));
+    }
+
+    public function test_a_typed_message_still_needs_its_type(): void {
+        [$protocol] = self::talk("{\"input\":\"/x\"}\n");
+        $this->assertSame('restore_input_invalid', $this->code_of(fn() => $protocol->receive('go')));
+        [$protocol] = self::talk("{\"type\":\"go\",\"type2\":\"go\"}\n");
+        $this->assertSame('restore_input_invalid', $this->code_of(fn() => $protocol->receive('go')));
+    }
+
+    public function test_a_refused_import_line_leaves_nothing_of_the_password_in_the_exception(): void {
+        [$protocol] = self::talk(self::import_line(['admin' => ['username' => 'u', 'password' => 'Secret-PW-9', 'x' => 1]]));
+        try {
+            $protocol->receive('import');
+            $this->fail('No exception');
+        } catch (plugin_exception $e) {
+            $this->assertNull($e->getPrevious());
+            $this->assertStringNotContainsString('Secret-PW-9', (string) $e);
+        }
     }
 
     public function test_a_message_that_the_restore_host_does_not_send_is_a_coding_error(): void {

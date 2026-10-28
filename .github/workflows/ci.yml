@@ -314,9 +314,9 @@ jobs:
         if: ${{ failure() && steps.behat.outcome == 'failure' }}
         run: bash plugin/.dev/ci/behat-known-failures.sh "$RUNNER_TEMP/behat.log"
 
-      # Every run has its own expected exit code (0: ok or help, 1: an unknown option or a wrong URL, 2: the backup ran
-      # nothing). Any other code, 255 above all, is a PHP fatal error, and it fails the step even when the lines were covered
-      # by another combination.
+      # Every run has its own expected exit code (0: ok or help, 1: an unknown option, a wrong URL, a restore that gets no keys
+      # or an import that gets no line, 2: the backup ran nothing). Any other code, 255 above all, is a PHP fatal error, and it
+      # fails the step even when the lines were covered by another combination.
       # The last run is under open_basedir, which hides /proc and /sys: the diagnostics have to say unknown, with no PHP message
       # (.dev/ci/diagnose-open-basedir.sh says what it checks).
       - name: Command line scripts
@@ -345,10 +345,14 @@ jobs:
           check 0 "$dir/backup.php" --help
           check 1 "$dir/backup.php" --no-such-option
           check 2 "$dir/backup.php"
-          # The extraction with nothing on its input gives its public key, finds no keys and ends with the error line (1).
+          # The extraction with nothing on its input gives its public key, finds no keys and ends with the error line (1). The
+          # import without its staging folder is refused with the help (1); with nothing on its input it gets no line and ends
+          # with the error line (1), before it reads the staging folder or writes anything to the site.
           check 0 "$dir/restore.php" --help
           check 1 "$dir/restore.php" --no-such-option
           check 1 "$dir/restore.php" --extract </dev/null
+          check 1 "$dir/restore.php" --import
+          check 1 "$dir/restore.php" --import --staging=/nonexistent/secbackup-staging </dev/null
           bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
           exit "$failed"
 
