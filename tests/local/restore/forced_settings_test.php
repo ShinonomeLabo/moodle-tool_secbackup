@@ -348,6 +348,8 @@ final class forced_settings_test extends \advanced_testcase {
     public function test_forced_settings_not_in_their_form_are_refused_before_anything_is_written(array $forced): void {
         global $DB;
         $theme = self::core('theme');
+        // The rows that the site has: a site with the plugin mod_attendance installed has its version there.
+        $attendance = $DB->get_records('config_plugins', ['plugin' => 'mod_attendance'], 'id');
         try {
             forced_settings::apply($forced);
             $this->fail('No exception');
@@ -355,7 +357,7 @@ final class forced_settings_test extends \advanced_testcase {
             $this->assertSame('restore_input_invalid', $e->errorcode);
         }
         $this->assertSame($theme, self::core('theme'));
-        $this->assertFalse($DB->record_exists('config_plugins', ['plugin' => 'mod_attendance']));
+        $this->assertEquals($attendance, $DB->get_records('config_plugins', ['plugin' => 'mod_attendance'], 'id'));
     }
 
     public function test_check_accepts_forced_settings_in_their_form_and_writes_nothing(): void {
