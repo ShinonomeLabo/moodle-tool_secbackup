@@ -831,7 +831,9 @@ final class fake_service {
                 return [412, [], '<Error><Code>PreconditionFailed</Code></Error>'];
             }
             if (!$this->keep($key, $body)) {
-                // Only a folder of objects refuses a key: one that is not a path of names in it.
+                // Only a folder of objects fails to keep a body: for a key that is not a path of names in it, a key whose file
+                // or folder is in the way of another (a folder of that name, or a file where a folder must be), or a folder
+                // or a file that cannot be written or renamed.
                 return [400, [], '<Error><Code>InvalidArgument</Code></Error>'];
             }
             return [200, [], ''];

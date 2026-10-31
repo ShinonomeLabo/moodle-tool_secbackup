@@ -14,17 +14,31 @@ the restored site with the site it was backed up from. They are tools of the tes
 | `compare.sh <ver> <db> <material>` | this machine | snapshots the restored site and compares it with `source-snapshot.json` of the material |
 
 The commands below use Moodle 4.5 on PostgreSQL and the site `p5` (`SECBK_SITE=p5`) as the backed-up site; any development
-environment with the plugin of this branch can be one. `<plugin>` is `admin/tool/secbackup` (`public/admin/tool/secbackup`
-from Moodle 5.1).
+environment with the plugin of this branch can be one. `restore.sh` and `compare.sh` take it from `SECBK_SOURCE_SITE`, which
+is none by default, as `.dev/env/env.sh` without `SECBK_SITE`. `<plugin>` is `admin/tool/secbackup`
+(`public/admin/tool/secbackup` from Moodle 5.1), `<moodle>` the Moodle folder of the environment (`SECBK_MOODLE` of
+`.dev/env/env.sh`), and `<material>` a folder for the material outside the repository, such as
+`$SECBK_ENV_ROOT/fixtures/fixture-405-pgsql`: a folder in the repository is in the plugin, which a site serves and backs up.
 
 ## 1. The backed-up site
 
-The site needs the developer settings of `.dev/env/devconfig.sh` (they trust the key of the fake service) and data
-(`.dev/env/data.sh`). Then the fake service, a key pair of the site, the registration without a list of official files (so
-that the run sends the whole Moodle program, which a restore needs), and a whole backup:
+The site needs the developer settings of `.dev/env/devconfig.sh` (they trust the key of the fake service), an additional
+plugin besides this one, so that a restore writes the code of a plugin where the restored Moodle has its type, and data
+(`.dev/env/data.sh`), here with an activity of that plugin (the folder is `<moodle>/public/mod/attendance` from Moodle 5.1,
+and the branch the one of the version). Then the fake service, a key pair of the site, the registration
+without a list of official files (so that the run sends the whole Moodle program, which a restore needs), and a whole backup:
 
     export SECBK_SITE=p5
+    git clone --depth 1 --branch MOODLE_405_STABLE https://github.com/danmarsden/moodle-mod_attendance.git <moodle>/mod/attendance
+    .dev/env/run.sh 405 pgsql php admin/cli/upgrade.php --non-interactive
     .dev/env/data.sh 405 pgsql S
+    .dev/env/run.sh 405 pgsql php -r '
+        define("CLI_SCRIPT", true);
+        require "config.php";
+        require_once($CFG->libdir . "/testing/generator/lib.php");
+        \core\session\manager::set_user(get_admin());
+        $course = $DB->get_records_select("course", "id <> ?", [SITEID], "id", "*", 0, 1);
+        (new testing_data_generator())->create_module("attendance", ["course" => reset($course)->id]);'
     .dev/fakesec/start.sh 405 pgsql
     key="$(.dev/env/run.sh 405 pgsql php -r '
         $pair = sodium_crypto_box_keypair();
@@ -57,19 +71,24 @@ with. Then copy the folder out of the container (`moodle-docker-compose cp`, wit
 
     .dev/env/run.sh 405 pgsql php <plugin>/.dev/restore/make_fixture.php --out=/tmp/secbk-fixture --secretkey=/tmp/secbk-site.key
     .dev/env/run.sh 405 pgsql php <plugin>/.dev/restore/compare.php --snapshot=/tmp/secbk-fixture/source-snapshot.json
+    (umask 077 && mkdir -p "$SECBK_ENV_ROOT/fixtures")
     (source .dev/env/env.sh 405 pgsql && "$SECBK_DOCKER/bin/moodle-docker-compose" cp webserver:/tmp/secbk-fixture <material>)
+    .dev/env/run.sh 405 pgsql rm -rf /tmp/secbk-fixture /tmp/secbk-site.key
 
-The material holds the secret key of the test site. It is the key of a development site, never of a real one; keep the folder
-out of the repository all the same.
+The last line removes the material and the secret key from the container. The only secret of the material is
+`site-secret-key`, the secret key of the test site: the key of a development site, never of a real one. The snapshot holds
+the hash of each row, and the values of only a few settings that are checked (`siteadmins`, `noemailever`,
+`alternateloginurl`) and of the scheduled tasks and the message processors; `fixture.json` holds names, never values.
+Only the owner can read the folder.
 
 ## 3. The restore
 
-    .dev/restore/restore.sh 405 pgsql <material>
+    SECBK_SOURCE_SITE=p5 .dev/restore/restore.sh 405 pgsql <material>
 
 `restore.sh` runs `cli/restore.php --extract` as root in the web server container of the backed-up site, with
 `drive_extract.php` as the restore host (two named pipes join them; like the restore host, it makes the folders that the
 extraction writes into, which the extraction requires). It then makes the new environment, `SECBK_SITE=restored`
-(`SECBK_RESTORE_SITE` gives another name, `SECBK_SOURCE_SITE` another backed-up site):
+(`SECBK_RESTORE_SITE` gives another name):
 
 - the Moodle code that the extraction wrote becomes the Moodle folder `moodle-<ver>-restored` in `SECBK_ENV_ROOT`, with the
   `config.php` of moodle-docker, and the plugin of this branch is mounted in it (the extraction does not write the code of
@@ -78,19 +97,20 @@ extraction writes into, which the extraction requires). It then makes the new en
 - `moodle-docker-<ver>-restored` is a copy of `moodle-docker-<ver>` whose `local.yml` gives the web port 192 and the version
   (19245 for 4.5, 19253 for 5.3) and an external network `<project>_default`, which `restore.sh` makes with a free subnet of
   `10.99.0.0/16`;
-- only the web server and the database start. The data root and the staging folder of the extraction are copied into the web
-  server container, and `admin/cli/install_database.php` installs Moodle with the plugin (the import needs the plugin installed:
-  it writes the table `tool_secbackup_restore_stops`);
+- only the web server, the database and mailpit (the web server needs it) start. The data root and the staging folder of the
+  extraction are copied into the web server container, and `admin/cli/install_database.php` installs Moodle with the plugin
+  (the import needs the plugin installed: it writes the table `tool_secbackup_restore_stops`);
 - with the web closed by `climaintenance.html`, `cli/restore.php --import` runs as `www-data` with a new password of
   `secbackup_admin`, then `admin/cli/purge_caches.php`, and the web opens again.
 
 A backed-up site on MySQL is restored to MariaDB. An environment that is installed already is not restored again: give
 another `SECBK_RESTORE_SITE`. The password of `secbackup_admin` and the output of each step are in
-`SECBK_ENV_ROOT/restore-<project>/`; the password is never printed.
+`SECBK_ENV_ROOT/restore-<project>/`; the password is never printed. When the script ends, also when a step fails, it removes
+the material, the output of the extraction and the staging folder from both containers.
 
 ## 4. The comparison
 
-    .dev/restore/compare.sh 405 pgsql <material>
+    SECBK_SOURCE_SITE=p5 .dev/restore/compare.sh 405 pgsql <material>
 
 The restored site writes its snapshot, with the login of `secbackup_admin`, and `compare.php` compares it with
 `source-snapshot.json`. The output starts with what it leaves out: the tables that the backup does not hold (`sessions`,
@@ -98,8 +118,12 @@ The restored site writes its snapshot, with the login of `secbackup_admin`, and 
 `tool_secbackup` (the restored site keeps its own plugin), the settings that `config.php` of the backed-up site forced (the
 import writes them into the database), `siteadmins`, the user `secbackup_admin` and its context, what the import stopped
 (as `tool_secbackup_restore_stops` records it), and what `purge_caches.php` after the import sets to the time it runs (the
-revisions of the caches among the settings, and `cacherev` of every course). Every other difference of a row, of the
-contents of the file store, of a plugin version, or of the login is a mismatch. The snapshot of the restored site is taken
+revisions of the caches among the settings, and `cacherev` of every course). What is left out because the import changed
+it is checked on its own: `siteadmins` is the list of the backed-up site with `secbackup_admin` added, what the import stopped
+has the values that stop it, nothing is stopped but the tasks of the additional plugins and the core tasks that the import
+stops, the header leaves out no table but the logs, and the registration of the plugin is not restored. Every other
+difference of a row, of the contents of the file store, of a plugin version, or of the login, and every check that fails, is
+a mismatch. The snapshot of the restored site is taken
 before its login; a login by hand before the comparison adds rows (preferences of `secbackup_admin`, an ad hoc task) that
 show as differences.
 

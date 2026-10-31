@@ -5,8 +5,8 @@
 #     root, with drive_extract.php playing the restore host (it seals the key of the site to the one-time key and sends go);
 #  2. the Moodle code that the extraction wrote becomes the Moodle folder of the new environment (SECBK_SITE=restored), with a
 #     config.php of moodle-docker, and the plugin of this branch is mounted in it;
-#  3. the new environment starts (the web server and the database only), the data root and the staging folder are copied
-#     into its web server container, and admin/cli/install_database.php installs Moodle there;
+#  3. the new environment starts (the web server, the database and mailpit, which the web server needs), the data root and
+#     the staging folder are copied into its web server container, and admin/cli/install_database.php installs Moodle there;
 #  4. with the web closed (climaintenance.html), cli/restore.php --import runs as www-data with a new password of
 #     secbackup_admin, then admin/cli/purge_caches.php, and the web opens again.
 # A backed-up site on MySQL is restored to MariaDB. The plugin is installed with Moodle, before the import: the import writes
@@ -16,8 +16,10 @@
 # Moodle folder (moodle-<ver>-<site>) is shared by the databases of one version, as with every development environment: a
 # restore replaces a folder that an earlier restore made, and refuses one that it did not make. A restored environment is
 # never restored again: give another SECBK_RESTORE_SITE.
+# The material and the staging folder are removed from both containers when the script ends, also when a step fails: the
+# material holds the secret key of the site. The password of secbackup_admin stays only in SECBK_ENV_ROOT/restore-<project>.
 # Usage: .dev/restore/restore.sh <ver> <db> <material folder>
-#   SECBK_SOURCE_SITE  the site of the backed-up environment (default p5)
+#   SECBK_SOURCE_SITE  the site of the backed-up environment (default none, as .dev/env/env.sh without SECBK_SITE)
 #   SECBK_RESTORE_SITE the site of the new environment (default restored)
 set -euo pipefail
 ver="${1:?usage: restore.sh <ver> <db> <material folder>}"
@@ -51,6 +53,16 @@ port="192${ver:0:1}${ver:2:1}"
 mkdir -p "$target_work"
 chmod 700 "$target_work"
 echo "restoring $source_project into $target_project (http://127.0.0.1:$port)"
+
+# Removes the material, the output of the extraction and the staging folder from the containers. The restored site does not
+# run yet in the first steps: its removal then fails, and nothing of the material is in it.
+cleanup() {
+    in_source rm -rf /tmp/secbk-restore > /dev/null 2>&1 || true
+    if running "$target_project"; then
+        in_target rm -rf /tmp/secbk-restore > /dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
 
 # 1. The extraction, in the backed-up site.
 in_source rm -rf /tmp/secbk-restore
@@ -107,10 +119,15 @@ YAML
 if ! docker network inspect "${target_project}_default" > /dev/null 2>&1; then
     made=
     for n in $(seq 20 250); do
-        if docker network create --subnet "10.99.$n.0/24" --label secbk.restore=1 "${target_project}_default" > /dev/null 2>&1
+        if error="$(docker network create --subnet "10.99.$n.0/24" --label secbk.restore=1 "${target_project}_default" 2>&1)"
         then
             made="10.99.$n.0/24"
             break
+        fi
+        # Only a subnet that another network has is tried again; any other error (Docker does not answer) ends the script.
+        if ! printf '%s' "$error" | grep -qi 'overlap'; then
+            echo "the network ${target_project}_default could not be made: $error" >&2
+            exit 1
         fi
     done
     if [ -z "$made" ]; then
@@ -159,7 +176,6 @@ echo "installed: $(tail -n 1 "$target_work/install.log")"
 
 # 4. The import, with the web closed.
 (umask 077 && openssl rand -base64 24 | tr '+/' '-_' | tr -d '=\n' > "$target_work/admin-password")
-in_target sh -c 'umask 077 && cat > /tmp/secbk-restore/admin-password' < "$target_work/admin-password"
 in_target sh -c 'echo "<h1>Restoring</h1>" > /var/www/moodledata/climaintenance.html'
 expires="$(in_target php -r 'echo gmdate("Y-m-d\TH:i:s\Z", time() + 7 * 86400);')"
 printf '{"admin":{"username":"secbackup_admin","password":"%s"},"expires_at":"%s","temp_host":"%s.example.test"}\n' \
@@ -168,8 +184,6 @@ printf '{"admin":{"username":"secbackup_admin","password":"%s"},"expires_at":"%s
     > "$target_work/import.log"
 in_target php "$corecli/purge_caches.php"
 in_target rm -f /var/www/moodledata/climaintenance.html
-in_target rm -rf /tmp/secbk-restore/staging
-in_source rm -rf /tmp/secbk-restore
 # shellcheck disable=SC2016
 in_target php -r '
     $done = json_decode((string) array_slice(file("php://stdin"), -1)[0], true)["summary"];

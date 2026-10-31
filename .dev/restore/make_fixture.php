@@ -27,8 +27,8 @@
  * - site-secret-key: the X25519 secret key of the site in standard base64, readable by its owner only. It is the secret key
  *   of a test site, from the key pair that prepare.php registered, and never the key of a real site;
  * - fixture.json: the plan that the backup service would give the restore host for this run (the values of the run, of its
- *   list and of its index), what the extraction must report in its summary, and the names of what the header says that the
- *   restored site has differently (for .dev/restore/compare.php).
+ *   list and of its index), what the extraction must report in its summary, whether the run took the logs, and the names of
+ *   what the header says that the restored site has differently (for .dev/restore/compare.php).
  * The list is decrypted to check the run and to count what it holds. The run must have sent the whole Moodle program: a run
  * that compared it with a list of official files cannot be restored yet.
  *
@@ -49,6 +49,7 @@ require(__DIR__ . '/../../../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
 require_once(__DIR__ . '/../../tests/classes/fake_service.php');
 
+use tool_secbackup\local\backup\settings;
 use tool_secbackup\local\crypto\chunk_name;
 use tool_secbackup\local\crypto\chunk_reader;
 use tool_secbackup\local\crypto\chunk_writer;
@@ -259,6 +260,8 @@ secbk_dev_write_json($out . '/fixture.json', [
         'plugins' => $plugins,
         'missing_files' => count($header['missing_files']),
     ],
+    // The settings of the run that the header does not have: the run of the fake service took the ones of the site now.
+    'run' => ['include_logs' => settings::current()->include_logs()],
     'header' => [
         'excluded_tables' => $header['db']['excluded_tables'],
         'unknown_tables' => $header['db']['unknown_tables'],

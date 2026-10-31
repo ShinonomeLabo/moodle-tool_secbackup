@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Shared by restore.sh and compare.sh: the environments of a restore. Source it after setting ver and db.
-#  - The backed-up site is the development environment <ver> <db> of the site SECBK_SOURCE_SITE (default p5).
+#  - The backed-up site is the development environment <ver> <db> of the site SECBK_SOURCE_SITE (default none: the
+#    environment of .dev/env/env.sh without SECBK_SITE).
 #  - The restored site is the environment <ver> <target db> of the site SECBK_RESTORE_SITE (default restored). The target
 #    database is the one of the backed-up site, except that MySQL is restored to MariaDB, as on the restore host.
 # Every value comes from .dev/env/env.sh, in a subshell, so that the variables of one environment never leak into the other.
@@ -8,7 +9,7 @@
 # shellcheck disable=SC2034,SC2154
 restore_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 restore_env="$restore_here/../env"
-source_site="${SECBK_SOURCE_SITE:-p5}"
+source_site="${SECBK_SOURCE_SITE:-}"
 target_site="${SECBK_RESTORE_SITE:-restored}"
 case "$db" in
     mysqli) target_db=mariadb ;;
