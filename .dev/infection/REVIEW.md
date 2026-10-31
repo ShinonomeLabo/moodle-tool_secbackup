@@ -1,6 +1,9 @@
 # Mutation testing review
 
-Infection runs on classes/local/{crypto,trust,api,net,endpoint}, with the configuration `.dev/infection/infection.json5`:
+Infection runs on classes/local/{crypto,trust,api,net,endpoint,restore}, with the configuration `.dev/infection/infection.json5`,
+except the four parts of the restore that write the database of the site (db_importer, forced_settings, temp_admin and
+temp_site_safety: each mutant would run their tests against the database again, which does not fit in a run; their line
+coverage of 100% and the values that their tests check keep them):
 on GitHub with the manual workflow `.github/workflows/infection.yml`, which splits the files into the shards of
 `.dev/infection/shards.txt` (one job each) and adds the shards up in a last job (`.dev/infection/merge.php`), or on a
 development machine with `.dev/infection/run.sh` (one process for all files, which takes several hours since version 0.2.0).
@@ -105,6 +108,26 @@ For each mutant, Infection runs only the tests that the coverage of its first ru
 | File:line | Mutator | Test |
 |---|---|---|
 | classes/local/api/client.php:95 | Coalesce (`$clock ?? static fn(): int => time()` to `(static fn(): int => time()) ?? $clock`) | The mutant ignores the clock that a test gives, and client_runs_test fails on it (23 errors and 14 failures; applied by hand and run on 5.3 PostgreSQL). The line holds the arrow function, and the coverage counts the line for the tests in which that function runs, the clients made without a clock, which use the real time either way; it does not count the tests that give a clock. |
+
+## Changes on the disk that the restore does not prevent
+
+The extraction (`cli/restore.php --extract`) runs as root and writes under the folders of the restore host through
+`classes/local/restore/tree_writer.php`, which goes down the folders one name at a time (lstat(), chdir(), and a check that
+the folder it is in has the device and inode that it looked at), so that no symbolic link leads it out of its folders. PHP
+has no openat() and no O_NOFOLLOW, and two changes by another process in the middle of a call are not prevented:
+
+| Where | The change | What it can do |
+|---|---|---|
+| `open()`, between the getcwd() that fopen() joins the name to and the open(2) | A folder above the working folder is swapped for a symbolic link. | fopen() creates an empty part file where the link leads. The writer then finds that the file it opened is not the entry of its working folder (device and inode) and refuses it with restore_path_unsafe before it gives the handle, so no byte of content is written there; it checks again before the rename. The empty file stays. |
+| `open()`, between the unlink() of a part file that was there and the fopen() | A symbolic link is put as the part file. | The same: fopen() in the mode "x" follows the link (PHP resolves the path itself), and the same check refuses the file it made. |
+
+Both are accepted: while the extraction runs, no other process of the restore host writes in those folders (the restored code
+does not run, and the web server and the cron of the restored site start only after the import). The writer's other calls
+(lstat(), mkdir(), unlink(), rename(), chmod('.')) name one entry of the working folder, which no change of a folder above it
+can redirect, on a PHP without thread safety (NTS) only, as the command line PHP of the restore host is. A PHP with thread
+safety (ZTS) keeps a working folder of its own and makes those calls with absolute paths: a link that was there before is
+still refused by the same comparison, but a folder above that is swapped while the writer works is not. The restore host
+must not run the extraction with a ZTS PHP.
 
 ## Checks that the PHPUnit run of Infection does not make
 
