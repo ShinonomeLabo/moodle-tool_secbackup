@@ -123,7 +123,9 @@ it is checked on its own: `siteadmins` is the list of the backed-up site with `s
 has the values that stop it, nothing is stopped but the tasks of the additional plugins and the core tasks that the import
 stops, the header leaves out no table but the logs, and the registration of the plugin is not restored. Every other
 difference of a row, of the contents of the file store, of a plugin version, or of the login, and every check that fails, is
-a mismatch. The snapshot of the restored site is taken
+a mismatch. A check that cannot be made is listed as `not checked` and is not a failure: without `fixture.json`, the header
+and the tasks of the additional plugins; with a `fixture.json` that does not record `include_logs` (a material made before it
+did), whether the header left out the logs. The snapshot of the restored site is taken
 before its login; a login by hand before the comparison adds rows (preferences of `secbackup_admin`, an ad hoc task) that
 show as differences.
 

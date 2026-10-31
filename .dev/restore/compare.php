@@ -361,16 +361,24 @@ function secbk_dev_setting(array $snapshot, string $name): ?string {
  *   that the import stops; every scheduled task of an additional plugin is disabled; no ad hoc task of an additional plugin
  *   is left; and the registration of the plugin is not restored. A kind of record that is not known is a failure.
  *
+ * A check that cannot be made is not a failure, and is named in $notes: those that need the header without fixture.json, and
+ * those of the logs when fixture.json does not record include_logs (a material made before it recorded the setting).
+ *
  * @param array $source The snapshot of the backed-up site.
  * @param array $target The snapshot of the restored site.
  * @param array|null $fixture fixture.json, or null (the checks that need its header are not made then).
  * @param array $stops The records of the import by kind: the names.
+ * @param string[] $notes Gets the checks that were not made.
  * @return string[] The checks that failed.
  */
-function secbk_dev_checks(array $source, array $target, ?array $fixture, array $stops): array {
+function secbk_dev_checks(array $source, array $target, ?array $fixture, array $stops, array &$notes): array {
     $failed = [];
+    $notes = [];
     $leftout = secbk_dev_left_out_tables();
-    if ($fixture !== null) {
+    if ($fixture === null) {
+        $notes[] = 'no fixture.json: the header, and whether the tasks that are stopped or left are of the additional plugins,'
+            . ' are not checked';
+    } else {
         $excluded = $fixture['header']['excluded_tables'];
         $other = array_diff($excluded, $leftout['always'], $leftout['logs']);
         if ($other !== []) {
@@ -383,6 +391,8 @@ function secbk_dev_checks(array $source, array $target, ?array $fixture, array $
             $failed[] = 'without include_logs the header does not leave out every table of the logs';
         } else if ($includelogs === true && $logsout !== []) {
             $failed[] = 'with include_logs the header leaves out tables of the logs';
+        } else if ($includelogs === null) {
+            $notes[] = 'include_logs is not recorded in fixture.json: whether the header left out the logs is not checked';
         }
         $known = array_intersect($fixture['header']['unknown_tables'], array_keys($target['tables']));
         if ($known !== []) {
@@ -434,8 +444,8 @@ function secbk_dev_checks(array $source, array $target, ?array $fixture, array $
         if ($row === null || (string) $row['disabled'] !== '1' || (string) $row['customised'] !== '1') {
             $failed[] = "the stopped scheduled task $name is not disabled and customised";
         } else if (
-            !in_array($name, $target['coretasks'], true)
-            && ($additional === null || !in_array($row['component'], $additional, true))
+            $additional !== null && !in_array($name, $target['coretasks'], true)
+            && !in_array($row['component'], $additional, true)
         ) {
             $failed[] = "the scheduled task $name is stopped, but it is neither of an additional plugin nor a core task to stop";
         }
@@ -628,10 +638,14 @@ function secbk_dev_compare(string $sourcefile, string $targetfile, ?string $fixt
     }
     $ok = $ok && $bad === [];
 
-    $failed = secbk_dev_checks($source, $target, $fixture, $stops);
+    $notes = [];
+    $failed = secbk_dev_checks($source, $target, $fixture, $stops, $notes);
     echo 'checks of what is left out: ' . count($failed) . " failed\n";
     foreach ($failed as $line) {
         echo "  $line\n";
+    }
+    foreach ($notes as $line) {
+        echo "  not checked: $line\n";
     }
     $ok = $ok && $failed === [];
 
