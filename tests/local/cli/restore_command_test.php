@@ -1267,17 +1267,25 @@ final class restore_command_test extends \advanced_testcase {
 
     public function test_the_failure_of_the_database_is_told_without_the_values_of_the_row(): void {
         $previous = new \dml_write_exception('Duplicate entry SECRET-ROW-VALUE', 'INSERT INTO t VALUES (?)', ['SECRET-PARAM']);
+        $thrown = new import_failed_exception($previous, 'course');
+        // What the command has at hand: the exception of the importer keeps the one of the database, whose message and debug
+        // information hold the error of the database and the query, and whose parameters hold the values of the row.
+        $this->assertSame($previous, $thrown->getPrevious());
+        $this->assertStringContainsString('SECRET-ROW-VALUE', $previous->getMessage());
+        $this->assertStringContainsString('INSERT INTO t VALUES', $previous->debuginfo);
+        $this->assertSame(['SECRET-PARAM'], $previous->params);
         [$code, $out, $err, $raw] = $this->run_import(
             [self::import_line()],
             self::staging(),
-            $this->fake_importer(function () use ($previous): array {
-                throw new import_failed_exception($previous, 'course');
+            $this->fake_importer(function () use ($thrown): array {
+                throw $thrown;
             })
         );
         $this->assertSame(1, $code);
         $this->assertSame([['type' => 'error', 'code' => 'restore_import_failed']], $out);
+        // The message of the exception of the plugin, and nothing of the one before it: neither its text nor its class.
         $this->assertSame(get_string('restore_import_failed', 'tool_secbackup') . "\n", $err);
-        foreach (['SECRET-ROW-VALUE', 'SECRET-PARAM', 'INSERT INTO'] as $text) {
+        foreach (['SECRET-ROW-VALUE', 'SECRET-PARAM', 'INSERT INTO', 'Duplicate entry', 'dml_write_exception'] as $text) {
             $this->assertStringNotContainsString($text, $raw . $err);
         }
     }
