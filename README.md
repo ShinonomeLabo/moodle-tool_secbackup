@@ -12,7 +12,8 @@ This repository is under development and is not ready for production use.
 
 Version 0.2.0 sends full backups of the site to the backup service. Version 0.1.0 brought the registration with the service
 (the connection URL, the site's public key and a one-time registration code), the status request every five minutes and the
-connection diagnostics, on a page and on the command line. Restoring a backup comes in a later version.
+connection diagnostics, on a page and on the command line. Version 0.5.0 adds the plugin's part of restoring a backup to a
+temporary site, which the backup service runs on a server of its own (see "Restoring a backup").
 
 - **When.** The service sends the settings of the backup: a daily window (in a time zone), the number of backups a day, the
   upload speed limit and whether the logs are included. The plugin starts a backup in the window, a little after its start
@@ -137,6 +138,41 @@ For example, for a window from 02:00 in the time zone of the server:
 
 `diagnose.php` runs the connection diagnostics; `--endpoint` checks a connection URL before the site is registered. Both
 print their help with `--help`.
+
+## Restoring a backup
+
+The backup service restores a generation on a temporary server of its own, the restore host: it installs a new Moodle of the
+version of the backup with this plugin there, and runs `cli/restore.php` of the plugin twice. The script is not a command for
+the administrators of a site, and it is never run on the backed-up site.
+
+    php admin/tool/secbackup/cli/restore.php --extract
+    php admin/tool/secbackup/cli/restore.php --import --staging=<folder>
+
+Both talk to the restore host over their standard input and output, one JSON line at a time, and write nothing else to the
+standard output: what PHP or Moodle shows meanwhile goes to the error stream. Exit codes: 0 done, 1 failed. A failure that
+the plugin knows ends with a line such as `{"type":"error","code":"restore_manifest_invalid"}`, whose code is a language
+string of the plugin; another one ends without it, with one line on the error stream that names the kind of the failure
+only. The lines of the command never hold a key of the site, a password, a path or a value of a row.
+
+- `--extract` (run as root) gives a one-time public key and receives the keys of the site sealed for it, then the path of an
+  input file that names the downloaded chunks, the list of the generation with its signature, and the folders to write to.
+  The keys are kept in the memory of the command only. It checks the size, the SHA-256 and the signature of the list, and
+  writes Moodle's code, the plugins that are not part of Moodle (each to the folder of its type in the restored code), the
+  data directory and the file store under those folders, after it has checked each file against the list. The blocks of the
+  database go to the staging folder, for the import, which needs no key. Nothing is written outside the folders, a symbolic
+  link on the way is not followed, and the components that the restore host names (this plugin, which it installs itself)
+  are left out.
+- `--import` (run as the user of the web server, with the cron and the web of the restored site stopped) puts the rows of the
+  staging folder in place of the rows of the install, each with its id, and can run again on the same folder. It does not
+  restore the state of this plugin, so the restored site is not registered with the service. It writes the settings that
+  `config.php` of the backed-up site forced, except those of its server, and makes the site a temporary site: no mail is
+  ever sent, the notifications show on the page only, the scheduled tasks of the plugins that are not part of Moodle and the
+  core tasks that talk to other systems are disabled, their ad hoc tasks are deleted, and the alternative login page is
+  removed. Each change is recorded with the value it replaced in the table `tool_secbackup_restore_stops`. Last, it makes the
+  administrator `secbackup_admin` with the password that the restore host gives. The restore host purges the caches after it.
+
+A generation that holds only the files of Moodle's code that differ from the official release cannot be restored yet
+(`restore_core_official_unsupported`).
 
 ## Servers and storage
 

@@ -1,5 +1,33 @@
 # Changes
 
+## 0.5.0
+
+- The plugin's part of restoring a backup to a temporary site: `cli/restore.php`, which the restore host of the backup
+  service runs on a server of its own, never on the backed-up site. It talks to the restore host over its standard input and
+  output, one JSON line at a time, and its failures end with one line that holds a code, never a key of the site, a
+  password, a path or a value of a row.
+- `cli/restore.php --extract` makes a one-time key pair and receives the keys of the site sealed for it; the keys stay in the
+  memory of the command and are not written anywhere. It checks the size, the SHA-256 and the signature of the site on the
+  list of the generation, decrypts each chunk with the newest key that opens it, and checks every file and every block of
+  the database against the list. It writes Moodle's code, the plugins that are not part of Moodle (each to the folder that
+  the restored code gives its type), the data directory and the file store where the restored Moodle reads them, and keeps
+  the blocks of the database for the import. A path of the list that is not a plain relative path is refused, a symbolic
+  link on the way is not followed, and a file takes its name only when its size and hash are the ones of the list.
+  A generation that holds only the files of Moodle's code that differ from the official release is refused for now
+  (`restore_core_official_unsupported`): the restore does not fetch the official files yet.
+- `cli/restore.php --import` runs in the Moodle that the restore host installed: it puts the rows of the backup in place of
+  the rows of the install, each with its id, and sets the sequences after them. It can run again on the same extraction.
+  The state of this plugin is not restored: its tables, its settings and its tasks stay those of the new install. The
+  settings that `config.php` of the backed-up site forced are written to the database, except those that describe its
+  server (paths, the database, the sessions, mail, proxies).
+- The import makes the restored site a temporary site: no mail is ever sent, the notifications show on the page only, the
+  scheduled tasks of the plugins that are not part of Moodle and the core tasks that talk to other systems are disabled,
+  their ad hoc tasks are deleted, and the alternative login page is removed. Each of these changes is recorded with the
+  value it replaced in the new table `tool_secbackup_restore_stops`, which holds no personal data. It makes the administrator
+  `secbackup_admin`, with the password that the restore host gives, so that the site can be looked at.
+- The Japanese texts of the status page and of the errors of a chunk use plainer words for the parts that a backup is sent
+  in.
+
 ## 0.2.0
 
 - Full backups of the whole site to the backup service: every table of the database except the sessions and the cache
