@@ -91,6 +91,25 @@ function secbk_dev_send(array $message): void {
     }
 }
 
+/**
+ * An array with the keys of each object in byte order, at every depth, so that two summaries compare whatever the order of
+ * their members; a list keeps its order.
+ *
+ * @param array $value The array.
+ * @return array
+ */
+function secbk_dev_sorted(array $value): array {
+    foreach ($value as $key => $item) {
+        if (is_array($item)) {
+            $value[$key] = secbk_dev_sorted($item);
+        }
+    }
+    if (!array_is_list($value)) {
+        ksort($value, SORT_STRING);
+    }
+    return $value;
+}
+
 $options = getopt('', ['fixture:']);
 $fixture = rtrim((string) ($options['fixture'] ?? ''), '/');
 if (!str_starts_with($fixture, '/') || !is_file($fixture . '/input.json') || !is_file($fixture . '/fixture.json')) {
@@ -165,7 +184,7 @@ secbk_dev_say('extracted in ' . (time() - $started) . ' s: ' . json_encode($summ
 if (stream_get_contents(STDIN) !== '') {
     secbk_dev_fail('the extraction wrote more after its summary');
 }
-if ($summary !== $expected) {
+if (!is_array($summary) || secbk_dev_sorted($summary) !== secbk_dev_sorted($expected)) {
     secbk_dev_fail('the summary is not the one that fixture.json expects: ' . json_encode($expected, JSON_UNESCAPED_SLASHES));
 }
 secbk_dev_say('summary: as fixture.json expects');
