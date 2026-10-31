@@ -16,16 +16,27 @@ case "$db" in
     *) target_db="$db" ;;
 esac
 
+# with_site <site> <command...>: runs a command with SECBK_SITE set to the site, or without SECBK_SITE when the site is empty
+# (not with an empty value, and not with a SECBK_SITE that the caller exported for another environment).
+with_site() {
+    (
+        if [ -n "$1" ]; then export SECBK_SITE="$1"; else unset SECBK_SITE; fi
+        shift
+        "$@"
+    )
+}
+
 # env_value <site> <db> <variable>: the value that env.sh gives a variable for the environment of that site and database.
+# shellcheck disable=SC2016
 env_value() {
-    SECBK_SITE="$1" bash -c 'source "$0" "$1" "$2" > /dev/null && printf "%s" "${!3}"' \
+    with_site "$1" bash -c 'source "$0" "$1" "$2" > /dev/null && printf "%s" "${!3}"' \
         "$restore_env/env.sh" "$ver" "$2" "$3"
 }
 
 # in_source <command...> and in_target <command...>: run a command in the web server container of the backed-up or the
 # restored site, as root, in the Moodle root (.dev/env/run.sh: standard input and output pass unchanged).
-in_source() { SECBK_SITE="$source_site" "$restore_env/run.sh" "$ver" "$db" "$@"; }
-in_target() { SECBK_SITE="$target_site" "$restore_env/run.sh" "$ver" "$target_db" "$@"; }
+in_source() { with_site "$source_site" "$restore_env/run.sh" "$ver" "$db" "$@"; }
+in_target() { with_site "$target_site" "$restore_env/run.sh" "$ver" "$target_db" "$@"; }
 
 # host_tar <arguments...>: tar on this machine, without the extended attributes that the tar of macOS adds to an archive
 # (the GNU tar of the containers warns about each of them).

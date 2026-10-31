@@ -35,7 +35,7 @@ for name in input.json fixture.json manifest site-secret-key chunks; do
     fi
 done
 if ! running "$source_project"; then
-    echo "the backed-up site does not run: SECBK_SITE=$source_site .dev/env/up.sh $ver $db" >&2
+    echo "the backed-up site does not run: ${source_site:+SECBK_SITE=$source_site }.dev/env/up.sh $ver $db" >&2
     exit 1
 fi
 if [ -f "$env_root/installed-$target_project" ]; then
@@ -136,13 +136,11 @@ if ! docker network inspect "${target_project}_default" > /dev/null 2>&1; then
     fi
     echo "network ${target_project}_default: $made"
 fi
-(
-    export SECBK_SITE="$target_site"
-    # shellcheck source=../env/env.sh
-    source "$restore_env/env.sh" "$ver" "$target_db"
+# shellcheck disable=SC2016
+with_site "$target_site" bash -c 'set -euo pipefail
+    source "$0" "$1" "$2" > /dev/null
     "$SECBK_DOCKER/bin/moodle-docker-compose" up -d webserver
-    "$SECBK_DOCKER/bin/moodle-docker-wait-for-db"
-)
+    "$SECBK_DOCKER/bin/moodle-docker-wait-for-db"' "$restore_env/env.sh" "$ver" "$target_db"
 # moodle-docker waits 10 seconds for the database, which a first start of MariaDB can take longer than.
 # shellcheck disable=SC2016
 for _ in $(seq 1 60); do
