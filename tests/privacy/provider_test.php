@@ -48,14 +48,17 @@ final class provider_test extends \core_privacy\tests\provider_testcase {
     }
 
     public function test_metadata_lists_no_table_of_the_restore_because_it_holds_no_user(): void {
+        global $DB;
         $collection = provider::get_metadata(new collection('tool_secbackup'));
 
         $this->assertCount(2, $collection->get_collection());
         foreach ($collection->get_collection() as $item) {
             $this->assertNotSame('tool_secbackup_restore_stops', $item->get_name());
         }
-        $columns = $GLOBALS['DB']->get_columns('tool_secbackup_restore_stops');
-        $this->assertSame(['id', 'kind', 'name', 'previous', 'timecreated'], array_keys($columns));
+        // The columns themselves are those of install.xml (declarations_test); none of them names a user.
+        $columns = array_keys($DB->get_columns('tool_secbackup_restore_stops'));
+        $this->assertNotEmpty($columns);
+        $this->assertSame([], array_filter($columns, static fn($c) => strpos($c, 'user') !== false));
     }
 
     public function test_metadata_declares_the_messages_to_the_administrators(): void {
