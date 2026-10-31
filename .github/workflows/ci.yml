@@ -96,6 +96,7 @@ jobs:
         run: |
           php .dev/coverage/tests/run.php
           php .dev/coverage/tests/badge.php
+          bash .dev/coverage/tests/cli_runs.sh
 
       # The mutation testing runs by hand (.github/workflows/infection.yml); a new source file that no shard holds would drop
       # out of it, so the shards are checked on every run.
@@ -324,36 +325,17 @@ jobs:
         timeout-minutes: 5
         run: |
           if [ -d moodle/public ]; then dir=moodle/public/admin/tool/secbackup/cli; else dir=moodle/admin/tool/secbackup/cli; fi
-          cli="$dir/diagnose.php"
           failed=0
-          # check <expected exit code> <script> [argument...]
-          check() {
-            local expected="$1" script="$2" code=0
-            shift 2
-            SECBK_COVERAGE_CLI=1 php "$script" "$@" || code=$?
-            if [ "$code" != "$expected" ]; then
-              echo "$(basename "$script") $* ended with exit code $code, expected $expected" >&2
-              failed=1
-            fi
+          secbk_cli_php() {
+            SECBK_COVERAGE_CLI=1 php "$@"
           }
-          check 0 "$cli" --help
-          check 1 "$cli" --no-such-option
-          check 0 "$cli" --endpoint=http://localhost:8099/api/lms-backup/v1
-          check 1 "$cli" --endpoint=ftp://example.org/api
-          check 0 "$cli"
+          # The runs that .dev/coverage/cli.sh makes too (.dev/coverage/tests/cli_runs.sh checks that neither has its own).
+          source plugin/.dev/ci/cli-runs.sh
+          secbk_cli_runs "$dir"
           # The site of this job has no registration and no running backup, so the plain run runs nothing (2).
-          check 0 "$dir/backup.php" --help
-          check 1 "$dir/backup.php" --no-such-option
           check 2 "$dir/backup.php"
-          # The extraction with nothing on its input gives its public key, finds no keys and ends with the error line (1). The
-          # import without its staging folder is refused with the help (1); with nothing on its input it gets no line and ends
-          # with the error line (1), before it reads the staging folder or writes anything to the site.
-          check 0 "$dir/restore.php" --help
-          check 1 "$dir/restore.php" --no-such-option
-          check 1 "$dir/restore.php" --extract </dev/null
-          check 1 "$dir/restore.php" --import
-          check 1 "$dir/restore.php" --import --staging=/nonexistent/secbackup-staging </dev/null
-          bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" "$cli" php || failed=1
+          bash plugin/.dev/ci/diagnose-open-basedir.sh "$GITHUB_WORKSPACE/moodle" "$GITHUB_WORKSPACE/moodledata" \
+            "$dir/diagnose.php" php || failed=1
           exit "$failed"
 
       # The command line scripts once more on the site itself, registered with the fake service, so that cli/backup.php --now

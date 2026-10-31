@@ -1,55 +1,23 @@
 #!/usr/bin/env bash
-# Runs the command line scripts with the coverage collector (called by .dev/coverage/run.sh).
+# Runs the command line scripts with the coverage collector (called by .dev/coverage/run.sh): the runs of .dev/ci/cli-runs.sh,
+# which the step "Command line scripts" of ci.yml makes too, and the backup without --now.
 # Usage: .dev/coverage/cli.sh <ver> <db>
-# Every run has its own expected exit code (0: ok or help, 1: an unknown option, a wrong URL, a restore that gets no keys or
-# an import that gets no line, 2: the backup ran nothing). Any other code, 255 above all, is a PHP fatal error: the script goes
-# on with the other runs, then exits 1.
+# Every run has its own expected exit code (cli-runs.sh lists them; 2: the backup ran nothing). Any other code, 255 above all,
+# is a PHP fatal error: the script goes on with the other runs, then exits 1.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=../env/env.sh
 source "$repo/.dev/env/env.sh" "${1:?ver}" "${2:?db}"
 compose="$SECBK_DOCKER/bin/moodle-docker-compose"
 dir="/var/www/html/$SECBK_PLUGIN_PATH/cli"
-script="$dir/diagnose.php"
 "$repo/.dev/fakesec/start.sh" "$secbk_ver" "$secbk_db"
 failed=0
-# check <expected exit code> <script> [argument...]
-check() {
-    local expected="$1" path="$2" code=0
-    shift 2
-    "$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php "$path" "$@" || code=$?
-    if [ "$code" != "$expected" ]; then
-        echo "$(basename "$path") $* ended with exit code $code, expected $expected" >&2
-        failed=1
-    fi
+secbk_cli_php() {
+    "$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php "$@"
 }
-check 0 "$script" --help
-check 1 "$script" --no-such-option
-check 0 "$script"
-check 0 "$script" --endpoint=http://localhost:8099/api/lms-backup/v1
-check 1 "$script" --endpoint=ftp://example.org/api
-check 0 "$dir/backup.php" --help
-check 0 "$dir/restore.php" --help
-check 1 "$dir/restore.php" --no-such-option
-# The extraction with nothing on its input: it gives its public key, finds no keys and ends with the error line (1).
-check 1 "$dir/restore.php" --extract </dev/null
-# The import without its staging folder is refused with the help (1). With nothing on its input it gets no line and ends with
-# the error line (1), before it reads the staging folder or writes anything to the site.
-check 1 "$dir/restore.php" --import
-check 1 "$dir/restore.php" --import --staging=/nonexistent/secbackup-staging </dev/null
-# Whatever PHP shows goes to the error stream: every line on the standard output of the extraction and of the import is JSON.
-# The line that moodle-docker-compose itself prints before the command is not the command's, and is left out.
-jsoncheck='while (($l = fgets(STDIN)) !== false) { json_decode($l, true, 512, JSON_THROW_ON_ERROR); }'
-for args in "--extract" "--import --staging=/nonexistent/secbackup-staging"; do
-    # shellcheck disable=SC2086 # The arguments are split on purpose.
-    stdout="$("$compose" exec -T -e SECBK_COVERAGE_CLI=1 webserver php -d display_errors=stdout -d error_reporting=-1 \
-        "$dir/restore.php" $args </dev/null 2>/dev/null | grep -v '^Including local options')" || true
-    if [ -z "$stdout" ] || ! printf '%s\n' "$stdout" | php -r "$jsoncheck"; then
-        echo "restore.php $args wrote a line that is not JSON to the standard output" >&2
-        failed=1
-    fi
-done
-check 1 "$dir/backup.php" --no-such-option
+# shellcheck source=../ci/cli-runs.sh
+source "$repo/.dev/ci/cli-runs.sh"
+secbk_cli_runs "$dir"
 # Without --now the backup goes on with a running one until it ends, so the plain run is made only on a site that has none:
 # then it runs nothing (2). A site with a running backup (or a check that fails) fails this script without that run.
 live="$("$compose" exec -T webserver php -r "define('CLI_SCRIPT', true); require('$dir/../../../../config.php');
