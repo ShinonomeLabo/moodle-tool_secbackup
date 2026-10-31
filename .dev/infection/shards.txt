@@ -2,7 +2,8 @@
 # time limit of GitHub. Each line is a shard name and one file of the source folders of infection.json5. Every PHP file of
 # those folders is on exactly one line (.dev/infection/shards.php check, run by the job rules of ci.yml): a new file that is
 # not added here fails that check, so it cannot drop out of the mutation testing unseen.
-# The files are grouped so that the shards have a similar number of lines.
+# The files are grouped so that the shards have a similar number of lines. The files that the excludes of infection.json5 leave
+# out are in no shard.
 api-client classes/local/api/client.php
 api-answers classes/local/api/capacity_result.php
 api-answers classes/local/api/core_manifest_ref.php
@@ -47,3 +48,9 @@ trust-endpoint classes/local/endpoint/endpoint_exception.php
 trust-endpoint classes/local/trust/developer_settings.php
 trust-endpoint classes/local/trust/envelope_exception.php
 trust-endpoint classes/local/trust/sec_trust.php
+restore-extractor classes/local/restore/extractor.php
+restore-extractor classes/local/restore/import_failed_exception.php
+restore-manifest classes/local/restore/manifest_reader.php
+restore-manifest classes/local/restore/protocol.php
+restore-tree classes/local/restore/plugin_dirs.php
+restore-tree classes/local/restore/tree_writer.php

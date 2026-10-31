@@ -56,9 +56,10 @@ function secbk_run_tool(string $tool, string $args): array {
  * @param string[] $files Paths of the source files, from the plugin root.
  * @param string $shards Content of shards.txt.
  * @param int $floor minCoveredMsi.
+ * @param string[]|null $excludes The excludes of the source, or null for none.
  * @return string The root of the tree.
  */
-function secbk_tree(array $files, string $shards, int $floor = 95): string {
+function secbk_tree(array $files, string $shards, int $floor = 95, ?array $excludes = null): string {
     global $trees;
     $root = sys_get_temp_dir() . '/secbk-infection-test-' . getmypid() . '-' . count($trees);
     $trees[] = $root;
@@ -68,8 +69,10 @@ function secbk_tree(array $files, string $shards, int $floor = 95): string {
         file_put_contents("$root/$file", "<?php\n");
     }
     file_put_contents("$root/.dev/infection/shards.txt", $shards);
+    $exclude = $excludes === null ? '' : ",\n        // Files of the folders that are left out.\n        \"excludes\": [" . implode(', ',
+        array_map(static fn(string $e): string => '"' . $e . '"', $excludes)) . ']';
     file_put_contents("$root/.dev/infection/infection.json5", "{\n    // A comment, as in the real file.\n    \"source\": {\n"
-        . "        \"directories\": [\"classes/local/a\", \"classes/local/b\"]\n    },\n    \"minCoveredMsi\": $floor,\n}\n");
+        . "        \"directories\": [\"classes/local/a\", \"classes/local/b\"]$exclude\n    },\n    \"minCoveredMsi\": $floor,\n}\n");
     return $root;
 }
 
@@ -151,6 +154,31 @@ secbk_expect('a listed file outside the sources fails',
 $root = secbk_tree($files, "one classes/local/a/one.php extra\n");
 [$code, $out] = secbk_run_tool('shards.php', escapeshellarg("--root=$root") . ' check');
 secbk_expect('a damaged line cannot be used', $code === 2, "exit $code: $out");
+
+// A file that the source excludes is in no shard: Infection leaves out every file whose path from its source folder holds an
+// exclude (Symfony Finder's notPath() of a plain string), so a folder can be excluded too.
+$root = secbk_tree($files, "one classes/local/a/one.php\ntwo classes/local/b/deep/three.php\n", 95, ['one_two.php']);
+[$code, $out] = secbk_run_tool('shards.php', escapeshellarg("--root=$root") . ' check');
+secbk_expect('an excluded file needs no shard', $code === 0 && str_contains($out, '2 shards, 2 files, 1 excluded'),
+    "exit $code: $out");
+$root = secbk_tree($files, "one classes/local/a/one.php\none classes/local/a/one_two.php\n", 95, ['deep/']);
+[$code, $out] = secbk_run_tool('shards.php', escapeshellarg("--root=$root") . ' check');
+secbk_expect('an excluded folder needs no shard', $code === 0 && str_contains($out, '1 shards, 2 files, 1 excluded'),
+    "exit $code: $out");
+$root = secbk_tree($files, $good, 95, ['one_two.php']);
+[$code, $out] = secbk_run_tool('shards.php', escapeshellarg("--root=$root") . ' check');
+secbk_expect('an excluded file in a shard fails',
+    $code === 1 && str_contains($out, 'classes/local/a/one_two.php of the shard one is excluded by one_two.php'),
+    "exit $code: $out");
+$root = secbk_tree($files, $good, 95, ['gone.php']);
+[$code, $out] = secbk_run_tool('shards.php', escapeshellarg("--root=$root") . ' check');
+secbk_expect('an exclude that leaves out no file fails', $code === 1 && str_contains($out, 'the exclude gone.php leaves out no file'),
+    "exit $code: $out");
+foreach (['/one_two\\.php/', '*.php', ''] as $exclude) {
+    $root = secbk_tree($files, $good, 95, [$exclude]);
+    [$code, $out] = secbk_run_tool('shards.php', escapeshellarg("--root=$root") . ' check');
+    secbk_expect("an exclude that is not a plain part of a path cannot be used: $exclude", $code === 2, "exit $code: $out");
+}
 
 // The shards of this repository cover its source folders.
 [$code, $out] = secbk_run_tool('shards.php', 'check');

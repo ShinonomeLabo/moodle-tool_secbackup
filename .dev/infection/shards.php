@@ -26,11 +26,15 @@
 //
 // Usage: php shards.php [--root=<plugin>] list            the names of the shards, as a JSON list (the matrix of the workflow)
 //        php shards.php [--root=<plugin>] filter <shard>  the files of one shard, separated by commas (Infection's --filter)
-//        php shards.php [--root=<plugin>] check           every PHP file of the source folders of infection.json5 is in
-//                                                          exactly one shard, and every file of a shard is such a file
+//        php shards.php [--root=<plugin>] check           every PHP file of the source folders of infection.json5 that
+//                                                          its excludes do not leave out is in exactly one shard, every
+//                                                          file of a shard is such a file, and every exclude leaves out one
 // Infection's --filter keeps a file when one of the filters is a part of its real path. Each filter here is a whole path
 // from the plugin root (classes/...), and no such path is a part of another one (each starts at classes/ and ends with
-// .php), so a filter keeps exactly its file. The check compares the paths in the same way.
+// .php), so a filter keeps exactly its file. The check compares the paths in the same way. An exclude leaves out a file whose
+// path from its source folder holds it, as Infection does (Symfony Finder's notPath() of a plain string); an exclude that
+// Finder would take for a pattern (one that does not start with a letter or a digit, or holds another character than a
+// letter, a digit, "_", ".", "/" or "-") cannot be used here.
 // Exit code 0 when it worked, 1 when the check failed or the shard is unknown, 2 when an input cannot be used.
 
 if (PHP_SAPI !== 'cli') {
@@ -107,7 +111,22 @@ $directories = $found[1];
 if ($directories === []) {
     secbk_shards_input_error("$configfile lists no source directory");
 }
+$excludes = [];
+if (preg_match('~"excludes"\s*:\s*\[([^\]]*)\]~', $config, $m)) {
+    preg_match_all('~"([^"]*)"~', $m[1], $found);
+    $excludes = $found[1];
+    if ($excludes === []) {
+        secbk_shards_input_error("$configfile lists no exclude in its excludes");
+    }
+    foreach ($excludes as $exclude) {
+        if (!preg_match('~\A[A-Za-z0-9][A-Za-z0-9_./-]*\z~', $exclude)) {
+            secbk_shards_input_error("the exclude \"$exclude\" of $configfile is not a plain part of a path");
+        }
+    }
+}
 $sources = [];
+// The files that an exclude leaves out: path => the exclude.
+$excluded = [];
 foreach ($directories as $directory) {
     if (!is_dir($root . '/' . $directory)) {
         secbk_shards_input_error("source directory $directory is not in $root");
@@ -116,7 +135,15 @@ foreach ($directories as $directory) {
         FilesystemIterator::SKIP_DOTS));
     foreach ($files as $file) {
         if ($file->isFile() && $file->getExtension() === 'php') {
-            $sources[] = substr($file->getPathname(), strlen($root) + 1);
+            $path = substr($file->getPathname(), strlen($root) + 1);
+            $inner = substr($path, strlen($directory) + 1);
+            foreach ($excludes as $exclude) {
+                if (str_contains($inner, $exclude)) {
+                    $excluded[$path] = $exclude;
+                    continue 2;
+                }
+            }
+            $sources[] = $path;
         }
     }
 }
@@ -138,14 +165,20 @@ foreach ($sources as $source) {
 }
 foreach ($shards as $name => $files) {
     foreach ($files as $file) {
-        if (!in_array($file, $sources, true)) {
+        if (isset($excluded[$file])) {
+            $problems[] = "$file of the shard $name is excluded by {$excluded[$file]}";
+        } else if (!in_array($file, $sources, true)) {
             $problems[] = "$file of the shard $name is not a PHP file of the source directories";
         }
     }
+}
+foreach (array_diff($excludes, $excluded) as $exclude) {
+    $problems[] = "the exclude $exclude leaves out no file";
 }
 if ($problems !== []) {
     fwrite(STDERR, implode("\n", $problems) . "\n");
     exit(1);
 }
-echo 'shards ok (' . count($shards) . ' shards, ' . count($sources) . " files)\n";
+echo 'shards ok (' . count($shards) . ' shards, ' . count($sources) . ' files' . ($excluded === [] ? '' : ', ' . count($excluded)
+    . ' excluded') . ")\n";
 exit(0);

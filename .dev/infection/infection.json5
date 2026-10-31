@@ -6,7 +6,16 @@
             "classes/local/trust",
             "classes/local/api",
             "classes/local/net",
-            "classes/local/endpoint"
+            "classes/local/endpoint",
+            "classes/local/restore"
+        ],
+        // The parts of the restore that write the database of the site. Their tests take too long for a run of Infection, where
+        // each mutant runs them again: the line coverage of 100% and the values that their tests check keep them.
+        "excludes": [
+            "db_importer.php",
+            "forced_settings.php",
+            "temp_admin.php",
+            "temp_site_safety.php"
         ]
     },
     "phpUnit": {
