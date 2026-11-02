@@ -382,6 +382,8 @@ final class site_keys_test extends \basic_testcase {
     public function test_keys_cannot_be_cloned_and_the_original_still_opens(): void {
         [$path] = self::chunk(self::OLD);
         $keys = self::keys(self::NEW, self::OLD);
+        // The keys that earlier tests left in cycles must be wiped before the count starts, or the collection below reports them.
+        gc_collect_cycles();
         signing_keys_test::$wiped = [];
         try {
             $copy = clone $keys;
