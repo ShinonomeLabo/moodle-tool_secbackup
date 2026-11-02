@@ -23,6 +23,12 @@ use tool_secbackup\local\restore\import_failed_exception;
 use tool_secbackup\tests\fail_after_filter;
 use tool_secbackup\tests\restore_fixture;
 
+defined('MOODLE_INTERNAL') || die();
+
+// CoversFunction below needs the function to exist even when a test does not run the command: without it, a test that comes
+// first under coverage warns that the function is not a valid target, and Infection stops on the warning.
+require_once(__DIR__ . '/../../../cli/restore_mtrace.php');
+
 #[\PHPUnit\Framework\Attributes\CoversClass(\tool_secbackup\local\cli\restore_command::class)]
 #[\PHPUnit\Framework\Attributes\CoversFunction('tool_secbackup_restore_mtrace')]
 /**
